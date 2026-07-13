@@ -1,0 +1,1622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Print Queue — Production Scheduler</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  html, body { margin:0; padding:0; background:#1a1815; }
+</style>
+</head>
+<body>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@600;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  #ps-root {
+    --bg: #1a1815;
+    --panel: #221f1b;
+    --panel-2: #29251f;
+    --line: #3a342c;
+    --text: #ece6da;
+    --muted: #9a9184;
+    --heat: #ef6a2c;
+    --heat-dim: #7a4126;
+    --cool: #3e9d95;
+    --cool-dim: #2a4b48;
+    --vase: #d99a3f;
+    --cutter: #5aa8c9;
+    --danger: #d9534f;
+    --ok: #6fae63;
+    --radius: 6px;
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  #ps-root * { box-sizing: border-box; }
+  #ps-root .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  .ps-shell { max-width: 1040px; margin: 0 auto; padding: 28px 20px 60px; }
+
+  .ps-header { display:flex; align-items:baseline; justify-content:space-between; margin-bottom: 22px; flex-wrap:wrap; gap:8px; }
+  .ps-title { font-family:'Archivo Expanded', sans-serif; font-weight:800; font-size: 22px; letter-spacing: 0.3px; text-transform: uppercase; }
+  .ps-title span { color: var(--heat); }
+  .ps-subtitle { color: var(--muted); font-size: 12.5px; font-family:'JetBrains Mono',monospace; }
+
+  .ps-tabs { display:flex; gap:2px; border-bottom: 1px solid var(--line); margin-bottom: 22px; flex-wrap:wrap; }
+  .ps-tab { padding: 10px 16px; font-size:13px; font-weight:600; letter-spacing:0.3px; text-transform:uppercase; color: var(--muted); cursor:pointer; border-bottom:2px solid transparent; background:none; border-top:none; border-left:none; border-right:none; font-family:'Inter',sans-serif; }
+  .ps-tab.active { color: var(--text); border-bottom-color: var(--heat); }
+  .ps-tab:hover:not(.active) { color: var(--text); }
+
+  .ps-panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+  .ps-panel-title { font-family:'Archivo Expanded',sans-serif; font-weight:700; font-size:13px; text-transform:uppercase; letter-spacing:0.6px; color: var(--muted); margin: 0 0 14px 0; display:flex; align-items:center; gap:8px;}
+  .ps-panel-title .dot { width:6px;height:6px;border-radius:50%; background: var(--heat); display:inline-block; }
+
+  table.ps-table { width:100%; border-collapse: collapse; }
+  table.ps-table th { text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:0.5px; color: var(--muted); font-weight:600; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+  table.ps-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  table.ps-table tr:last-child td { border-bottom: none; }
+
+  .ps-input, .ps-select {
+    background: var(--panel-2); border:1px solid var(--line); color: var(--text);
+    border-radius: 4px; padding: 6px 8px; font-size: 13px; font-family:'JetBrains Mono',monospace; width: 100%;
+  }
+  .ps-input:focus, .ps-select:focus { outline: 1px solid var(--heat); border-color: var(--heat); }
+  .ps-input.ps-narrow { width: 58px; text-align:center; }
+  .ps-input.ps-name { font-family:'Inter',sans-serif; }
+  .ps-input:disabled { opacity: 0.35; }
+
+  .ps-tag { font-size:10px; text-transform:uppercase; letter-spacing:0.4px; padding:2px 7px; border-radius:20px; font-weight:600; white-space:nowrap; }
+
+  .ps-btn { background: var(--panel-2); border:1px solid var(--line); color: var(--text); padding: 7px 13px; border-radius:4px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:'Inter',sans-serif; }
+  .ps-btn:hover { border-color: var(--muted); }
+  .ps-btn.primary { background: var(--heat); border-color: var(--heat); color:#1a1815; }
+  .ps-btn.primary:hover { background:#ff7d43; }
+  .ps-btn.ghost { background:none; border:none; color: var(--muted); padding:4px 6px; }
+  .ps-btn.ghost:hover { color: var(--text); }
+  .ps-btn.small { padding: 4px 8px; font-size: 11px; }
+  .ps-btn:disabled { opacity:0.4; cursor:not-allowed; }
+
+  .ps-row { display:flex; gap:10px; align-items:center; }
+  .ps-daycheck { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:6px 10px; border:1px solid var(--line); border-radius:20px; cursor:pointer; user-select:none; }
+  .ps-daycheck.on { border-color: var(--heat); color: var(--heat); background: color-mix(in srgb, var(--heat) 10%, transparent); }
+  .ps-field-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color: var(--muted); margin-bottom:6px; display:block; }
+  .ps-field { margin-bottom: 16px; }
+  .ps-hint { color: var(--muted); font-size:11.5px; margin-top:6px; }
+
+  .ps-printer-card { border:1px solid var(--line); border-radius: var(--radius); padding:14px 16px; margin-bottom:12px; background: var(--panel-2); }
+  .ps-printer-card:last-child { margin-bottom:0; }
+  .ps-printer-top { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .ps-printer-top input.ps-name { flex:1; min-width:160px; font-size:14px; font-weight:600; }
+  .ps-status-pill { font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-weight:700; padding:6px 12px; border-radius:20px; cursor:pointer; border:1px solid transparent; white-space:nowrap; }
+  .ps-status-pill.active { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); border-color: var(--ok); }
+  .ps-status-pill.down { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); border-color: var(--danger); }
+
+  .ps-summary-grid { display:grid; grid-template-columns: repeat(4,1fr); gap:1px; background: var(--line); border:1px solid var(--line); border-radius: var(--radius); overflow:hidden; margin-bottom:18px; }
+  .ps-summary-cell { background: var(--panel); padding: 14px 16px; }
+  .ps-summary-num { font-family:'JetBrains Mono',monospace; font-size:19px; font-weight:600; color: var(--heat); }
+  .ps-summary-label { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color: var(--muted); margin-top:3px; }
+
+  .ps-printer-block { margin-bottom: 26px; }
+  .ps-printer-block-head { font-family:'Archivo Expanded',sans-serif; font-weight:700; font-size:14px; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; }
+  .ps-printer-block-head .dot { width:7px; height:7px; border-radius:50%; background: var(--ok); display:inline-block; }
+
+  .ps-day { margin-bottom: 16px; }
+  .ps-day-head { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .ps-day-date { font-family:'Archivo Expanded',sans-serif; font-weight:700; font-size:13px; text-transform:uppercase; letter-spacing:0.3px; }
+  .ps-day-meta { color: var(--muted); font-size:11px; font-family:'JetBrains Mono',monospace; }
+
+  .ps-gantt { position:relative; height:44px; background: repeating-linear-gradient(90deg, var(--panel-2), var(--panel-2) 1px, transparent 1px, transparent calc(100%/12)); border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+  .ps-block { position:absolute; top:5px; bottom:5px; border-radius:3px; display:flex; align-items:center; padding:0 8px; font-size:11px; font-weight:600; overflow:hidden; white-space:nowrap; color:#1a1815; }
+
+  .ps-joblist { margin-top:6px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color: var(--muted); }
+  .ps-joblist div { padding: 2px 0; }
+  .ps-joblist b { color: var(--text); }
+
+  .ps-empty { text-align:center; padding: 40px 20px; color: var(--muted); font-size:13px; }
+  .ps-warnbox { background: color-mix(in srgb, var(--danger) 14%, var(--panel)); border:1px solid var(--danger); border-radius:4px; padding:10px 14px; font-size:12.5px; margin-bottom:16px; color: #f2b8b5; }
+  .ps-save-note { font-size:11px; color: var(--muted); font-family:'JetBrains Mono',monospace; }
+  #ps-auth-screen { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .ps-auth-card { width:100%; max-width:340px; background: var(--panel); border:1px solid var(--line); border-radius: var(--radius); padding:28px 24px; }
+
+  .ps-spool-card { border:1px solid var(--line); border-radius: var(--radius); padding:14px 16px; margin-bottom:12px; background: var(--panel-2); }
+  .ps-spool-card:last-child { margin-bottom:0; }
+  .ps-spool-top { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .ps-spool-top input.ps-name { flex:1.4; min-width:150px; font-size:14px; font-weight:600; }
+  .ps-spool-swatch { width:16px; height:16px; border-radius:50%; border:1px solid var(--line); flex-shrink:0; }
+  .ps-spool-bar-track { height:8px; border-radius:6px; background: var(--panel); border:1px solid var(--line); overflow:hidden; margin-top:8px; }
+  .ps-spool-bar-fill { height:100%; background: var(--cool); }
+  .ps-spool-bar-fill.low { background: var(--danger); }
+  .ps-badge-low { font-size:10px; text-transform:uppercase; letter-spacing:0.4px; font-weight:700; padding:2px 8px; border-radius:12px; background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+  .ps-swap-tag { display:inline-block; font-size:9.5px; text-transform:uppercase; letter-spacing:0.4px; font-weight:700; padding:1px 6px; border-radius:10px; background: color-mix(in srgb, var(--danger) 25%, transparent); color: #f2b8b5; margin-left:6px; vertical-align:middle; }
+  .ps-block.spool-short { outline: 2px solid var(--danger); outline-offset: -2px; }
+  .ps-type-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+  .ps-type-row:last-child { margin-bottom:0; }
+  .ps-type-row input.ps-name { flex:1; }
+  .ps-type-swatch-input { width:36px; height:32px; padding:2px; flex-shrink:0; }
+  .ps-type-error { color: var(--danger); font-size:11.5px; margin-top:8px; }
+  .ps-log-entry { display:flex; align-items:baseline; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); font-size:12.5px; flex-wrap:wrap; }
+  .ps-log-entry:last-child { border-bottom:none; }
+  .ps-log-entry .mono { color: var(--muted); }
+  .ps-view-toggle .ps-btn { border-radius:20px; }
+  .actual-progress { animation: ps-pulse 1.6s ease-in-out infinite; box-shadow: 0 0 0 2px var(--heat) inset; }
+  @keyframes ps-pulse { 0%,100%{ opacity:1; } 50%{ opacity:0.55; } }
+  .ps-now-line { position:absolute; top:-14px; bottom:0; width:2px; background: var(--text); z-index:3; }
+  .ps-now-label { position:absolute; top:-14px; transform:translateX(-50%); font-size:9px; font-family:'JetBrains Mono',monospace; color:var(--text); white-space:nowrap; letter-spacing:0.3px; }
+  .ps-legend { display:flex; gap:14px; flex-wrap:wrap; font-size:10.5px; color:var(--muted); margin-top:6px; }
+  .ps-legend span { display:inline-flex; align-items:center; gap:5px; }
+  .ps-swatch { width:16px; height:16px; border-radius:3px; display:inline-flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; flex-shrink:0; color:#1a1815; }
+  .ps-swatch.sw-done { background: var(--ok); }
+  .ps-swatch.sw-progress { background: var(--heat); animation: ps-pulse 1.4s ease-in-out infinite; }
+  .ps-swatch.sw-planned { background: var(--cool); }
+  .ps-block.model-change { border-left: 3px solid var(--text); }
+  .ps-changeover { display:flex; align-items:center; gap:8px; margin:4px 0; color: var(--muted); font-size:10.5px; }
+  .ps-changeover::before, .ps-changeover::after { content:''; flex:1; height:1px; background: var(--line); }
+</style>
+
+<div id="ps-root">
+  <div id="ps-auth-screen" style="display:none;">
+    <div class="ps-auth-card">
+      <div class="ps-title" style="margin-bottom:2px;">PRINT<span>·</span>QUEUE</div>
+      <div class="ps-subtitle" style="margin-bottom:20px;">sign in to continue</div>
+      <div class="ps-field">
+        <span class="ps-field-label">Email</span>
+        <input class="ps-input" type="email" id="ps-auth-email" autocomplete="username" />
+      </div>
+      <div class="ps-field">
+        <span class="ps-field-label">Password</span>
+        <input class="ps-input" type="password" id="ps-auth-password" autocomplete="current-password" />
+      </div>
+      <button class="ps-btn primary" id="ps-auth-submit" style="width:100%;">Sign In</button>
+      <div id="ps-auth-error" class="ps-hint" style="color:var(--danger); margin-top:10px; min-height:14px;"></div>
+    </div>
+  </div>
+  <div class="ps-shell">
+    <div class="ps-header">
+      <div>
+        <div class="ps-title">PRINT<span>·</span>QUEUE</div>
+        <div class="ps-subtitle">production scheduler // multi-printer timeline</div>
+      </div>
+      <div class="ps-row" style="gap:12px;">
+        <div class="ps-save-note" id="ps-save-note"></div>
+        <button class="ps-btn ghost small" id="ps-auth-signout" style="display:none;">Sign out</button>
+      </div>
+    </div>
+
+    <div class="ps-tabs">
+      <button class="ps-tab active" data-tab="schedule">Build Schedule</button>
+      <button class="ps-tab" data-tab="log">Log</button>
+      <button class="ps-tab" data-tab="printers">Printers</button>
+      <button class="ps-tab" data-tab="filament">Filament</button>
+      <button class="ps-tab" data-tab="catalog">Catalog</button>
+      <button class="ps-tab" data-tab="settings">Settings</button>
+    </div>
+
+    <div id="ps-tab-schedule"></div>
+    <div id="ps-tab-log" style="display:none;"></div>
+    <div id="ps-tab-printers" style="display:none;"></div>
+    <div id="ps-tab-filament" style="display:none;"></div>
+    <div id="ps-tab-catalog" style="display:none;"></div>
+    <div id="ps-tab-settings" style="display:none;"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+
+// ---- Supabase config ----
+// Fill these in after running SUPABASE_SETUP.sql and creating a project.
+// Both values are meant to be public in client-side code — Supabase's anon
+// key is safe to expose as long as Row Level Security is on and requires
+// authentication, which the setup SQL enables. Leave the placeholders as-is
+// to keep using browser-local storage instead (no login, no sync).
+const SUPABASE_URL = 'https://uybigzsddjbfaqxgnyfv.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_fg83nAsSoJgqmxn7LZvS5w_NDRc8j5v';
+
+const supabaseConfigured = SUPABASE_URL !== 'YOUR_SUPABASE_URL' && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY';
+let sb = null;
+if(supabaseConfigured && typeof window.supabase !== 'undefined'){
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+}
+
+if(typeof window.storage === 'undefined'){
+  if(sb){
+    window.storage = {
+      async get(key){
+        const {data, error} = await sb.from('kv_store').select('value').eq('key', key).maybeSingle();
+        if(error) throw error;
+        if(!data) throw new Error('not found');
+        return {key, value: data.value, shared:false};
+      },
+      async set(key, value){
+        const {error} = await sb.from('kv_store').upsert({key, value, updated_at: new Date().toISOString()});
+        if(error) throw error;
+        return {key, value, shared:false};
+      },
+      async delete(key){
+        const {error} = await sb.from('kv_store').delete().eq('key', key);
+        if(error) throw error;
+        return {key, deleted:true, shared:false};
+      },
+      async list(prefix){
+        const {data, error} = await sb.from('kv_store').select('key');
+        if(error) throw error;
+        const keys = (data||[]).map(r=>r.key).filter(k => !prefix || k.startsWith(prefix));
+        return {keys, prefix, shared:false};
+      }
+    };
+  } else {
+    const LS_PREFIX = 'print-scheduler:';
+    window.storage = {
+      async get(key){
+        const raw = localStorage.getItem(LS_PREFIX+key);
+        if(raw === null) throw new Error('not found');
+        return {key, value: raw, shared:false};
+      },
+      async set(key, value){
+        localStorage.setItem(LS_PREFIX+key, value);
+        return {key, value, shared:false};
+      },
+      async delete(key){
+        localStorage.removeItem(LS_PREFIX+key);
+        return {key, deleted:true, shared:false};
+      },
+      async list(prefix){
+        const keys = Object.keys(localStorage)
+          .filter(k => k.startsWith(LS_PREFIX))
+          .map(k => k.slice(LS_PREFIX.length))
+          .filter(k => !prefix || k.startsWith(prefix));
+        return {keys, prefix, shared:false};
+      }
+    };
+  }
+}
+
+// ---- Auth gating ----
+// No public sign-up here on purpose: this app has one intended user, created
+// directly in the Supabase dashboard (Authentication -> Users -> Add user).
+// The sign-in form only ever calls signInWithPassword, never signUp.
+if(sb){
+  window.__deferAppStart = true;
+}
+
+function showAuthScreen(){
+  document.getElementById('ps-auth-screen').style.display = 'flex';
+  document.querySelector('.ps-shell').style.display = 'none';
+}
+function showApp(){
+  document.getElementById('ps-auth-screen').style.display = 'none';
+  document.querySelector('.ps-shell').style.display = '';
+  const signout = document.getElementById('ps-auth-signout');
+  if(signout) signout.style.display = '';
+}
+
+async function bootWithAuth(){
+  const { data: { session } } = await sb.auth.getSession();
+  if(session){
+    showApp();
+    startApp();
+  } else {
+    showAuthScreen();
+  }
+
+  sb.auth.onAuthStateChange((event, newSession) => {
+    if(event === 'SIGNED_IN' && newSession){
+      showApp();
+      startApp();
+    }
+    if(event === 'SIGNED_OUT'){
+      location.reload();
+    }
+  });
+
+  const submitBtn = document.getElementById('ps-auth-submit');
+  const errEl = document.getElementById('ps-auth-error');
+  async function attemptSignIn(){
+    errEl.textContent = '';
+    const email = document.getElementById('ps-auth-email').value.trim();
+    const password = document.getElementById('ps-auth-password').value;
+    if(!email || !password){ errEl.textContent = 'Enter both email and password.'; return; }
+    submitBtn.disabled = true;
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    submitBtn.disabled = false;
+    if(error){ errEl.textContent = error.message; }
+  }
+  submitBtn.addEventListener('click', attemptSignIn);
+  document.getElementById('ps-auth-password').addEventListener('keydown', (e) => {
+    if(e.key === 'Enter') attemptSignIn();
+  });
+
+  const signoutBtn = document.getElementById('ps-auth-signout');
+  if(signoutBtn){
+    signoutBtn.addEventListener('click', () => sb.auth.signOut());
+  }
+}
+
+if(sb){
+  bootWithAuth();
+}
+
+// If this file is running outside a Claude artifact (i.e. hosted as a normal
+// webpage), window.storage won't exist. Fall back to the browser's own
+// localStorage with the same async {get,set,delete,list} shape, so nothing
+// else in this file has to know or care which one it's talking to.
+if(typeof window.storage === 'undefined'){
+  const LS_PREFIX = 'print-scheduler:';
+  window.storage = {
+    async get(key){
+      const raw = localStorage.getItem(LS_PREFIX+key);
+      if(raw === null) throw new Error('not found');
+      return {key, value: raw, shared:false};
+    },
+    async set(key, value){
+      localStorage.setItem(LS_PREFIX+key, value);
+      return {key, value, shared:false};
+    },
+    async delete(key){
+      localStorage.removeItem(LS_PREFIX+key);
+      return {key, deleted:true, shared:false};
+    },
+    async list(prefix){
+      const keys = Object.keys(localStorage)
+        .filter(k => k.startsWith(LS_PREFIX))
+        .map(k => k.slice(LS_PREFIX.length))
+        .filter(k => !prefix || k.startsWith(prefix));
+      return {keys, prefix, shared:false};
+    }
+  };
+}
+
+const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const DEFAULT_TYPES = [
+  {id:'vase',   name:'Vase',        color:'#d99a3f'},
+  {id:'cutter', name:'Back Cutter', color:'#5aa8c9'},
+];
+const DEFAULT_CATALOG = [
+  {id:'vase1',   name:'Vase 1',        type:'vase', timeH:0, timeM:0, weightG:0},
+  {id:'vase3',   name:'Vase 3',        type:'vase', timeH:0, timeM:0, weightG:0},
+  {id:'vase5',   name:'Vase 5',        type:'vase', timeH:0, timeM:0, weightG:0},
+  {id:'cutter1', name:'Back Cutter 1', type:'cutter', timeH:0, timeM:0, weightG:0},
+  {id:'cutter2', name:'Back Cutter 2', type:'cutter', timeH:0, timeM:0, weightG:0},
+  {id:'cutter3', name:'Back Cutter 3', type:'cutter', timeH:0, timeM:0, weightG:0},
+];
+const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15 };
+const DEFAULT_PRINTERS = [
+  {id:'printer1', name:'Centauri Carbon 1', status:'active', spoolId:null},
+  {id:'printer2', name:'Centauri Carbon 2', status:'active', spoolId:null},
+  {id:'printer3', name:'Kobra Max',         status:'active', spoolId:null},
+];
+const DEFAULT_SPOOLS = [];
+const LOW_STOCK_G = 150;
+
+let catalog = null;
+let types = null;
+let settings = null;
+let printers = null;
+let spools = null;
+let orderQty = {};
+let priorityOrder = [];
+let productionLog = [];
+let scheduleView = 'theoretical';
+let theoreticalSchedule = null;
+let liveSchedule = null;
+
+function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
+function todayISO(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+async function loadState(){
+  try { const c = await window.storage.get('catalog'); catalog = c ? JSON.parse(c.value) : JSON.parse(JSON.stringify(DEFAULT_CATALOG)); }
+  catch(e){ catalog = JSON.parse(JSON.stringify(DEFAULT_CATALOG)); }
+
+  try { const t = await window.storage.get('types'); types = t ? JSON.parse(t.value) : JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
+  catch(e){ types = JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
+  if(types.length===0) types.push({id: uid('type'), name:'Product', color:'#d99a3f'});
+  catalog.forEach(p => { if(!types.some(t=>t.id===p.type)) p.type = types[0].id; });
+
+  try { const s = await window.storage.get('settings'); settings = s ? JSON.parse(s.value) : JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
+  catch(e){ settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
+
+  try { const pr = await window.storage.get('printers'); printers = pr ? JSON.parse(pr.value) : JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
+  catch(e){ printers = JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
+  printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
+
+  try { const sp = await window.storage.get('spools'); spools = sp ? JSON.parse(sp.value) : JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
+  catch(e){ spools = JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
+
+  try {
+    const o = await window.storage.get('lastOrder');
+    if (o) {
+      const parsed = JSON.parse(o.value);
+      orderQty = parsed.orderQty || {};
+      priorityOrder = parsed.priorityOrder || catalog.map(p=>p.id);
+    } else {
+      priorityOrder = catalog.map(p=>p.id);
+    }
+  } catch(e){ priorityOrder = catalog.map(p=>p.id); }
+
+  // Migrate legacy orderQty shape (plain number) to {qty, pin}.
+  Object.keys(orderQty).forEach(id => {
+    if(typeof orderQty[id] === 'number'){ orderQty[id] = {qty: orderQty[id], pin: null}; }
+    if(!orderQty[id] || typeof orderQty[id] !== 'object'){ orderQty[id] = {qty:0, pin:null}; }
+    if(typeof orderQty[id].pin === 'undefined') orderQty[id].pin = null;
+  });
+
+  priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
+  catalog.forEach(p => { if(!priorityOrder.includes(p.id)) priorityOrder.push(p.id); });
+
+  try { const lg = await window.storage.get('productionLog'); productionLog = lg ? JSON.parse(lg.value) : []; }
+  catch(e){ productionLog = []; }
+  scheduleView = productionLog.length > 0 ? 'live' : 'theoretical';
+}
+
+async function saveCatalog(){ try { await window.storage.set('catalog', JSON.stringify(catalog)); flashSave(); } catch(e){ console.error(e); } }
+async function saveTypes(){ try { await window.storage.set('types', JSON.stringify(types)); flashSave(); } catch(e){ console.error(e); } }
+function typeById(id){ return types.find(t=>t.id===id) || {id:'', name:'Unknown', color:'#999999'}; }
+function renderTag(typeId){
+  const t = typeById(typeId);
+  return `<span class="ps-tag" style="background:color-mix(in srgb, ${t.color} 22%, transparent); color:${t.color}">${escapeHtml(t.name)}</span>`;
+}
+async function saveSettings(){ try { await window.storage.set('settings', JSON.stringify(settings)); flashSave(); } catch(e){ console.error(e); } }
+async function savePrinters(){ try { await window.storage.set('printers', JSON.stringify(printers)); flashSave(); } catch(e){ console.error(e); } }
+async function saveSpools(){ try { await window.storage.set('spools', JSON.stringify(spools)); flashSave(); } catch(e){ console.error(e); } }
+async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
+async function saveLog(){ try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); } }
+// Every log entry claims exactly one unit of its product's queued quantity,
+// exactly once, tracked via entry.consumed. This runs after any log change
+// AND once on load, so entries that predate this mechanism (or were created
+// while storage was misbehaving) get caught and reconciled automatically
+// instead of silently sitting there unaccounted for.
+function syncConsumption(){
+  let changed = false;
+  productionLog.forEach(e => {
+    if(!e.consumed){
+      const entry = getOrderEntry(e.productId);
+      entry.qty = Math.max(0, entry.qty - 1);
+      e.consumed = true;
+      changed = true;
+    }
+  });
+  if(changed){ saveOrder(); saveLog(); }
+  return changed;
+}
+function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null}; return orderQty[id]; }
+
+let flashTimer = null;
+function flashSave(){
+  const el = document.getElementById('ps-save-note');
+  if(!el) return;
+  el.textContent = 'saved';
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(()=>{ el.textContent=''; }, 1200);
+}
+
+// ---------- time helpers ----------
+function fmtClock(date){
+  let h = date.getHours(), m = date.getMinutes();
+  const ampm = h>=12 ? 'PM':'AM';
+  h = h % 12; if(h===0) h=12;
+  return h + ':' + String(m).padStart(2,'0') + ' ' + ampm;
+}
+function fmtDateHead(date){
+  return DAY_NAMES[date.getDay()] + ', ' + date.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+}
+function fmtDuration(min){
+  min = Math.round(min);
+  const h = Math.floor(min/60), m = min%60;
+  if(h<=0) return m+'m';
+  if(m===0) return h+'h';
+  return h+'h '+m+'m';
+}
+function windowBounds(date, settings){
+  const [sh,sm] = settings.startTime.split(':').map(Number);
+  const [eh,em] = settings.endTime.split(':').map(Number);
+  const start = new Date(date.getFullYear(),date.getMonth(),date.getDate(),sh,sm,0,0);
+  const end = new Date(date.getFullYear(),date.getMonth(),date.getDate(),eh,em,0,0);
+  return {start,end};
+}
+function isWorkDay(date, workDays){ return workDays.includes(date.getDay()); }
+function nextStart(afterDate, settings){
+  let d = new Date(afterDate);
+  for(let i=0;i<400;i++){
+    if(isWorkDay(d, settings.workDays)){
+      const {start,end} = windowBounds(d, settings);
+      if(d < start) return new Date(start);
+      if(d < end) return new Date(d);
+    }
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate()+1, 0,0,0,0);
+  }
+  return d;
+}
+function computeLiveCursor(printerId, settings){
+  const entries = productionLog.filter(e => e.printerId === printerId);
+  if(entries.length === 0) return nextStart(new Date(), settings);
+  entries.sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
+  const last = entries[0];
+  const endTime = last.actualEnd
+    ? new Date(last.actualEnd)
+    : new Date(new Date(last.actualStart).getTime() + last.plannedMin*60000);
+  const withDowntime = new Date(endTime.getTime() + settings.downtimeMin*60000);
+  return nextStart(withDowntime, settings);
+}
+function toLocalInputValue(date){
+  const pad = n => String(n).padStart(2,'0');
+  return date.getFullYear()+'-'+pad(date.getMonth()+1)+'-'+pad(date.getDate())+'T'+pad(date.getHours())+':'+pad(date.getMinutes());
+}
+function fmtLogTime(iso){
+  const d = new Date(iso);
+  return fmtDateHead(d) + ' ' + fmtClock(d);
+}
+function productAvgActual(productId){
+  const entries = productionLog.filter(e => e.productId === productId && e.actualEnd);
+  if(entries.length === 0) return null;
+  const totalMin = entries.reduce((s,e) => s + (new Date(e.actualEnd) - new Date(e.actualStart))/60000, 0);
+  return {avgMin: totalMin/entries.length, count: entries.length};
+}
+function loggedTodayCount(productId){
+  const key = new Date().toDateString();
+  return productionLog.filter(e => e.productId === productId && new Date(e.actualStart).toDateString() === key).length;
+}
+function getActualJobsForDay(printerId, dateKey){
+  return productionLog
+    .filter(e => e.printerId === printerId && new Date(e.actualStart).toDateString() === dateKey)
+    .map(e => {
+      const product = catalog.find(p=>p.id===e.productId);
+      const end = e.actualEnd ? new Date(e.actualEnd) : new Date(new Date(e.actualStart).getTime() + (e.plannedMin||0)*60000);
+      return {
+        name: product ? product.name : '(deleted product)',
+        type: product ? product.type : null,
+        productId: e.productId,
+        start: new Date(e.actualStart),
+        end,
+        weightG: product ? product.weightG : 0,
+        actual: true,
+        inProgress: !e.actualEnd,
+        overnight: false
+      };
+    });
+}
+
+// ---------- multi-printer scheduling engine ----------
+// Event-driven: always advance whichever active printer becomes free soonest.
+// Each machine has its own pinned queue (jobs the person locked to that printer)
+// plus access to the shared pool. At every turn it best-fits — takes the
+// longest job (from its pinned queue or the pool) that still fits what's left
+// of the window — which is what actually keeps printers busy instead of just
+// working a list in order. Priority order only breaks ties between equal-length
+// candidates. mode='live' seeds each machine's starting point from the real
+// production log instead of assuming everyone starts at the top of the window.
+function buildMultiSchedule(queue, activePrinters, settings, mode){
+  const machines = activePrinters.map(p => ({
+    id: p.id, name: p.name,
+    cursor: mode === 'live' ? computeLiveCursor(p.id, settings) : nextStart(new Date(), settings),
+    days: [],
+    pinned: []
+  }));
+  if(machines.length === 0) return { machines: [], unassigned: queue.slice() };
+
+  const machineById = {};
+  machines.forEach(m => { machineById[m.id] = m; });
+
+  const pool = [];
+  const unassignedPinned = [];
+  queue.forEach(job => {
+    if(job.pin){
+      if(machineById[job.pin]) machineById[job.pin].pinned.push(job);
+      else unassignedPinned.push(job);
+    } else {
+      pool.push(job);
+    }
+  });
+
+  function remainingCount(){ return pool.length + machines.reduce((s,m)=>s+m.pinned.length,0); }
+
+  let guard = 0, stall = 0;
+  while(remainingCount() > 0 && guard < 8000 && stall < 500){
+    guard++;
+    machines.sort((a,b) => a.cursor - b.cursor);
+    const m = machines[0];
+    m.cursor = nextStart(m.cursor, settings);
+    const {start, end} = windowBounds(m.cursor, settings);
+    const dayWindowLen = (end - start) / 60000;
+
+    let bestList = null, bestIdx = -1, bestFit = -1;
+    [['pinned', m.pinned], ['pool', pool]].forEach(([, list]) => {
+      for(let i=0;i<list.length;i++){
+        const job = list[i];
+        const finish = new Date(m.cursor.getTime() + job.printTimeMin*60000);
+        if(finish <= end && job.printTimeMin > bestFit){
+          bestFit = job.printTimeMin; bestList = list; bestIdx = i;
+        }
+      }
+    });
+    if(bestList === null){
+      for(const list of [m.pinned, pool]){
+        for(let i=0;i<list.length;i++){
+          if(list[i].printTimeMin > dayWindowLen && m.cursor < end){ bestList = list; bestIdx = i; break; }
+        }
+        if(bestList) break;
+      }
+    }
+
+    if(bestList === null){
+      stall++;
+      m.cursor = new Date(m.cursor.getFullYear(), m.cursor.getMonth(), m.cursor.getDate()+1, 0,0,0,0);
+      continue;
+    }
+    stall = 0;
+
+    const job = bestList.splice(bestIdx,1)[0];
+    const jobStart = new Date(m.cursor);
+    const jobEnd = new Date(m.cursor.getTime() + job.printTimeMin*60000);
+    const overnight = jobEnd > end;
+    const dateKey = jobStart.toDateString();
+    let dayEntry = m.days.find(d => d.dateKey === dateKey);
+    if(!dayEntry){ dayEntry = {dateKey, date:new Date(jobStart), jobs:[]}; m.days.push(dayEntry); }
+    dayEntry.jobs.push({...job, start:jobStart, end:jobEnd, overnight});
+
+    m.cursor = overnight ? jobEnd : new Date(jobEnd.getTime() + settings.downtimeMin*60000);
+  }
+
+  machines.forEach(m => m.days.sort((a,b) => a.date - b.date));
+  const unassigned = pool.concat(machines.flatMap(m => m.pinned)).concat(unassignedPinned);
+  return { machines, unassigned };
+}
+
+// ---------- rendering: Printers tab ----------
+function renderPrinters(){
+  const root = document.getElementById('ps-tab-printers');
+  const cards = printers.map(p => {
+    const spoolOptions = `<option value="">— none assigned —</option>` + spools.map(s =>
+      `<option value="${s.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(s.label)} (${s.remainingG}g left)</option>`
+    ).join('');
+    return `
+      <div class="ps-printer-card" data-id="${p.id}">
+        <div class="ps-printer-top">
+          <input class="ps-input ps-name" data-field="name" value="${escapeHtml(p.name)}" />
+          <span class="ps-status-pill ${p.status}" data-action="toggle-status">${p.status === 'active' ? 'Active' : 'Down'}</span>
+          <button class="ps-btn ghost small" data-action="remove" title="Remove printer">✕</button>
+        </div>
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">Loaded spool</span>
+          <select class="ps-select" data-field="spoolId">${spoolOptions}</select>
+          <div class="ps-hint">Used to flag when the schedule will run this machine out of filament.</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Printers</div>
+      <div id="ps-printers-list">${cards}</div>
+      <div style="margin-top:14px;">
+        <button class="ps-btn" id="ps-add-printer">+ Add printer</button>
+      </div>
+      <div class="ps-hint" style="margin-top:12px;">Mark a printer "Down" to pull it out of the rotation entirely — its share of the queue gets redistributed to the active printers. To tell the Live Schedule what a printer's actually doing right now, log its prints on the Log tab.</div>
+    </div>
+  `;
+
+  root.querySelectorAll('.ps-printer-card').forEach(card => {
+    const id = card.getAttribute('data-id');
+    card.querySelector('[data-field="name"]').addEventListener('change', e => {
+      const p = printers.find(x=>x.id===id); p.name = e.target.value;
+      savePrinters(); regenerateIfActive();
+    });
+    card.querySelector('[data-action="toggle-status"]').addEventListener('click', () => {
+      const p = printers.find(x=>x.id===id);
+      p.status = p.status === 'active' ? 'down' : 'active';
+      savePrinters(); renderPrinters(); regenerateIfActive();
+    });
+    card.querySelector('[data-field="spoolId"]').addEventListener('change', e => {
+      const p = printers.find(x=>x.id===id);
+      p.spoolId = e.target.value || null;
+      savePrinters(); regenerateIfActive();
+    });
+    card.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      printers = printers.filter(x=>x.id!==id);
+      savePrinters(); renderPrinters(); regenerateIfActive();
+    });
+  });
+
+  document.getElementById('ps-add-printer').addEventListener('click', () => {
+    printers.push({id: uid('printer'), name: 'New printer', status:'active', spoolId:null});
+    savePrinters(); renderPrinters(); regenerateIfActive();
+  });
+}
+
+// ---------- rendering: Log tab ----------
+let editingLogId = null;
+
+function renderLog(){
+  const root = document.getElementById('ps-tab-log');
+  const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
+  const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+  const entries = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
+  const rows = entries.map(e => {
+    const printer = printers.find(p=>p.id===e.printerId);
+    const product = catalog.find(p=>p.id===e.productId);
+
+    if(e.id === editingLogId){
+      const pOpts = printers.map(p => `<option value="${p.id}" ${p.id===e.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
+      const dOpts = catalog.map(p => `<option value="${p.id}" ${p.id===e.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+      return `
+        <div class="ps-log-entry" data-id="${e.id}" data-editing="1">
+          <div class="ps-row" style="flex-wrap:wrap; width:100%; align-items:flex-end;">
+            <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
+              <span class="ps-field-label">Printer</span>
+              <select class="ps-select" data-edit-field="printerId">${pOpts}</select>
+            </div>
+            <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
+              <span class="ps-field-label">Product</span>
+              <select class="ps-select" data-edit-field="productId">${dOpts}</select>
+            </div>
+            <div class="ps-field" style="flex:1;min-width:170px;margin-bottom:0;">
+              <span class="ps-field-label">Actual start</span>
+              <input class="ps-input" type="datetime-local" data-edit-field="actualStart" value="${toLocalInputValue(new Date(e.actualStart))}" />
+            </div>
+            <div class="ps-field" style="flex:1;min-width:170px;margin-bottom:0;">
+              <span class="ps-field-label">Actual finish</span>
+              <input class="ps-input" type="datetime-local" data-edit-field="actualEnd" value="${e.actualEnd ? toLocalInputValue(new Date(e.actualEnd)) : ''}" />
+            </div>
+            <div class="ps-row" style="gap:6px;">
+              <button class="ps-btn primary small" data-action="save">Save</button>
+              <button class="ps-btn ghost small" data-action="cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    const durationText = e.actualEnd
+      ? fmtDuration((new Date(e.actualEnd)-new Date(e.actualStart))/60000)
+      : null;
+    return `
+      <div class="ps-log-entry" data-id="${e.id}">
+        <div>
+          <b>${escapeHtml(product?product.name:'(deleted product)')}</b> on ${escapeHtml(printer?printer.name:'(deleted printer)')}
+          <div class="mono">${fmtLogTime(e.actualStart)}${e.actualEnd ? ' → '+fmtLogTime(e.actualEnd)+' ('+durationText+')' : ' — still printing'}</div>
+        </div>
+        <div class="ps-row" style="gap:6px;">
+          ${!e.actualEnd ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
+          <button class="ps-btn ghost small" data-action="edit">Edit</button>
+          <button class="ps-btn ghost small" data-action="delete">✕</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Log a Print</div>
+      <div class="ps-row" style="align-items:flex-end; flex-wrap:wrap;">
+        <div class="ps-field" style="flex:1;min-width:160px;margin-bottom:0;">
+          <span class="ps-field-label">Printer</span>
+          <select class="ps-select" id="ps-log-printer">${printerOptions}</select>
+        </div>
+        <div class="ps-field" style="flex:1;min-width:160px;margin-bottom:0;">
+          <span class="ps-field-label">Product</span>
+          <select class="ps-select" id="ps-log-product">${productOptions}</select>
+        </div>
+        <div class="ps-field" style="flex:1;min-width:180px;margin-bottom:0;">
+          <span class="ps-field-label">Actual start</span>
+          <input class="ps-input" type="datetime-local" id="ps-log-start" value="${toLocalInputValue(new Date())}" />
+        </div>
+        <div class="ps-field" style="flex:1;min-width:180px;margin-bottom:0;">
+          <span class="ps-field-label">Actual finish (optional)</span>
+          <input class="ps-input" type="datetime-local" id="ps-log-end" />
+        </div>
+      </div>
+      <div class="ps-row" style="margin-top:14px;">
+        <button class="ps-btn primary" id="ps-log-submit">Log print</button>
+      </div>
+      <div class="ps-hint" style="margin-top:12px;">Logging a start time ripples the Live Schedule forward from that printer's real progress. Adding a finish time (now or later, via "Mark finished now") also feeds the average print-time hints you'll see on the Catalog tab.</div>
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>History</div>
+      ${entries.length===0 ? '<div class="ps-empty">Nothing logged yet.</div>' : rows}
+    </div>
+  `;
+
+  document.getElementById('ps-log-submit').addEventListener('click', () => {
+    const printerId = document.getElementById('ps-log-printer').value;
+    const productId = document.getElementById('ps-log-product').value;
+    const startVal = document.getElementById('ps-log-start').value;
+    const endVal = document.getElementById('ps-log-end').value;
+    if(!printerId || !productId || !startVal) return;
+    const product = catalog.find(p=>p.id===productId);
+    const plannedMin = product ? (product.timeH*60+product.timeM) : 0;
+    productionLog.push({
+      id: uid('log'),
+      printerId, productId,
+      actualStart: new Date(startVal).toISOString(),
+      actualEnd: endVal ? new Date(endVal).toISOString() : null,
+      plannedMin
+    });
+    // Logging a print permanently claims one unit from the queue — it doesn't
+    // come back on its own the next day. Deleting or re-pointing this entry
+    // (see below) reverses it.
+    syncConsumption();
+    scheduleView = 'live';
+    renderLog(); regenerateIfActive();
+  });
+
+  root.querySelectorAll('.ps-log-entry').forEach(row => {
+    const id = row.getAttribute('data-id');
+
+    if(row.getAttribute('data-editing')){
+      row.querySelector('[data-action="save"]').addEventListener('click', () => {
+        const e = productionLog.find(x=>x.id===id);
+        const printerId = row.querySelector('[data-edit-field="printerId"]').value;
+        const productId = row.querySelector('[data-edit-field="productId"]').value;
+        const startVal = row.querySelector('[data-edit-field="actualStart"]').value;
+        const endVal = row.querySelector('[data-edit-field="actualEnd"]').value;
+        if(!printerId || !productId || !startVal) return;
+        e.printerId = printerId;
+        if(e.productId !== productId){
+          const product = catalog.find(p=>p.id===productId);
+          e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
+          // This entry no longer claims a unit of the old product — give it
+          // back if it had actually been claimed — then let syncConsumption
+          // claim one of the new product below.
+          if(e.consumed){ getOrderEntry(e.productId).qty += 1; }
+          e.consumed = false;
+        }
+        e.productId = productId;
+        e.actualStart = new Date(startVal).toISOString();
+        e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
+        editingLogId = null;
+        syncConsumption();
+        renderLog(); regenerateIfActive();
+      });
+      row.querySelector('[data-action="cancel"]').addEventListener('click', () => {
+        editingLogId = null;
+        renderLog();
+      });
+      return;
+    }
+
+    const finishBtn = row.querySelector('[data-action="finish"]');
+    if(finishBtn){
+      finishBtn.addEventListener('click', () => {
+        const e = productionLog.find(x=>x.id===id);
+        e.actualEnd = new Date().toISOString();
+        saveLog(); renderLog(); regenerateIfActive();
+      });
+    }
+    row.querySelector('[data-action="edit"]').addEventListener('click', () => {
+      editingLogId = id;
+      renderLog();
+    });
+    row.querySelector('[data-action="delete"]').addEventListener('click', () => {
+      const removed = productionLog.find(x=>x.id===id);
+      productionLog = productionLog.filter(x=>x.id!==id);
+      if(removed && removed.consumed){
+        const orderEntry = getOrderEntry(removed.productId);
+        orderEntry.qty += 1;
+        saveOrder();
+      }
+      saveLog(); renderLog(); regenerateIfActive();
+    });
+  });
+}
+
+
+function renderFilament(){
+  const root = document.getElementById('ps-tab-filament');
+  const cards = spools.map(s => {
+    const pct = s.totalG>0 ? Math.max(0,Math.min(100, (s.remainingG/s.totalG)*100)) : 0;
+    const low = s.remainingG <= LOW_STOCK_G;
+    return `
+      <div class="ps-spool-card" data-id="${s.id}">
+        <div class="ps-spool-top">
+          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
+          <input class="ps-input ps-name" data-field="label" value="${escapeHtml(s.label)}" placeholder="e.g. PCTG Pro — Natural" />
+          <input class="ps-input" style="max-width:110px" data-field="material" value="${escapeHtml(s.material)}" placeholder="Material" />
+          <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${s.colorHex||'#cccccc'}" />
+          ${low ? '<span class="ps-badge-low">Low</span>' : ''}
+          <button class="ps-btn ghost small" data-action="remove" title="Remove spool">✕</button>
+        </div>
+        <div class="ps-row">
+          <div class="ps-field" style="flex:1;margin-bottom:0;">
+            <span class="ps-field-label">Remaining (g)</span>
+            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${s.remainingG}" />
+          </div>
+          <div class="ps-field" style="flex:1;margin-bottom:0;">
+            <span class="ps-field-label">Full spool weight (g)</span>
+            <input class="ps-input" type="number" min="0" data-field="totalG" value="${s.totalG}" />
+          </div>
+        </div>
+        <div class="ps-spool-bar-track"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
+      </div>
+    `;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Filament Inventory</div>
+      ${spools.length===0 ? '<div class="ps-empty">No spools yet — add what you\'ve got on hand.</div>' : `<div id="ps-spools-list">${cards}</div>`}
+      <div style="margin-top:14px;">
+        <button class="ps-btn" id="ps-add-spool">+ Add spool</button>
+      </div>
+      <div class="ps-hint" style="margin-top:12px;">Assign a spool to a printer on the Printers tab so the schedule can flag when that machine will run out mid-queue. Update "Remaining" here whenever you weigh a spool or load a fresh one — spools flagged "Low" are under ${LOW_STOCK_G}g.</div>
+    </div>
+  `;
+
+  root.querySelectorAll('.ps-spool-card').forEach(card => {
+    const id = card.getAttribute('data-id');
+    card.querySelectorAll('[data-field]').forEach(input => {
+      input.addEventListener('change', () => {
+        const s = spools.find(x=>x.id===id);
+        const field = input.getAttribute('data-field');
+        if(field==='remainingG' || field==='totalG'){
+          s[field] = Math.max(0, parseFloat(input.value)||0);
+        } else {
+          s[field] = input.value;
+        }
+        saveSpools(); renderPrinters(); regenerateIfActive();
+        renderFilament();
+      });
+    });
+    card.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      spools = spools.filter(x=>x.id!==id);
+      printers.forEach(p => { if(p.spoolId===id) p.spoolId = null; });
+      saveSpools(); savePrinters();
+      renderFilament(); renderPrinters(); regenerateIfActive();
+    });
+  });
+
+  document.getElementById('ps-add-spool').addEventListener('click', () => {
+    spools.push({id: uid('spool'), label:'New spool', material:'PCTG', colorHex:'#cccccc', totalG:1000, remainingG:1000});
+    saveSpools(); renderFilament();
+  });
+}
+
+// ---------- rendering: Catalog tab ----------
+let typeErrorMsg = '';
+
+function renderCatalog(){
+  const root = document.getElementById('ps-tab-catalog');
+  let rows = catalog.map(p => {
+    const avg = productAvgActual(p.id);
+    return `
+    <tr data-id="${p.id}">
+      <td><input class="ps-input ps-name" data-field="name" value="${escapeHtml(p.name)}" /></td>
+      <td>
+        <select class="ps-select" data-field="type">
+          ${types.map(t => `<option value="${t.id}" ${p.type===t.id?'selected':''}>${escapeHtml(t.name)}</option>`).join('')}
+        </select>
+      </td>
+      <td>
+        <div class="ps-row" style="gap:4px;">
+          <input class="ps-input ps-narrow" type="number" min="0" data-field="timeH" value="${p.timeH}" /><span class="ps-hint">h</span>
+          <input class="ps-input ps-narrow" type="number" min="0" max="59" data-field="timeM" value="${p.timeM}" /><span class="ps-hint">m</span>
+        </div>
+        ${avg ? `<div class="ps-hint">Logged avg: ${fmtDuration(avg.avgMin)} over ${avg.count} print${avg.count!==1?'s':''}</div>` : ''}
+      </td>
+      <td><input class="ps-input ps-narrow" style="width:80px" type="number" min="0" data-field="weightG" value="${p.weightG}" /></td>
+      <td><button class="ps-btn ghost" data-action="remove" title="Remove product">✕</button></td>
+    </tr>
+  `;
+  }).join('');
+
+  const typeRows = types.map(t => `
+    <div class="ps-type-row" data-id="${t.id}">
+      <input class="ps-input ps-type-swatch-input" type="color" data-field="color" value="${t.color}" />
+      <input class="ps-input ps-name" data-field="name" value="${escapeHtml(t.name)}" />
+      <button class="ps-btn ghost small" data-action="remove" title="Remove type">✕</button>
+    </div>
+  `).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Product Types</div>
+      <div id="ps-types-list">${typeRows}</div>
+      <div style="margin-top:10px;">
+        <button class="ps-btn" id="ps-add-type">+ Add type</button>
+      </div>
+      ${typeErrorMsg ? `<div class="ps-type-error">${escapeHtml(typeErrorMsg)}</div>` : ''}
+      <div class="ps-hint" style="margin-top:12px;">Types drive the color coding on the schedule's timeline and tags. Add as many as your product line needs.</div>
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Product Catalog</div>
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th style="width:32%">Product</th><th style="width:16%">Type</th><th style="width:24%">Print time</th><th style="width:16%">Weight (g)</th><th style="width:8%"></th></tr></thead>
+        <tbody id="ps-catalog-body">${rows}</tbody>
+      </table>
+      </div>
+      <div style="margin-top:14px;">
+        <button class="ps-btn" id="ps-add-product">+ Add product</button>
+      </div>
+      <div class="ps-hint" style="margin-top:12px;">Print times and weights are blank until you fill them in — the scheduler needs a real print time for anything you want to queue. Times apply the same across all printers.</div>
+    </div>
+  `;
+
+  root.querySelectorAll('#ps-types-list .ps-type-row').forEach(row => {
+    const id = row.getAttribute('data-id');
+    row.querySelectorAll('[data-field]').forEach(input => {
+      input.addEventListener('change', () => {
+        const t = types.find(x=>x.id===id);
+        t[input.getAttribute('data-field')] = input.value;
+        saveTypes(); typeErrorMsg=''; renderCatalog(); renderSchedule(); regenerateIfActive();
+      });
+    });
+    row.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      if(catalog.some(p=>p.type===id)){
+        typeErrorMsg = `"${typeById(id).name}" is still used by one or more products — change their type first.`;
+        renderCatalog();
+        return;
+      }
+      if(types.length<=1){
+        typeErrorMsg = `You need at least one product type.`;
+        renderCatalog();
+        return;
+      }
+      types = types.filter(x=>x.id!==id);
+      typeErrorMsg='';
+      saveTypes(); renderCatalog();
+    });
+  });
+  document.getElementById('ps-add-type').addEventListener('click', () => {
+    types.push({id: uid('type'), name:'New type', color:'#9a9184'});
+    typeErrorMsg='';
+    saveTypes(); renderCatalog();
+  });
+
+  root.querySelectorAll('#ps-catalog-body tr').forEach(tr => {
+    const id = tr.getAttribute('data-id');
+    tr.querySelectorAll('[data-field]').forEach(input => {
+      input.addEventListener('change', () => {
+        const p = catalog.find(x=>x.id===id);
+        const field = input.getAttribute('data-field');
+        if(field==='timeH' || field==='timeM' || field==='weightG'){
+          p[field] = Math.max(0, parseInt(input.value)||0);
+        } else {
+          p[field] = input.value;
+        }
+        saveCatalog(); renderSchedule(); regenerateIfActive();
+      });
+    });
+    tr.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      catalog = catalog.filter(x=>x.id!==id);
+      priorityOrder = priorityOrder.filter(x=>x!==id);
+      delete orderQty[id];
+      saveCatalog(); saveOrder();
+      renderCatalog(); renderSchedule(); regenerateIfActive();
+    });
+  });
+
+  document.getElementById('ps-add-product').addEventListener('click', () => {
+    const id = uid('prod');
+    catalog.push({id, name:'New product', type: types[0].id, timeH:0, timeM:0, weightG:0});
+    priorityOrder.push(id);
+    saveCatalog(); saveOrder();
+    renderCatalog(); renderSchedule();
+  });
+}
+
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ---------- rendering: Settings tab ----------
+function exportAllData(){
+  const snapshot = {
+    exportedAt: new Date().toISOString(),
+    version: 1,
+    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog
+  };
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'print-scheduler-export-' + todayISO() + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function importAllData(jsonText){
+  const data = JSON.parse(jsonText);
+  if(!data || typeof data !== 'object') throw new Error('not a valid export file');
+
+  if(Array.isArray(data.catalog)) catalog = data.catalog;
+  if(Array.isArray(data.types) && data.types.length>0) types = data.types;
+  if(data.settings && typeof data.settings === 'object') settings = data.settings;
+  if(Array.isArray(data.printers)) printers = data.printers;
+  if(Array.isArray(data.spools)) spools = data.spools;
+  if(data.orderQty && typeof data.orderQty === 'object') orderQty = data.orderQty;
+  if(Array.isArray(data.priorityOrder)) priorityOrder = data.priorityOrder;
+  if(Array.isArray(data.productionLog)) productionLog = data.productionLog;
+
+  // Keep priorityOrder consistent with whatever catalog came in.
+  priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
+  catalog.forEach(p => { if(!priorityOrder.includes(p.id)) priorityOrder.push(p.id); });
+  printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
+  Object.keys(orderQty).forEach(id => {
+    if(typeof orderQty[id] === 'number'){ orderQty[id] = {qty: orderQty[id], pin: null}; }
+  });
+
+  await Promise.all([
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog()
+  ]);
+  syncConsumption();
+
+  theoreticalSchedule = null; liveSchedule = null;
+  renderSchedule(); renderLog(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
+}
+
+function renderSettings(){
+  const root = document.getElementById('ps-tab-settings');
+  const dayChecks = [1,2,3,4,5,6,0].map(d => `
+    <span class="ps-daycheck ${settings.workDays.includes(d)?'on':''}" data-day="${d}">${DAY_NAMES[d]}</span>
+  `).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Work Window</div>
+      <div class="ps-field">
+        <span class="ps-field-label">Work days</span>
+        <div class="ps-row" style="flex-wrap:wrap;gap:6px;">${dayChecks}</div>
+      </div>
+      <div class="ps-row" style="align-items:flex-end;">
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Window opens</span>
+          <input class="ps-input" type="time" id="ps-start-time" value="${settings.startTime}" />
+        </div>
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Window closes</span>
+          <input class="ps-input" type="time" id="ps-end-time" value="${settings.endTime}" />
+        </div>
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Downtime between prints (min)</span>
+          <input class="ps-input" type="number" min="0" id="ps-downtime" value="${settings.downtimeMin}" />
+        </div>
+      </div>
+      <div class="ps-hint">Applies to every active printer. A print must both start and finish inside the window unless it's longer than the whole window — those are allowed to start inside the window and run unattended past close. Downtime is only inserted between two prints on the same machine, same day; the last print of a day never needs a trailing gap.</div>
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Data</div>
+      <div class="ps-row" style="flex-wrap:wrap;">
+        <button class="ps-btn" id="ps-export-data">Export all data</button>
+        <button class="ps-btn" id="ps-import-trigger">Import data</button>
+        <input type="file" id="ps-import-file" accept="application/json" style="display:none;" />
+      </div>
+      <div class="ps-hint" style="margin-top:10px;">Export downloads everything — catalog, product types, printers, spools, work-window settings, the order queue, and the full production log — as one JSON file. Import overwrites everything currently in the app with what's in the file, so use it to move this data somewhere else (like a standalone deployment), not to merge two sets of data together.</div>
+      <div id="ps-data-msg" class="ps-hint" style="margin-top:8px;"></div>
+    </div>
+  `;
+
+  document.getElementById('ps-export-data').addEventListener('click', exportAllData);
+  document.getElementById('ps-import-trigger').addEventListener('click', () => {
+    document.getElementById('ps-import-file').click();
+  });
+  document.getElementById('ps-import-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    try {
+      const text = await file.text();
+      await importAllData(text);
+      document.getElementById('ps-data-msg').textContent = 'Imported successfully.';
+    } catch(err){
+      document.getElementById('ps-data-msg').textContent = 'Import failed: ' + err.message;
+    }
+    e.target.value = '';
+  });
+
+  root.querySelectorAll('.ps-daycheck').forEach(el => {
+    el.addEventListener('click', () => {
+      const d = parseInt(el.getAttribute('data-day'));
+      if(settings.workDays.includes(d)) settings.workDays = settings.workDays.filter(x=>x!==d);
+      else settings.workDays.push(d);
+      saveSettings(); renderSettings(); regenerateIfActive();
+    });
+  });
+  document.getElementById('ps-start-time').addEventListener('change', e => { settings.startTime = e.target.value; saveSettings(); regenerateIfActive(); });
+  document.getElementById('ps-end-time').addEventListener('change', e => { settings.endTime = e.target.value; saveSettings(); regenerateIfActive(); });
+  document.getElementById('ps-downtime').addEventListener('change', e => { settings.downtimeMin = Math.max(0, parseInt(e.target.value)||0); saveSettings(); regenerateIfActive(); });
+}
+
+// ---------- rendering: Schedule tab ----------
+function renderSchedule(){
+  const root = document.getElementById('ps-tab-schedule');
+
+  const rows = priorityOrder.map((id, idx) => {
+    const p = catalog.find(x=>x.id===id);
+    if(!p) return '';
+    const entry = getOrderEntry(id);
+    const printMin = p.timeH*60 + p.timeM;
+    const incomplete = printMin<=0;
+    const logged = loggedTodayCount(id);
+    const pinOptions = `<option value="">Any (auto)</option>` + printers.map(pr =>
+      `<option value="${pr.id}" ${entry.pin===pr.id?'selected':''}>${escapeHtml(pr.name)}${pr.status==='down'?' (down)':''}</option>`
+    ).join('');
+    return `
+      <tr data-id="${id}">
+        <td>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn ghost small" data-action="up" ${idx===0?'disabled':''}>↑</button>
+            <button class="ps-btn ghost small" data-action="down" ${idx===priorityOrder.length-1?'disabled':''}>↓</button>
+          </div>
+        </td>
+        <td>
+          ${renderTag(p.type)}
+          &nbsp;${escapeHtml(p.name)}
+          ${incomplete?'<span class="ps-hint" style="color:var(--danger)"> — no print time set</span>':''}
+        </td>
+        <td class="mono ps-hint">${incomplete? '—' : fmtDuration(printMin)}</td>
+        <td>
+          <input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${entry.qty}" />
+          ${logged>0 ? `<div class="ps-hint mono">${logged} logged today</div>` : ''}
+        </td>
+        <td><select class="ps-select" data-field="pin">${pinOptions}</select></td>
+      </tr>`;
+  }).join('');
+
+  const activeCount = printers.filter(p=>p.status==='active').length;
+  const downCount = printers.length - activeCount;
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Order to Fulfill</div>
+      <div class="ps-hint" style="margin-bottom:12px;">${activeCount} printer${activeCount!==1?'s':''} active${downCount>0? ', '+downCount+' down':''} — manage this on the Printers tab.</div>
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th style="width:60px">Priority</th><th>Product</th><th style="width:80px">Print time</th><th style="width:70px">Qty</th><th style="width:150px">Printer</th></tr></thead>
+        <tbody id="ps-order-body">${rows}</tbody>
+      </table>
+      </div>
+      <div class="ps-hint">List order is a tiebreaker, not a strict sequence — whichever printer frees up first grabs whatever fits its remaining time <b>best</b>. Pin a product to a specific printer and only that printer will ever run it; leave it "Any" and it pools across every active printer.</div>
+      <div class="ps-row" style="margin-top:16px;">
+        <button class="ps-btn primary" id="ps-generate">Generate schedule</button>
+        <button class="ps-btn" id="ps-clear-order">Clear order</button>
+      </div>
+    </div>
+    <div id="ps-schedule-output"></div>
+  `;
+
+  root.querySelectorAll('#ps-order-body tr').forEach(tr => {
+    const id = tr.getAttribute('data-id');
+    tr.querySelector('[data-field="qty"]').addEventListener('change', e => {
+      getOrderEntry(id).qty = Math.max(0, parseInt(e.target.value)||0);
+      saveOrder(); regenerateIfActive();
+    });
+    tr.querySelector('[data-field="pin"]').addEventListener('change', e => {
+      getOrderEntry(id).pin = e.target.value || null;
+      saveOrder(); regenerateIfActive();
+    });
+    const upBtn = tr.querySelector('[data-action="up"]');
+    const downBtn = tr.querySelector('[data-action="down"]');
+    if(upBtn) upBtn.addEventListener('click', () => { moveInPriority(id,-1); });
+    if(downBtn) downBtn.addEventListener('click', () => { moveInPriority(id,1); });
+  });
+
+  document.getElementById('ps-generate').addEventListener('click', onGenerate);
+  document.getElementById('ps-clear-order').addEventListener('click', () => {
+    orderQty = {};
+    saveOrder();
+    theoreticalSchedule = null; liveSchedule = null;
+    document.getElementById('ps-schedule-output').innerHTML = '';
+    renderSchedule();
+  });
+
+  if(theoreticalSchedule || liveSchedule) renderScheduleView();
+}
+
+function moveInPriority(id, dir){
+  const idx = priorityOrder.indexOf(id);
+  const newIdx = idx+dir;
+  if(newIdx<0 || newIdx>=priorityOrder.length) return;
+  [priorityOrder[idx], priorityOrder[newIdx]] = [priorityOrder[newIdx], priorityOrder[idx]];
+  saveOrder(); renderSchedule(); regenerateIfActive();
+}
+
+function regenerateIfActive(){
+  if(document.getElementById('ps-tab-schedule')) renderSchedule();
+  if(theoreticalSchedule || liveSchedule){
+    const out = document.getElementById('ps-schedule-output');
+    if(out) onGenerate();
+  }
+}
+
+function onGenerate(){
+  const outputEl = document.getElementById('ps-schedule-output');
+  if(!outputEl) return;
+
+  const missing = [];
+  const queue = [];
+  priorityOrder.forEach(id => {
+    const entry = getOrderEntry(id);
+    if(entry.qty<=0) return;
+    const p = catalog.find(x=>x.id===id);
+    if(!p) return;
+    const printTimeMin = p.timeH*60 + p.timeM;
+    if(printTimeMin<=0){ missing.push(p.name); return; }
+    for(let i=0;i<entry.qty;i++){
+      queue.push({productId:id, name:p.name, type:p.type, weightG:p.weightG, printTimeMin, pin: entry.pin || null});
+    }
+  });
+
+  if(missing.length>0){
+    outputEl.innerHTML = `<div class="ps-warnbox">Set a print time for: ${missing.map(escapeHtml).join(', ')} before generating a schedule.</div>`;
+    theoreticalSchedule = null; liveSchedule = null;
+    return;
+  }
+  if(queue.length===0){
+    outputEl.innerHTML = `<div class="ps-empty">Enter a quantity for at least one product to build a schedule.</div>`;
+    theoreticalSchedule = null; liveSchedule = null;
+    return;
+  }
+
+  if(settings.workDays.length===0){
+    outputEl.innerHTML = `<div class="ps-warnbox">No work days are checked on the Settings tab, so there's never a valid window to print in. Turn at least one day on.</div>`;
+    theoreticalSchedule = null; liveSchedule = null;
+    return;
+  }
+  const [wsH,wsM] = settings.startTime.split(':').map(Number);
+  const [weH,weM] = settings.endTime.split(':').map(Number);
+  if(wsH*60+wsM >= weH*60+weM){
+    outputEl.innerHTML = `<div class="ps-warnbox">On the Settings tab, the window closes (${settings.endTime}) at or before it opens (${settings.startTime}) — nothing can ever fit, so nothing gets scheduled. Fix the open/close times and generate again.</div>`;
+    theoreticalSchedule = null; liveSchedule = null;
+    return;
+  }
+
+  const activePrinters = printers.filter(p=>p.status==='active');
+  if(activePrinters.length===0){
+    outputEl.innerHTML = `<div class="ps-warnbox">No active printers. Mark at least one printer as Active on the Printers tab.</div>`;
+    theoreticalSchedule = null; liveSchedule = null;
+    return;
+  }
+
+  const makeSummary = (result) => ({
+    machines: result.machines,
+    unassigned: result.unassigned,
+    queueLen: queue.length,
+    totalMin: queue.reduce((s,j)=>s+j.printTimeMin,0),
+    totalWeight: queue.reduce((s,j)=>s+(j.weightG||0),0)
+  });
+  theoreticalSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'theoretical'));
+  theoreticalSchedule.mode = 'theoretical';
+  liveSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'live'));
+  liveSchedule.mode = 'live';
+
+  renderScheduleView();
+}
+
+function renderScheduleView(){
+  const outputEl = document.getElementById('ps-schedule-output');
+  if(!outputEl) return;
+  if(!theoreticalSchedule && !liveSchedule){ outputEl.innerHTML = ''; return; }
+
+  outputEl.innerHTML = `
+    <div class="ps-row ps-view-toggle" style="margin-bottom:14px;">
+      <button class="ps-btn ${scheduleView==='theoretical'?'primary':''}" data-view="theoretical">Theoretical Plan</button>
+      <button class="ps-btn ${scheduleView==='live'?'primary':''}" data-view="live">Live Schedule</button>
+    </div>
+    <div id="ps-schedule-body"></div>
+  `;
+  outputEl.querySelectorAll('[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => { scheduleView = btn.getAttribute('data-view'); renderScheduleView(); });
+  });
+  const sched = scheduleView === 'live' ? liveSchedule : theoreticalSchedule;
+  const body = document.getElementById('ps-schedule-body');
+  const note = scheduleView === 'live'
+    ? '<div class="ps-hint" style="margin-bottom:12px;">Anchored to what\'s actually logged on the Log tab — printers with no log entries yet start from the top of the work window, same as the theoretical plan.</div>'
+    : '<div class="ps-hint" style="margin-bottom:12px;">Ideal plan assuming every printer starts fresh at the top of the work window — ignores anything logged on the Log tab.</div>';
+  body.innerHTML = note;
+  renderScheduleOutput(sched, body);
+}
+
+function renderScheduleOutput(sched, container){
+  const outputEl = container;
+  if(!outputEl) return;
+  if(!sched || sched.machines.length===0){
+    outputEl.innerHTML += `<div class="ps-empty">No schedule yet.</div>`;
+    return;
+  }
+
+  let overallLastEnd = null;
+  sched.machines.forEach(m => {
+    m.days.forEach(d => {
+      const lastJob = d.jobs[d.jobs.length-1];
+      if(!overallLastEnd || lastJob.end > overallLastEnd) overallLastEnd = lastJob.end;
+    });
+  });
+
+  // Spool depletion: walk each machine's jobs in chronological order against its assigned spool.
+  sched.machines.forEach(m => {
+    const printer = printers.find(p => p.id === m.id);
+    const spool = printer && printer.spoolId ? spools.find(s => s.id === printer.spoolId) : null;
+    m.spoolInfo = spool ? {label: spool.label, remainingG: spool.remainingG} : null;
+    m.spoolShortAt = null;
+    let used = 0;
+    m.days.forEach(d => {
+      d.jobs.forEach(j => {
+        used += (j.weightG || 0);
+        j.cumWeight = used;
+        j.spoolShort = spool ? used > spool.remainingG : false;
+        if(j.spoolShort && m.spoolShortAt === null) m.spoolShortAt = j;
+      });
+    });
+    m.spoolTotalUsed = used;
+  });
+
+  const summary = `
+    ${sched.unassigned && sched.unassigned.length>0 ? `<div class="ps-warnbox">${sched.unassigned.length} of ${sched.queueLen} queued prints couldn't be placed — double-check your work window and downtime settings. Showing what did get scheduled below.</div>` : ''}
+    <div class="ps-summary-grid">
+      <div class="ps-summary-cell"><div class="ps-summary-num">${sched.queueLen}</div><div class="ps-summary-label">Prints queued</div></div>
+      <div class="ps-summary-cell"><div class="ps-summary-num">${fmtDuration(sched.totalMin)}</div><div class="ps-summary-label">Total print time</div></div>
+      <div class="ps-summary-cell"><div class="ps-summary-num">${sched.totalWeight>0 ? sched.totalWeight+'g' : '—'}</div><div class="ps-summary-label">Filament</div></div>
+      <div class="ps-summary-cell"><div class="ps-summary-num">${overallLastEnd? fmtDateHead(overallLastEnd) : '—'}</div><div class="ps-summary-label">${overallLastEnd? 'All done by '+fmtClock(overallLastEnd) : 'Completion'}</div></div>
+    </div>
+  `;
+
+  const machinesHtml = sched.machines.map(m => {
+    if(sched.mode === 'live'){
+      const loggedDateKeys = [...new Set(productionLog.filter(e => e.printerId === m.id).map(e => new Date(e.actualStart).toDateString()))];
+      loggedDateKeys.forEach(dateKey => {
+        if(!m.days.some(d => d.dateKey === dateKey)){
+          const sample = productionLog.find(e => e.printerId === m.id && new Date(e.actualStart).toDateString() === dateKey);
+          m.days.push({dateKey, date: new Date(sample.actualStart), jobs: []});
+        }
+      });
+      m.days.sort((a,b) => a.date - b.date);
+    }
+    if(m.days.length===0){
+      return `<div class="ps-printer-block"><div class="ps-printer-block-head"><span class="dot"></span>${escapeHtml(m.name)}</div><div class="ps-hint">Nothing assigned.</div></div>`;
+    }
+    let anyActualShown = false;
+    const todayKey = new Date().toDateString();
+    let prevProductId = null;
+    const daysHtml = m.days.map(day => {
+      const {start,end} = windowBounds(day.date, settings);
+      const winMs = end - start;
+
+      let jobs = day.jobs;
+      if(sched.mode === 'live'){
+        const actualJobs = getActualJobsForDay(m.id, day.dateKey);
+        if(actualJobs.length>0){ anyActualShown = true; }
+        jobs = actualJobs.concat(day.jobs).sort((a,b) => a.start - b.start);
+      }
+
+      const changeFlags = jobs.map((j,i) => {
+        const prev = i===0 ? prevProductId : jobs[i-1].productId;
+        return prev !== null && j.productId !== prev;
+      });
+      if(jobs.length>0) prevProductId = jobs[jobs.length-1].productId;
+
+      const blocks = jobs.map((j,i) => {
+        const clampedStart = j.start < start ? start : j.start;
+        const leftPct = Math.max(0,(clampedStart-start)/winMs*100);
+        const clampedEnd = j.overnight ? end : (j.end < end ? j.end : end);
+        const widthPct = Math.max(1.5, (clampedEnd-clampedStart)/winMs*100);
+        const shortTitle = j.spoolShort ? ' — spool will be out by this print' : '';
+
+        let color, statusLabel;
+        if(sched.mode === 'live'){
+          if(j.actual && !j.inProgress){ color = 'var(--ok)'; statusLabel = 'completed'; }
+          else if(j.actual && j.inProgress){ color = 'var(--heat)'; statusLabel = 'in progress'; }
+          else { color = 'var(--cool)'; statusLabel = 'upcoming'; }
+        } else {
+          color = j.type ? typeById(j.type).color : '#9a9184';
+          statusLabel = null;
+        }
+        const bg = j.overnight
+          ? `repeating-linear-gradient(45deg, ${color}, ${color} 6px, #1a1815 6px, #1a1815 10px)`
+          : color;
+        const pulseClass = (j.actual && j.inProgress) ? 'actual-progress' : '';
+        const changeClass = changeFlags[i] ? 'model-change' : '';
+        const stateTitle = statusLabel ? ` (${statusLabel})` : '';
+        const changeTitle = changeFlags[i] ? ' — model change' : '';
+        const label = widthPct > 6 ? (j.actual && !j.inProgress ? '✓ ' : '') + escapeHtml(j.name) : '';
+        return `<div class="ps-block ${j.spoolShort?'spool-short':''} ${pulseClass} ${changeClass}" style="left:${leftPct}%;width:${widthPct}%;background:${bg};${j.overnight?'opacity:0.9;':''}" title="${escapeHtml(j.name)}: ${fmtClock(j.start)} – ${fmtClock(j.end)}${j.overnight?' (runs past close)':''}${stateTitle}${changeTitle}${shortTitle}">${label}</div>`;
+      }).join('');
+
+      let nowMarker = '';
+      if(sched.mode === 'live' && day.dateKey === todayKey){
+        const now = new Date();
+        if(now >= start && now <= end){
+          const leftPct = (now-start)/winMs*100;
+          nowMarker = `<div class="ps-now-line" style="left:${leftPct}%;"></div><div class="ps-now-label" style="left:${leftPct}%;">now</div>`;
+        }
+      }
+
+      const jobLines = jobs.map((j,i) => {
+        const marker = j.actual ? (j.inProgress ? '<span style="color:var(--heat)">▶ printing now</span> — ' : '✓ ') : '';
+        const changeover = changeFlags[i] ? `<div class="ps-changeover">switch to ${escapeHtml(j.name)}</div>` : '';
+        return `
+        ${changeover}
+        <div>${marker}<b>${escapeHtml(j.name)}</b> — ${fmtClock(j.start)} → ${j.inProgress ? 'now' : fmtClock(j.end)}${j.overnight?' <span style="color:var(--heat)">(runs unattended past window close)</span>':''}${j.spoolShort?' <span class="ps-swap-tag">swap spool before this</span>':''}</div>
+      `;
+      }).join('');
+
+      return `
+        <div class="ps-day">
+          <div class="ps-day-head">
+            <div class="ps-day-date">${fmtDateHead(day.date)}</div>
+            <div class="ps-day-meta">${jobs.length} print${jobs.length!==1?'s':''}</div>
+          </div>
+          <div class="ps-gantt" style="overflow:visible;">${blocks}${nowMarker}</div>
+          <div class="ps-joblist">${jobLines}</div>
+        </div>
+      `;
+    }).join('');
+
+    const legend = (sched.mode === 'live' && anyActualShown) ? `
+      <div class="ps-legend">
+        <span><i class="ps-swatch sw-done">✓</i>Completed</span>
+        <span><i class="ps-swatch sw-progress"></i>In progress</span>
+        <span><i class="ps-swatch sw-planned"></i>Upcoming</span>
+      </div>
+    ` : '';
+
+    let spoolNote;
+    if(!m.spoolInfo){
+      spoolNote = `<div class="ps-hint">No spool assigned — filament isn't being tracked for this machine. Assign one on the Printers tab.</div>`;
+    } else if(m.spoolShortAt){
+      spoolNote = `<div class="ps-hint" style="color:var(--danger)">⚠ "${escapeHtml(m.spoolInfo.label)}" (${m.spoolInfo.remainingG}g on it) runs out during <b>${escapeHtml(m.spoolShortAt.name)}</b>, around ${fmtDateHead(m.spoolShortAt.start)} ${fmtClock(m.spoolShortAt.start)} — have a fresh spool ready.</div>`;
+    } else {
+      const leftover = m.spoolInfo.remainingG - m.spoolTotalUsed;
+      spoolNote = `<div class="ps-hint">"${escapeHtml(m.spoolInfo.label)}" covers this queue with ~${Math.round(leftover)}g to spare.</div>`;
+    }
+
+    return `
+      <div class="ps-printer-block">
+        <div class="ps-printer-block-head"><span class="dot"></span>${escapeHtml(m.name)}</div>
+        ${daysHtml}
+        ${legend}
+        ${spoolNote}
+      </div>
+    `;
+  }).join('');
+
+  outputEl.innerHTML += `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Timeline</div>
+      ${summary}
+      ${machinesHtml}
+    </div>
+  `;
+}
+
+// ---------- tabs ----------
+function setupTabs(){
+  document.querySelectorAll('.ps-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
+      tab.classList.add('active');
+      const target = tab.getAttribute('data-tab');
+      ['schedule','log','printers','filament','catalog','settings'].forEach(name => {
+        document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
+      });
+    });
+  });
+}
+
+// ---------- init ----------
+async function startApp(){
+  await loadState();
+  syncConsumption();
+  setupTabs();
+  renderSchedule();
+  renderLog();
+  renderPrinters();
+  renderFilament();
+  renderCatalog();
+  renderSettings();
+}
+// In the normal Claude-artifact context (and in a standalone build with no
+// auth configured), start immediately. A standalone build with auth enabled
+// sets window.__deferAppStart = true before this runs, and calls startApp()
+// itself once the person signs in.
+if(typeof window.__deferAppStart === 'undefined'){
+  startApp();
+}
+
+})();
+</script>
+
+</body></html>
