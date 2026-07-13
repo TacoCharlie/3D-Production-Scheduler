@@ -288,7 +288,12 @@ function showAuthScreen(){
   document.querySelector('.ps-shell').style.display = 'none';
 }
 function showApp(){
-  document.getElementById('ps-auth-screen').style.display = 'none';
+  // Remove (not just hide) the auth screen once signed in — a hidden-but-
+  // still-present password field keeps getting tracked by the browser's
+  // password manager, which is what was causing the repeated "Update
+  // password?" prompt on unrelated actions elsewhere in the app.
+  const authScreen = document.getElementById('ps-auth-screen');
+  if(authScreen) authScreen.remove();
   document.querySelector('.ps-shell').style.display = '';
   const signout = document.getElementById('ps-auth-signout');
   if(signout) signout.style.display = '';
@@ -1630,6 +1635,24 @@ function setupTabs(){
     });
   });
 }
+
+// Number inputs always render with a literal value (often 0) already in
+// them. Selection APIs (.select(), setSelectionRange) don't work on
+// type="number" inputs in real browsers — they're spec-restricted to text/
+// search/url/tel/password — so clicking in just places the cursor next to
+// that digit and typing appends instead of replacing it (e.g. "0" + "45" ->
+// "045"). Clearing a bare 0 on focus, and restoring it if left blank, avoids
+// needing selection support at all.
+document.getElementById('ps-root').addEventListener('focusin', (e) => {
+  if(e.target.matches('input[type="number"]') && e.target.value === '0'){
+    e.target.value = '';
+  }
+});
+document.getElementById('ps-root').addEventListener('focusout', (e) => {
+  if(e.target.matches('input[type="number"]') && e.target.value === ''){
+    e.target.value = '0';
+  }
+});
 
 // ---------- init ----------
 async function startApp(){
