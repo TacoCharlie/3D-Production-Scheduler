@@ -478,8 +478,16 @@ function syncConsumption(){
       e.consumed = true;
       changed = true;
     }
+    if(!e.spoolConsumed){
+      if(e.spoolIdAtLogTime){
+        const spool = spools.find(s=>s.id===e.spoolIdAtLogTime);
+        if(spool){ spool.remainingG = Math.max(0, spool.remainingG - (e.weightGAtLogTime||0)); }
+      }
+      e.spoolConsumed = true;
+      changed = true;
+    }
   });
-  if(changed){ saveOrder(); saveLog(); }
+  if(changed){ saveOrder(); saveLog(); saveSpools(); }
   return changed;
 }
 function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null}; return orderQty[id]; }
@@ -828,13 +836,16 @@ function renderLog(){
     const endVal = document.getElementById('ps-log-end').value;
     if(!printerId || !productId || !startVal) return;
     const product = catalog.find(p=>p.id===productId);
+    const printer = printers.find(p=>p.id===printerId);
     const plannedMin = product ? (product.timeH*60+product.timeM) : 0;
     productionLog.push({
       id: uid('log'),
       printerId, productId,
       actualStart: new Date(startVal).toISOString(),
       actualEnd: endVal ? new Date(endVal).toISOString() : null,
-      plannedMin
+      plannedMin,
+      weightGAtLogTime: product ? (product.weightG||0) : 0,
+      spoolIdAtLogTime: printer ? (printer.spoolId||null) : null
     });
     // Logging a print permanently claims one unit from the queue — it doesn't
     // come back on its own the next day. Deleting or re-pointing this entry
@@ -855,8 +866,11 @@ function renderLog(){
         const startVal = row.querySelector('[data-edit-field="actualStart"]').value;
         const endVal = row.querySelector('[data-edit-field="actualEnd"]').value;
         if(!printerId || !productId || !startVal) return;
-        e.printerId = printerId;
-        if(e.productId !== productId){
+
+        const productChanged = e.productId !== productId;
+        const printerChanged = e.printerId !== printerId;
+
+        if(productChanged){
           const product = catalog.find(p=>p.id===productId);
           e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
           // This entry no longer claims a unit of the old product — give it
@@ -865,6 +879,22 @@ function renderLog(){
           if(e.consumed){ getOrderEntry(e.productId).qty += 1; }
           e.consumed = false;
         }
+        if(printerChanged || productChanged){
+          // Weight and/or which spool it should draw from may have changed —
+          // give back whatever was claimed under the old printer/product,
+          // then let syncConsumption claim against the new one.
+          if(e.spoolConsumed && e.spoolIdAtLogTime){
+            const oldSpool = spools.find(s=>s.id===e.spoolIdAtLogTime);
+            if(oldSpool){ oldSpool.remainingG += (e.weightGAtLogTime||0); }
+          }
+          e.spoolConsumed = false;
+          const newProduct = catalog.find(p=>p.id===productId);
+          const newPrinter = printers.find(p=>p.id===printerId);
+          e.weightGAtLogTime = newProduct ? (newProduct.weightG||0) : 0;
+          e.spoolIdAtLogTime = newPrinter ? (newPrinter.spoolId||null) : null;
+        }
+
+        e.printerId = printerId;
         e.productId = productId;
         e.actualStart = new Date(startVal).toISOString();
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
@@ -898,6 +928,10 @@ function renderLog(){
         const orderEntry = getOrderEntry(removed.productId);
         orderEntry.qty += 1;
         saveOrder();
+      }
+      if(removed && removed.spoolConsumed && removed.spoolIdAtLogTime){
+        const spool = spools.find(s=>s.id===removed.spoolIdAtLogTime);
+        if(spool){ spool.remainingG += (removed.weightGAtLogTime||0); saveSpools(); }
       }
       saveLog(); renderLog(); regenerateIfActive();
     });
@@ -1316,6 +1350,7 @@ function moveInPriority(id, dir){
 
 function regenerateIfActive(){
   if(document.getElementById('ps-tab-schedule')) renderSchedule();
+  if(document.getElementById('ps-tab-filament')) renderFilament();
   if(theoreticalSchedule || liveSchedule){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
