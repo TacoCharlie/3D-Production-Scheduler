@@ -388,7 +388,7 @@ const DEFAULT_CATALOG = [
   {id:'cutter2', name:'Back Cutter 2', type:'cutter', timeH:0, timeM:0, weightG:0},
   {id:'cutter3', name:'Back Cutter 3', type:'cutter', timeH:0, timeM:0, weightG:0},
 ];
-const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15 };
+const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15, estimateSpoolG:1000 };
 const DEFAULT_PRINTERS = [
   {id:'printer1', name:'Centauri Carbon 1', status:'active', spoolId:null},
   {id:'printer2', name:'Centauri Carbon 2', status:'active', spoolId:null},
@@ -423,6 +423,7 @@ async function loadState(){
 
   try { const s = await window.storage.get('settings'); settings = s ? JSON.parse(s.value) : JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
   catch(e){ settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
+  if(typeof settings.estimateSpoolG !== 'number') settings.estimateSpoolG = 1000;
 
   try { const pr = await window.storage.get('printers'); printers = pr ? JSON.parse(pr.value) : JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
   catch(e){ printers = JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
@@ -976,6 +977,14 @@ function renderFilament(){
 
   root.innerHTML = `
     <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Job Estimate</div>
+      <div class="ps-field" style="max-width:220px;margin-bottom:0;">
+        <span class="ps-field-label">Typical spool weight (g)</span>
+        <input class="ps-input" type="number" min="1" id="ps-estimate-spool-g" value="${settings.estimateSpoolG}" />
+      </div>
+      <div class="ps-hint" style="margin-top:8px;">Used only to translate a queued order's total filament weight into a rough "how many spools do I need" figure on the schedule summary — independent of the actual spools tracked below.</div>
+    </div>
+    <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Filament Inventory</div>
       ${spools.length===0 ? '<div class="ps-empty">No spools yet — add what you\'ve got on hand.</div>' : `<div id="ps-spools-list">${cards}</div>`}
       <div style="margin-top:14px;">
@@ -984,6 +993,11 @@ function renderFilament(){
       <div class="ps-hint" style="margin-top:12px;">Assign a spool to a printer on the Printers tab so the schedule can flag when that machine will run out mid-queue. Update "Remaining" here whenever you weigh a spool or load a fresh one — spools flagged "Low" are under ${LOW_STOCK_G}g.</div>
     </div>
   `;
+
+  document.getElementById('ps-estimate-spool-g').addEventListener('change', (e) => {
+    settings.estimateSpoolG = Math.max(1, parseFloat(e.target.value)||1000);
+    saveSettings(); regenerateIfActive();
+  });
 
   root.querySelectorAll('.ps-spool-card').forEach(card => {
     const id = card.getAttribute('data-id');
@@ -1484,12 +1498,13 @@ function renderScheduleOutput(sched, container){
     m.spoolTotalUsed = used;
   });
 
+  const spoolsNeeded = sched.totalWeight>0 ? Math.ceil(sched.totalWeight / settings.estimateSpoolG) : 0;
   const summary = `
     ${sched.unassigned && sched.unassigned.length>0 ? `<div class="ps-warnbox">${sched.unassigned.length} of ${sched.queueLen} queued prints couldn't be placed — double-check your work window and downtime settings. Showing what did get scheduled below.</div>` : ''}
     <div class="ps-summary-grid">
       <div class="ps-summary-cell"><div class="ps-summary-num">${sched.queueLen}</div><div class="ps-summary-label">Prints queued</div></div>
       <div class="ps-summary-cell"><div class="ps-summary-num">${fmtDuration(sched.totalMin)}</div><div class="ps-summary-label">Total print time</div></div>
-      <div class="ps-summary-cell"><div class="ps-summary-num">${sched.totalWeight>0 ? sched.totalWeight+'g' : '—'}</div><div class="ps-summary-label">Filament</div></div>
+      <div class="ps-summary-cell"><div class="ps-summary-num">${sched.totalWeight>0 ? sched.totalWeight+'g' : '—'}</div><div class="ps-summary-label">Filament</div>${spoolsNeeded>0 ? `<div class="ps-hint mono" style="margin-top:4px;">≈${spoolsNeeded} spool${spoolsNeeded!==1?'s':''} at ${settings.estimateSpoolG}g</div>` : ''}</div>
       <div class="ps-summary-cell"><div class="ps-summary-num">${overallLastEnd? fmtDateHead(overallLastEnd) : '—'}</div><div class="ps-summary-label">${overallLastEnd? 'All done by '+fmtClock(overallLastEnd) : 'Completion'}</div></div>
     </div>
   `;
