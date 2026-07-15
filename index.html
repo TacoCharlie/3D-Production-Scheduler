@@ -411,7 +411,8 @@ let spools = null;
 let orderQty = {};
 let priorityOrder = [];
 let productionLog = [];
-let estimateQty = {};
+let estimateItems = []; // [{id: productId, qty}] in a custom, user-controlled order
+let estimateScenarios = [1,2,3]; // user-editable list of printer counts to compare
 let liveSchedule = null;
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
@@ -461,12 +462,24 @@ async function loadState(){
   try { const lg = await window.storage.get('productionLog'); productionLog = lg ? JSON.parse(lg.value) : []; }
   catch(e){ productionLog = []; }
 
-  try { const eq = await window.storage.get('estimateQty'); estimateQty = eq ? JSON.parse(eq.value) : {}; }
-  catch(e){ estimateQty = {}; }
+  try { const ei = await window.storage.get('estimateItems'); estimateItems = ei ? JSON.parse(ei.value) : []; }
+  catch(e){ estimateItems = []; }
+  // Migrate from the old qty-map format if that's all that exists.
+  if(estimateItems.length===0){
+    try {
+      const legacy = await window.storage.get('estimateQty');
+      if(legacy){
+        const map = JSON.parse(legacy.value);
+        estimateItems = Object.keys(map).filter(id=>map[id]>0).map(id=>({id, qty: map[id]}));
+      }
+    } catch(e){ /* nothing to migrate */ }
+  }
+  try { const es = await window.storage.get('estimateScenarios'); estimateScenarios = es ? JSON.parse(es.value) : [1,2,3]; }
+  catch(e){ estimateScenarios = [1,2,3]; }
 }
 
-async function saveEstimateQty(){ try { await window.storage.set('estimateQty', JSON.stringify(estimateQty)); flashSave(); } catch(e){ console.error(e); } }
-function getEstimateEntry(id){ if(typeof estimateQty[id] !== 'number') estimateQty[id] = 0; return estimateQty[id]; }
+async function saveEstimateItems(){ try { await window.storage.set('estimateItems', JSON.stringify(estimateItems)); flashSave(); } catch(e){ console.error(e); } }
+async function saveEstimateScenarios(){ try { await window.storage.set('estimateScenarios', JSON.stringify(estimateScenarios)); flashSave(); } catch(e){ console.error(e); } }
 
 async function saveCatalog(){ try { await window.storage.set('catalog', JSON.stringify(catalog)); flashSave(); } catch(e){ console.error(e); } }
 async function saveTypes(){ try { await window.storage.set('types', JSON.stringify(types)); flashSave(); } catch(e){ console.error(e); } }
@@ -969,14 +982,22 @@ function renderLog(){
 function renderEstimate(){
   const root = document.getElementById('ps-tab-estimate');
 
-  const rows = priorityOrder.map(id => {
-    const p = catalog.find(x=>x.id===id);
+  const availableProducts = catalog.filter(p => !estimateItems.some(it=>it.id===p.id));
+  const addOptions = availableProducts.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+  const rows = estimateItems.map((item, idx) => {
+    const p = catalog.find(x=>x.id===item.id);
     if(!p) return '';
-    const qty = getEstimateEntry(id);
     const printMin = p.timeH*60 + p.timeM;
     const incomplete = printMin<=0;
     return `
-      <tr data-id="${id}">
+      <tr data-id="${item.id}">
+        <td>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn ghost small" data-action="up" ${idx===0?'disabled':''}>↑</button>
+            <button class="ps-btn ghost small" data-action="down" ${idx===estimateItems.length-1?'disabled':''}>↓</button>
+          </div>
+        </td>
         <td>
           ${renderTag(p.type)}
           &nbsp;${escapeHtml(p.name)}
@@ -984,23 +1005,52 @@ function renderEstimate(){
         </td>
         <td class="mono ps-hint">${incomplete? '—' : fmtDuration(printMin)}</td>
         <td class="mono ps-hint">${p.weightG>0 ? p.weightG+'g' : '—'}</td>
-        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${qty}" /></td>
+        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${item.qty}" /></td>
+        <td><button class="ps-btn ghost small" data-action="remove">✕</button></td>
       </tr>`;
   }).join('');
+
+  const scenarioChips = estimateScenarios.map((n, idx) => `
+    <div class="ps-row" style="gap:4px;" data-idx="${idx}">
+      <input class="ps-input ps-narrow" type="number" min="1" max="50" data-field="scenario-n" value="${n}" style="width:56px;" />
+      <button class="ps-btn ghost small" data-action="remove-scenario" data-idx="${idx}">✕</button>
+    </div>
+  `).join('');
 
   root.innerHTML = `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Scenario</div>
       <div class="ps-hint" style="margin-bottom:12px;">A scratch what-if — completely separate from your real order on the Schedule tab. Nothing here touches your queue, your quantities, or your filament stock.</div>
+      ${estimateItems.length===0 ? '<div class="ps-empty">No products in this scenario yet — add some below.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th>Product</th><th style="width:80px">Print time</th><th style="width:70px">Weight</th><th style="width:70px">Qty</th></tr></thead>
+        <thead><tr><th style="width:60px">Order</th><th>Product</th><th style="width:80px">Print time</th><th style="width:70px">Weight</th><th style="width:70px">Qty</th><th style="width:36px"></th></tr></thead>
         <tbody id="ps-estimate-body">${rows}</tbody>
       </table>
       </div>
-      <div class="ps-row" style="margin-top:16px;">
+      `}
+      <div class="ps-row" style="margin-top:14px;flex-wrap:wrap;">
+        <select class="ps-select" id="ps-estimate-add-select" style="max-width:220px;">
+          <option value="">Choose a product…</option>
+          ${addOptions}
+        </select>
+        <button class="ps-btn" id="ps-estimate-add-btn" ${availableProducts.length===0?'disabled':''}>+ Add to scenario</button>
+      </div>
+    </div>
+
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Printer Counts to Compare</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Add, remove, or edit however many scenarios you want — not locked to any fixed set.</div>
+      <div class="ps-row" style="gap:14px;flex-wrap:wrap;" id="ps-scenario-chips">${scenarioChips}</div>
+      <div class="ps-row" style="margin-top:12px;">
+        <button class="ps-btn" id="ps-estimate-add-scenario">+ Add printer count</button>
+      </div>
+    </div>
+
+    <div class="ps-panel">
+      <div class="ps-row">
         <button class="ps-btn primary" id="ps-estimate-run">Calculate</button>
-        <button class="ps-btn" id="ps-estimate-clear">Clear</button>
+        <button class="ps-btn" id="ps-estimate-clear">Clear scenario</button>
       </div>
     </div>
     <div id="ps-estimate-output"></div>
@@ -1009,18 +1059,63 @@ function renderEstimate(){
   root.querySelectorAll('#ps-estimate-body tr').forEach(tr => {
     const id = tr.getAttribute('data-id');
     tr.querySelector('[data-field="qty"]').addEventListener('change', e => {
-      estimateQty[id] = Math.max(0, parseInt(e.target.value)||0);
-      saveEstimateQty();
+      const item = estimateItems.find(it=>it.id===id);
+      if(item) item.qty = Math.max(0, parseInt(e.target.value)||0);
+      saveEstimateItems();
     });
+    tr.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      estimateItems = estimateItems.filter(it=>it.id!==id);
+      saveEstimateItems(); renderEstimate();
+    });
+    const upBtn = tr.querySelector('[data-action="up"]');
+    const downBtn = tr.querySelector('[data-action="down"]');
+    if(upBtn) upBtn.addEventListener('click', () => moveEstimateItem(id, -1));
+    if(downBtn) downBtn.addEventListener('click', () => moveEstimateItem(id, 1));
+  });
+
+  document.getElementById('ps-estimate-add-btn').addEventListener('click', () => {
+    const sel = document.getElementById('ps-estimate-add-select');
+    const id = sel.value;
+    if(!id) return;
+    estimateItems.push({id, qty: 1});
+    saveEstimateItems(); renderEstimate();
+  });
+
+  root.querySelectorAll('[data-field="scenario-n"]').forEach(input => {
+    input.addEventListener('change', (e) => {
+      const idx = parseInt(e.target.closest('[data-idx]').getAttribute('data-idx'));
+      estimateScenarios[idx] = Math.max(1, parseInt(e.target.value)||1);
+      saveEstimateScenarios();
+    });
+  });
+  root.querySelectorAll('[data-action="remove-scenario"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.getAttribute('data-idx'));
+      estimateScenarios.splice(idx, 1);
+      saveEstimateScenarios(); renderEstimate();
+    });
+  });
+  document.getElementById('ps-estimate-add-scenario').addEventListener('click', () => {
+    const next = estimateScenarios.length>0 ? Math.max(...estimateScenarios)+1 : 1;
+    estimateScenarios.push(next);
+    saveEstimateScenarios(); renderEstimate();
   });
 
   document.getElementById('ps-estimate-run').addEventListener('click', runEstimate);
   document.getElementById('ps-estimate-clear').addEventListener('click', () => {
-    estimateQty = {};
-    saveEstimateQty();
+    estimateItems = [];
+    saveEstimateItems();
     document.getElementById('ps-estimate-output').innerHTML = '';
     renderEstimate();
   });
+}
+
+function moveEstimateItem(id, dir){
+  const idx = estimateItems.findIndex(it=>it.id===id);
+  const newIdx = idx+dir;
+  if(newIdx<0 || newIdx>=estimateItems.length) return;
+  [estimateItems[idx], estimateItems[newIdx]] = [estimateItems[newIdx], estimateItems[idx]];
+  saveEstimateItems(); renderEstimate();
 }
 
 function runEstimate(){
@@ -1029,15 +1124,14 @@ function runEstimate(){
 
   const missing = [];
   const queue = [];
-  priorityOrder.forEach(id => {
-    const qty = getEstimateEntry(id);
-    if(qty<=0) return;
-    const p = catalog.find(x=>x.id===id);
+  estimateItems.forEach(item => {
+    if(item.qty<=0) return;
+    const p = catalog.find(x=>x.id===item.id);
     if(!p) return;
     const printTimeMin = p.timeH*60 + p.timeM;
     if(printTimeMin<=0){ missing.push(p.name); return; }
-    for(let i=0;i<qty;i++){
-      queue.push({productId:id, name:p.name, type:p.type, weightG:p.weightG, printTimeMin, pin:null});
+    for(let i=0;i<item.qty;i++){
+      queue.push({productId:item.id, name:p.name, type:p.type, weightG:p.weightG, printTimeMin, pin:null});
     }
   });
 
@@ -1046,7 +1140,11 @@ function runEstimate(){
     return;
   }
   if(queue.length===0){
-    outEl.innerHTML = `<div class="ps-empty">Enter a quantity for at least one product to calculate.</div>`;
+    outEl.innerHTML = `<div class="ps-empty">Add at least one product with a quantity above 0 to calculate.</div>`;
+    return;
+  }
+  if(estimateScenarios.length===0){
+    outEl.innerHTML = `<div class="ps-warnbox">Add at least one printer count to compare.</div>`;
     return;
   }
   if(settings.workDays.length===0){
@@ -1061,12 +1159,11 @@ function runEstimate(){
   }
 
   const totalWeight = queue.reduce((s,j)=>s+(j.weightG||0), 0);
-  const totalMin = queue.reduce((s,j)=>s+j.printTimeMin, 0);
   const spoolsNeeded = totalWeight>0 ? Math.ceil(totalWeight / settings.estimateSpoolG) : 0;
   const stockOnHand = spools.reduce((s,sp)=>s+sp.remainingG, 0);
   const stockDelta = stockOnHand - totalWeight;
 
-  const scenarios = [1,2,3].map(n => {
+  const scenarios = estimateScenarios.map(n => {
     const simPrinters = Array.from({length:n}, (_,i) => ({id:'sim'+i, name:'Printer '+(i+1), status:'active'}));
     const result = buildMultiSchedule(queue, simPrinters, settings, 'theoretical');
     let lastEnd = null;
@@ -1079,7 +1176,7 @@ function runEstimate(){
   });
 
   const scenarioCells = scenarios.map(s => `
-    <div class="ps-summary-cell">
+    <div class="ps-summary-cell" style="flex:1;min-width:140px;">
       <div class="ps-summary-num">${s.lastEnd ? fmtDateHead(s.lastEnd) : '—'}</div>
       <div class="ps-summary-label">${s.n} printer${s.n!==1?'s':''}${s.lastEnd ? ' — done '+fmtClock(s.lastEnd) : ''}</div>
       ${s.unassigned>0 ? `<div class="ps-hint" style="color:var(--danger)">${s.unassigned} unplaced</div>` : ''}
@@ -1101,8 +1198,8 @@ function runEstimate(){
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Time by Printer Count</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Each column assumes that many generic printers, all starting fresh right now, using your current work-window and downtime settings from the Settings tab.</div>
-      <div class="ps-summary-grid" style="grid-template-columns:repeat(3,1fr);">
+      <div class="ps-hint" style="margin-bottom:12px;">Each scenario assumes that many generic printers, all starting fresh right now, using your current work-window and downtime settings from the Settings tab.</div>
+      <div class="ps-row" style="flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
         ${scenarioCells}
       </div>
     </div>
@@ -1323,7 +1420,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog, estimateQty
+    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -1348,7 +1445,8 @@ async function importAllData(jsonText){
   if(data.orderQty && typeof data.orderQty === 'object') orderQty = data.orderQty;
   if(Array.isArray(data.priorityOrder)) priorityOrder = data.priorityOrder;
   if(Array.isArray(data.productionLog)) productionLog = data.productionLog;
-  if(data.estimateQty && typeof data.estimateQty === 'object') estimateQty = data.estimateQty;
+  if(Array.isArray(data.estimateItems)) estimateItems = data.estimateItems;
+  if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
 
   // Keep priorityOrder consistent with whatever catalog came in.
   priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
@@ -1359,7 +1457,7 @@ async function importAllData(jsonText){
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog(), saveEstimateQty()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios()
   ]);
   syncConsumption();
 
