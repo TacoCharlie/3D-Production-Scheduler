@@ -1574,6 +1574,16 @@ function renderFilament(){
   const cards = spools.map(s => {
     const pct = s.totalG>0 ? Math.max(0,Math.min(100, (s.remainingG/s.totalG)*100)) : 0;
     const low = s.remainingG <= LOW_STOCK_G;
+    const assignedPrinters = printers.filter(p => p.spoolId === s.id);
+    const logEntries = productionLog.filter(e => e.spoolIdAtLogTime === s.id);
+    const loggedWeight = logEntries.reduce((sum,e) => sum + (e.weightGAtLogTime||0), 0);
+    const currentPrinterId = assignedPrinters[0] ? assignedPrinters[0].id : '';
+    const printerOptions = `<option value="">— none —</option>` + printers.map(p =>
+      `<option value="${p.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`
+    ).join('');
+    const usageLine = logEntries.length===0
+      ? 'No logged prints have drawn from this spool yet.'
+      : `Used in ${logEntries.length} logged print${logEntries.length!==1?'s':''} — ${loggedWeight}g accounted for so far.`;
     return `
       <div class="ps-spool-card" data-id="${s.id}">
         <div class="ps-spool-top">
@@ -1595,6 +1605,11 @@ function renderFilament(){
           </div>
         </div>
         <div class="ps-spool-bar-track"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
+        <div class="ps-field" style="margin-top:10px;margin-bottom:0;">
+          <span class="ps-field-label">Loaded on printer</span>
+          <select class="ps-select" data-field="assign-printer" style="max-width:240px;">${printerOptions}</select>
+        </div>
+        <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
       </div>
     `;
   }).join('');
@@ -1625,7 +1640,7 @@ function renderFilament(){
 
   root.querySelectorAll('.ps-spool-card').forEach(card => {
     const id = card.getAttribute('data-id');
-    card.querySelectorAll('[data-field]').forEach(input => {
+    card.querySelectorAll('[data-field]:not([data-field="assign-printer"])').forEach(input => {
       input.addEventListener('change', () => {
         const s = spools.find(x=>x.id===id);
         const field = input.getAttribute('data-field');
@@ -1638,6 +1653,21 @@ function renderFilament(){
         renderFilament();
       });
     });
+    const assignSelect = card.querySelector('[data-field="assign-printer"]');
+    if(assignSelect){
+      assignSelect.addEventListener('change', (e) => {
+        const printerId = e.target.value;
+        // A physical spool can only be loaded on one printer at a time —
+        // clear it from wherever it was before assigning it somewhere new.
+        printers.forEach(p => { if(p.spoolId === id) p.spoolId = null; });
+        if(printerId){
+          const p = printers.find(x=>x.id===printerId);
+          if(p) p.spoolId = id;
+        }
+        savePrinters();
+        renderFilament(); renderPrinters(); regenerateIfActive();
+      });
+    }
     card.querySelector('[data-action="remove"]').addEventListener('click', () => {
       spools = spools.filter(x=>x.id!==id);
       printers.forEach(p => { if(p.spoolId===id) p.spoolId = null; });
