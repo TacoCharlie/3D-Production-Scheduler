@@ -474,8 +474,11 @@ async function loadState(){
       }
     } catch(e){ /* nothing to migrate */ }
   }
-  try { const es = await window.storage.get('estimateScenarios'); estimateScenarios = es ? JSON.parse(es.value) : [1,2,3]; }
-  catch(e){ estimateScenarios = [1,2,3]; }
+  try { const es = await window.storage.get('estimateScenarios'); estimateScenarios = es ? JSON.parse(es.value) : []; }
+  catch(e){ estimateScenarios = []; }
+  if(!Array.isArray(estimateScenarios) || estimateScenarios.length===0){
+    estimateScenarios = Array.from({length: printers.length||1}, (_,i)=>i+1);
+  }
 }
 
 async function saveEstimateItems(){ try { await window.storage.set('estimateItems', JSON.stringify(estimateItems)); flashSave(); } catch(e){ console.error(e); } }
@@ -1010,11 +1013,8 @@ function renderEstimate(){
       </tr>`;
   }).join('');
 
-  const scenarioChips = estimateScenarios.map((n, idx) => `
-    <div class="ps-row" style="gap:4px;" data-idx="${idx}">
-      <input class="ps-input ps-narrow" type="number" min="1" max="50" data-field="scenario-n" value="${n}" style="width:56px;" />
-      <button class="ps-btn ghost small" data-action="remove-scenario" data-idx="${idx}">✕</button>
-    </div>
+  const scenarioChips = Array.from({length: Math.max(printers.length,1)}, (_,i) => i+1).map(n => `
+    <span class="ps-daycheck ${estimateScenarios.includes(n)?'on':''}" data-n="${n}">${n} printer${n!==1?'s':''}</span>
   `).join('');
 
   root.innerHTML = `
@@ -1040,11 +1040,8 @@ function renderEstimate(){
 
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Printer Counts to Compare</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Add, remove, or edit however many scenarios you want — not locked to any fixed set.</div>
-      <div class="ps-row" style="gap:14px;flex-wrap:wrap;" id="ps-scenario-chips">${scenarioChips}</div>
-      <div class="ps-row" style="margin-top:12px;">
-        <button class="ps-btn" id="ps-estimate-add-scenario">+ Add printer count</button>
-      </div>
+      <div class="ps-hint" style="margin-bottom:12px;">Based on your ${printers.length} configured printer${printers.length!==1?'s':''} — check which counts you want compared.</div>
+      <div class="ps-row" style="gap:8px;flex-wrap:wrap;" id="ps-scenario-chips">${scenarioChips}</div>
     </div>
 
     <div class="ps-panel">
@@ -1081,24 +1078,14 @@ function renderEstimate(){
     saveEstimateItems(); renderEstimate();
   });
 
-  root.querySelectorAll('[data-field="scenario-n"]').forEach(input => {
-    input.addEventListener('change', (e) => {
-      const idx = parseInt(e.target.closest('[data-idx]').getAttribute('data-idx'));
-      estimateScenarios[idx] = Math.max(1, parseInt(e.target.value)||1);
-      saveEstimateScenarios();
-    });
-  });
-  root.querySelectorAll('[data-action="remove-scenario"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const idx = parseInt(btn.getAttribute('data-idx'));
-      estimateScenarios.splice(idx, 1);
+  root.querySelectorAll('#ps-scenario-chips .ps-daycheck').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const n = parseInt(chip.getAttribute('data-n'));
+      if(estimateScenarios.includes(n)) estimateScenarios = estimateScenarios.filter(x=>x!==n);
+      else estimateScenarios.push(n);
+      estimateScenarios.sort((a,b)=>a-b);
       saveEstimateScenarios(); renderEstimate();
     });
-  });
-  document.getElementById('ps-estimate-add-scenario').addEventListener('click', () => {
-    const next = estimateScenarios.length>0 ? Math.max(...estimateScenarios)+1 : 1;
-    estimateScenarios.push(next);
-    saveEstimateScenarios(); renderEstimate();
   });
 
   document.getElementById('ps-estimate-run').addEventListener('click', runEstimate);
@@ -1143,8 +1130,8 @@ function runEstimate(){
     outEl.innerHTML = `<div class="ps-empty">Add at least one product with a quantity above 0 to calculate.</div>`;
     return;
   }
-  if(estimateScenarios.length===0){
-    outEl.innerHTML = `<div class="ps-warnbox">Add at least one printer count to compare.</div>`;
+  if(estimateScenarios.filter(n => n <= Math.max(printers.length,1)).length===0){
+    outEl.innerHTML = `<div class="ps-warnbox">Check at least one printer count to compare.</div>`;
     return;
   }
   if(settings.workDays.length===0){
@@ -1163,7 +1150,7 @@ function runEstimate(){
   const stockOnHand = spools.reduce((s,sp)=>s+sp.remainingG, 0);
   const stockDelta = stockOnHand - totalWeight;
 
-  const scenarios = estimateScenarios.map(n => {
+  const scenarios = estimateScenarios.filter(n => n <= Math.max(printers.length,1)).map(n => {
     const simPrinters = Array.from({length:n}, (_,i) => ({id:'sim'+i, name:'Printer '+(i+1), status:'active'}));
     const result = buildMultiSchedule(queue, simPrinters, settings, 'theoretical');
     let lastEnd = null;
