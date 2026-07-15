@@ -193,6 +193,7 @@
     <div class="ps-tabs">
       <button class="ps-tab active" data-tab="schedule">Build Schedule</button>
       <button class="ps-tab" data-tab="log">Log</button>
+      <button class="ps-tab" data-tab="estimate">Estimate</button>
       <button class="ps-tab" data-tab="printers">Printers</button>
       <button class="ps-tab" data-tab="filament">Filament</button>
       <button class="ps-tab" data-tab="catalog">Catalog</button>
@@ -201,6 +202,7 @@
 
     <div id="ps-tab-schedule"></div>
     <div id="ps-tab-log" style="display:none;"></div>
+    <div id="ps-tab-estimate" style="display:none;"></div>
     <div id="ps-tab-printers" style="display:none;"></div>
     <div id="ps-tab-filament" style="display:none;"></div>
     <div id="ps-tab-catalog" style="display:none;"></div>
@@ -409,8 +411,7 @@ let spools = null;
 let orderQty = {};
 let priorityOrder = [];
 let productionLog = [];
-let scheduleView = 'theoretical';
-let theoreticalSchedule = null;
+let estimateQty = {};
 let liveSchedule = null;
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
@@ -459,8 +460,13 @@ async function loadState(){
 
   try { const lg = await window.storage.get('productionLog'); productionLog = lg ? JSON.parse(lg.value) : []; }
   catch(e){ productionLog = []; }
-  scheduleView = productionLog.length > 0 ? 'live' : 'theoretical';
+
+  try { const eq = await window.storage.get('estimateQty'); estimateQty = eq ? JSON.parse(eq.value) : {}; }
+  catch(e){ estimateQty = {}; }
 }
+
+async function saveEstimateQty(){ try { await window.storage.set('estimateQty', JSON.stringify(estimateQty)); flashSave(); } catch(e){ console.error(e); } }
+function getEstimateEntry(id){ if(typeof estimateQty[id] !== 'number') estimateQty[id] = 0; return estimateQty[id]; }
 
 async function saveCatalog(){ try { await window.storage.set('catalog', JSON.stringify(catalog)); flashSave(); } catch(e){ console.error(e); } }
 async function saveTypes(){ try { await window.storage.set('types', JSON.stringify(types)); flashSave(); } catch(e){ console.error(e); } }
@@ -872,7 +878,6 @@ function renderLog(){
     // come back on its own the next day. Deleting or re-pointing this entry
     // (see below) reverses it.
     syncConsumption();
-    scheduleView = 'live';
     renderLog(); regenerateIfActive();
   });
 
@@ -959,6 +964,150 @@ function renderLog(){
   });
 }
 
+
+// ---------- rendering: Estimate tab ----------
+function renderEstimate(){
+  const root = document.getElementById('ps-tab-estimate');
+
+  const rows = priorityOrder.map(id => {
+    const p = catalog.find(x=>x.id===id);
+    if(!p) return '';
+    const qty = getEstimateEntry(id);
+    const printMin = p.timeH*60 + p.timeM;
+    const incomplete = printMin<=0;
+    return `
+      <tr data-id="${id}">
+        <td>
+          ${renderTag(p.type)}
+          &nbsp;${escapeHtml(p.name)}
+          ${incomplete?'<span class="ps-hint" style="color:var(--danger)"> — no print time set</span>':''}
+        </td>
+        <td class="mono ps-hint">${incomplete? '—' : fmtDuration(printMin)}</td>
+        <td class="mono ps-hint">${p.weightG>0 ? p.weightG+'g' : '—'}</td>
+        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${qty}" /></td>
+      </tr>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Scenario</div>
+      <div class="ps-hint" style="margin-bottom:12px;">A scratch what-if — completely separate from your real order on the Schedule tab. Nothing here touches your queue, your quantities, or your filament stock.</div>
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th>Product</th><th style="width:80px">Print time</th><th style="width:70px">Weight</th><th style="width:70px">Qty</th></tr></thead>
+        <tbody id="ps-estimate-body">${rows}</tbody>
+      </table>
+      </div>
+      <div class="ps-row" style="margin-top:16px;">
+        <button class="ps-btn primary" id="ps-estimate-run">Calculate</button>
+        <button class="ps-btn" id="ps-estimate-clear">Clear</button>
+      </div>
+    </div>
+    <div id="ps-estimate-output"></div>
+  `;
+
+  root.querySelectorAll('#ps-estimate-body tr').forEach(tr => {
+    const id = tr.getAttribute('data-id');
+    tr.querySelector('[data-field="qty"]').addEventListener('change', e => {
+      estimateQty[id] = Math.max(0, parseInt(e.target.value)||0);
+      saveEstimateQty();
+    });
+  });
+
+  document.getElementById('ps-estimate-run').addEventListener('click', runEstimate);
+  document.getElementById('ps-estimate-clear').addEventListener('click', () => {
+    estimateQty = {};
+    saveEstimateQty();
+    document.getElementById('ps-estimate-output').innerHTML = '';
+    renderEstimate();
+  });
+}
+
+function runEstimate(){
+  const outEl = document.getElementById('ps-estimate-output');
+  if(!outEl) return;
+
+  const missing = [];
+  const queue = [];
+  priorityOrder.forEach(id => {
+    const qty = getEstimateEntry(id);
+    if(qty<=0) return;
+    const p = catalog.find(x=>x.id===id);
+    if(!p) return;
+    const printTimeMin = p.timeH*60 + p.timeM;
+    if(printTimeMin<=0){ missing.push(p.name); return; }
+    for(let i=0;i<qty;i++){
+      queue.push({productId:id, name:p.name, type:p.type, weightG:p.weightG, printTimeMin, pin:null});
+    }
+  });
+
+  if(missing.length>0){
+    outEl.innerHTML = `<div class="ps-warnbox">Set a print time for: ${missing.map(escapeHtml).join(', ')} before calculating.</div>`;
+    return;
+  }
+  if(queue.length===0){
+    outEl.innerHTML = `<div class="ps-empty">Enter a quantity for at least one product to calculate.</div>`;
+    return;
+  }
+  if(settings.workDays.length===0){
+    outEl.innerHTML = `<div class="ps-warnbox">No work days are checked on the Settings tab, so there's never a valid window to print in.</div>`;
+    return;
+  }
+  const [wsH,wsM] = settings.startTime.split(':').map(Number);
+  const [weH,weM] = settings.endTime.split(':').map(Number);
+  if(wsH*60+wsM >= weH*60+weM){
+    outEl.innerHTML = `<div class="ps-warnbox">On the Settings tab, the window closes at or before it opens — nothing can be scheduled.</div>`;
+    return;
+  }
+
+  const totalWeight = queue.reduce((s,j)=>s+(j.weightG||0), 0);
+  const totalMin = queue.reduce((s,j)=>s+j.printTimeMin, 0);
+  const spoolsNeeded = totalWeight>0 ? Math.ceil(totalWeight / settings.estimateSpoolG) : 0;
+  const stockOnHand = spools.reduce((s,sp)=>s+sp.remainingG, 0);
+  const stockDelta = stockOnHand - totalWeight;
+
+  const scenarios = [1,2,3].map(n => {
+    const simPrinters = Array.from({length:n}, (_,i) => ({id:'sim'+i, name:'Printer '+(i+1), status:'active'}));
+    const result = buildMultiSchedule(queue, simPrinters, settings, 'theoretical');
+    let lastEnd = null;
+    result.machines.forEach(m => m.days.forEach(d => {
+      if(d.jobs.length===0) return;
+      const lastJob = d.jobs[d.jobs.length-1];
+      if(!lastEnd || lastJob.end > lastEnd) lastEnd = lastJob.end;
+    }));
+    return {n, lastEnd, unassigned: result.unassigned.length};
+  });
+
+  const scenarioCells = scenarios.map(s => `
+    <div class="ps-summary-cell">
+      <div class="ps-summary-num">${s.lastEnd ? fmtDateHead(s.lastEnd) : '—'}</div>
+      <div class="ps-summary-label">${s.n} printer${s.n!==1?'s':''}${s.lastEnd ? ' — done '+fmtClock(s.lastEnd) : ''}</div>
+      ${s.unassigned>0 ? `<div class="ps-hint" style="color:var(--danger)">${s.unassigned} unplaced</div>` : ''}
+    </div>
+  `).join('');
+
+  const stockNote = totalWeight<=0 ? '' : (stockDelta>=0
+    ? `<div class="ps-hint" style="margin-top:8px;">You have ${stockOnHand}g on hand across your tracked spools — enough, with ${stockDelta}g to spare.</div>`
+    : `<div class="ps-hint" style="margin-top:8px;color:var(--danger)">You have ${stockOnHand}g on hand — short by ${Math.abs(stockDelta)}g (about ${Math.ceil(Math.abs(stockDelta)/settings.estimateSpoolG)} more spool${Math.ceil(Math.abs(stockDelta)/settings.estimateSpoolG)!==1?'s':''} at ${settings.estimateSpoolG}g each).</div>`);
+
+  outEl.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Filament Needed</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="ps-summary-cell"><div class="ps-summary-num">${totalWeight>0?totalWeight+'g':'—'}</div><div class="ps-summary-label">Total filament</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${spoolsNeeded>0?'≈'+spoolsNeeded:'—'}</div><div class="ps-summary-label">Spools at ${settings.estimateSpoolG}g each</div></div>
+      </div>
+      ${stockNote}
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Time by Printer Count</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Each column assumes that many generic printers, all starting fresh right now, using your current work-window and downtime settings from the Settings tab.</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(3,1fr);">
+        ${scenarioCells}
+      </div>
+    </div>
+  `;
+}
 
 function renderFilament(){
   const root = document.getElementById('ps-tab-filament');
@@ -1174,7 +1323,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog
+    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog, estimateQty
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -1199,6 +1348,7 @@ async function importAllData(jsonText){
   if(data.orderQty && typeof data.orderQty === 'object') orderQty = data.orderQty;
   if(Array.isArray(data.priorityOrder)) priorityOrder = data.priorityOrder;
   if(Array.isArray(data.productionLog)) productionLog = data.productionLog;
+  if(data.estimateQty && typeof data.estimateQty === 'object') estimateQty = data.estimateQty;
 
   // Keep priorityOrder consistent with whatever catalog came in.
   priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
@@ -1209,12 +1359,12 @@ async function importAllData(jsonText){
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog(), saveEstimateQty()
   ]);
   syncConsumption();
 
-  theoreticalSchedule = null; liveSchedule = null;
-  renderSchedule(); renderLog(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
+  liveSchedule = null;
+  renderSchedule(); renderLog(); renderEstimate(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
 }
 
 function renderSettings(){
@@ -1366,12 +1516,12 @@ function renderSchedule(){
   document.getElementById('ps-clear-order').addEventListener('click', () => {
     orderQty = {};
     saveOrder();
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     document.getElementById('ps-schedule-output').innerHTML = '';
     renderSchedule();
   });
 
-  if(theoreticalSchedule || liveSchedule) renderScheduleView();
+  if(liveSchedule) renderScheduleView();
 }
 
 function moveInPriority(id, dir){
@@ -1385,7 +1535,8 @@ function moveInPriority(id, dir){
 function regenerateIfActive(){
   if(document.getElementById('ps-tab-schedule')) renderSchedule();
   if(document.getElementById('ps-tab-filament')) renderFilament();
-  if(theoreticalSchedule || liveSchedule){
+  if(document.getElementById('ps-tab-estimate')) renderEstimate();
+  if(liveSchedule){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
   }
@@ -1411,32 +1562,32 @@ function onGenerate(){
 
   if(missing.length>0){
     outputEl.innerHTML = `<div class="ps-warnbox">Set a print time for: ${missing.map(escapeHtml).join(', ')} before generating a schedule.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
   if(queue.length===0){
     outputEl.innerHTML = `<div class="ps-empty">Enter a quantity for at least one product to build a schedule.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
 
   if(settings.workDays.length===0){
     outputEl.innerHTML = `<div class="ps-warnbox">No work days are checked on the Settings tab, so there's never a valid window to print in. Turn at least one day on.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
   const [wsH,wsM] = settings.startTime.split(':').map(Number);
   const [weH,weM] = settings.endTime.split(':').map(Number);
   if(wsH*60+wsM >= weH*60+weM){
     outputEl.innerHTML = `<div class="ps-warnbox">On the Settings tab, the window closes (${settings.endTime}) at or before it opens (${settings.startTime}) — nothing can ever fit, so nothing gets scheduled. Fix the open/close times and generate again.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
 
   const activePrinters = printers.filter(p=>p.status==='active');
   if(activePrinters.length===0){
     outputEl.innerHTML = `<div class="ps-warnbox">No active printers. Mark at least one printer as Active on the Printers tab.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
 
@@ -1447,9 +1598,7 @@ function onGenerate(){
     totalMin: queue.reduce((s,j)=>s+j.printTimeMin,0),
     totalWeight: queue.reduce((s,j)=>s+(j.weightG||0),0)
   });
-  theoreticalSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'theoretical'));
-  theoreticalSchedule.mode = 'theoretical';
-  liveSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'live'));
+liveSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'live'));
   liveSchedule.mode = 'live';
 
   renderScheduleView();
@@ -1458,25 +1607,12 @@ function onGenerate(){
 function renderScheduleView(){
   const outputEl = document.getElementById('ps-schedule-output');
   if(!outputEl) return;
-  if(!theoreticalSchedule && !liveSchedule){ outputEl.innerHTML = ''; return; }
+  if(!liveSchedule){ outputEl.innerHTML = ''; return; }
 
-  outputEl.innerHTML = `
-    <div class="ps-row ps-view-toggle" style="margin-bottom:14px;">
-      <button class="ps-btn ${scheduleView==='theoretical'?'primary':''}" data-view="theoretical">Theoretical Plan</button>
-      <button class="ps-btn ${scheduleView==='live'?'primary':''}" data-view="live">Live Schedule</button>
-    </div>
-    <div id="ps-schedule-body"></div>
-  `;
-  outputEl.querySelectorAll('[data-view]').forEach(btn => {
-    btn.addEventListener('click', () => { scheduleView = btn.getAttribute('data-view'); renderScheduleView(); });
-  });
-  const sched = scheduleView === 'live' ? liveSchedule : theoreticalSchedule;
+  outputEl.innerHTML = `<div id="ps-schedule-body"></div>`;
   const body = document.getElementById('ps-schedule-body');
-  const note = scheduleView === 'live'
-    ? '<div class="ps-hint" style="margin-bottom:12px;">Anchored to what\'s actually logged on the Log tab — printers with no log entries yet start from the top of the work window, same as the theoretical plan.</div>'
-    : '<div class="ps-hint" style="margin-bottom:12px;">Ideal plan assuming every printer starts fresh at the top of the work window — ignores anything logged on the Log tab.</div>';
-  body.innerHTML = note;
-  renderScheduleOutput(sched, body);
+  body.innerHTML = '<div class="ps-hint" style="margin-bottom:12px;">Anchored to what\'s actually logged on the Log tab — printers with no log entries yet start from the top of the work window.</div>';
+  renderScheduleOutput(liveSchedule, body);
 }
 
 function renderScheduleOutput(sched, container){
@@ -1794,7 +1930,7 @@ function setupTabs(){
       document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
       tab.classList.add('active');
       const target = tab.getAttribute('data-tab');
-      ['schedule','log','printers','filament','catalog','settings'].forEach(name => {
+      ['schedule','log','estimate','printers','filament','catalog','settings'].forEach(name => {
         document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
       });
     });
@@ -1826,6 +1962,7 @@ async function startApp(){
   setupTabs();
   renderSchedule();
   renderLog();
+  renderEstimate();
   renderPrinters();
   renderFilament();
   renderCatalog();
