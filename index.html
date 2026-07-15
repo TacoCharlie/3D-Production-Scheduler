@@ -143,6 +143,7 @@
   .ps-type-swatch-input { width:36px; height:32px; padding:2px; flex-shrink:0; }
   .ps-type-error { color: var(--danger); font-size:11.5px; margin-top:8px; }
   .ps-log-entry { display:flex; align-items:baseline; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); font-size:12.5px; flex-wrap:wrap; }
+  .ps-log-failed { background: color-mix(in srgb, var(--danger) 8%, transparent); border-radius:4px; padding-left:8px; padding-right:8px; }
   .ps-log-entry:last-child { border-bottom:none; }
   .ps-log-entry .mono { color: var(--muted); }
   .ps-view-toggle .ps-btn { border-radius:20px; }
@@ -156,6 +157,7 @@
   .ps-swatch.sw-done { background: var(--ok); }
   .ps-swatch.sw-progress { background: var(--heat); animation: ps-pulse 1.4s ease-in-out infinite; }
   .ps-swatch.sw-planned { background: var(--cool); }
+  .ps-swatch.sw-failed { background: var(--danger); }
   .ps-block.model-change { border-left: 3px solid var(--text); }
   .ps-changeover { display:flex; align-items:center; gap:8px; margin:4px 0; color: var(--muted); font-size:10.5px; }
   .ps-changeover::before, .ps-changeover::after { content:''; flex:1; height:1px; background: var(--line); }
@@ -530,7 +532,71 @@ function syncConsumption(){
   if(changed){ saveOrder(); saveLog(); saveSpools(); }
   return changed;
 }
+
+// A failed print never produced a usable unit, so it shouldn't count toward
+// the queue the way a real completion does — but the filament it used is
+// genuinely gone, so that stays consumed. Locks the entry (consumed=true)
+// so syncConsumption never tries to touch it again.
+function markFailed(entryId){
+  const e = productionLog.find(x=>x.id===entryId);
+  if(!e || e.failed) return;
+  if(e.consumed){
+    getOrderEntry(e.productId).qty += 1;
+  }
+  e.failed = true;
+  if(!e.actualEnd) e.actualEnd = new Date().toISOString();
+  e.consumed = true; // locked — this was never a real unit, don't let it get re-claimed
+  saveLog(); saveOrder();
+}
+
+// Reverses markFailed — lets syncConsumption treat it as a normal completed
+// print again (claims a unit toward the queue, as it should have all along).
+function unmarkFailed(entryId){
+  const e = productionLog.find(x=>x.id===entryId);
+  if(!e || !e.failed) return;
+  e.failed = false;
+  e.consumed = false;
+  saveLog();
+  syncConsumption();
+}
 function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null}; return orderQty[id]; }
+
+function renderNotifStatus(){
+  const el = document.getElementById('ps-notif-status');
+  if(!el) return;
+  if(typeof Notification === 'undefined'){
+    el.textContent = 'Not available in this browser/context.';
+    return;
+  }
+  const p = Notification.permission;
+  el.textContent = p==='granted' ? 'Enabled — you\'ll get finish-soon alerts.'
+    : p==='denied' ? 'Blocked — check your browser\'s site settings to allow notifications.'
+    : 'Not enabled yet.';
+}
+
+const NOTIFY_MIN_BEFORE = 5;
+function checkFinishNotifications(){
+  if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const now = new Date();
+  let changed = false;
+  productionLog.forEach(e => {
+    if(e.actualEnd || e.failed || e.notifiedFinishSoon) return;
+    const estFinish = new Date(new Date(e.actualStart).getTime() + (e.plannedMin||0)*60000);
+    const minLeft = (estFinish - now) / 60000;
+    if(minLeft <= NOTIFY_MIN_BEFORE){
+      const product = catalog.find(p=>p.id===e.productId);
+      const printer = printers.find(p=>p.id===e.printerId);
+      try {
+        new Notification('Print finishing soon', {
+          body: `${product?product.name:'A print'} on ${printer?printer.name:'a printer'} — est. ${fmtClock(estFinish)}`
+        });
+      } catch(err){ console.error('notification failed', err); }
+      e.notifiedFinishSoon = true;
+      changed = true;
+    }
+  });
+  if(changed) saveLog();
+}
 
 let flashTimer = null;
 function flashSave(){
@@ -611,7 +677,7 @@ function fmtLogTime(iso){
   return fmtDateHead(d) + ' ' + fmtClock(d);
 }
 function productAvgActual(productId){
-  const entries = productionLog.filter(e => e.productId === productId && e.actualEnd);
+  const entries = productionLog.filter(e => e.productId === productId && e.actualEnd && !e.failed);
   if(entries.length === 0) return null;
   const totalMin = entries.reduce((s,e) => s + (new Date(e.actualEnd) - new Date(e.actualStart))/60000, 0);
   return {avgMin: totalMin/entries.length, count: entries.length};
@@ -634,7 +700,8 @@ function getActualJobsForDay(printerId, dateKey){
         end,
         weightG: product ? product.weightG : 0,
         actual: true,
-        inProgress: !e.actualEnd,
+        inProgress: !e.actualEnd && !e.failed,
+        failed: !!e.failed,
         overnight: false
       };
     });
@@ -1012,6 +1079,15 @@ function renderLog(){
   const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
   const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 
+  const resolved = productionLog.filter(e => e.failed || e.actualEnd);
+  const totalFailures = resolved.filter(e=>e.failed).length;
+  const failureRate = resolved.length>0 ? (totalFailures/resolved.length*100) : 0;
+  const perPrinterStats = printers.map(p => {
+    const pResolved = resolved.filter(e=>e.printerId===p.id);
+    const pFailed = pResolved.filter(e=>e.failed).length;
+    return {name: p.name, failed: pFailed, total: pResolved.length, rate: pResolved.length>0 ? (pFailed/pResolved.length*100) : null};
+  }).filter(s => s.total>0);
+
   const entries = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
   const rows = entries.map(e => {
     const printer = printers.find(p=>p.id===e.printerId);
@@ -1051,14 +1127,18 @@ function renderLog(){
     const durationText = e.actualEnd
       ? fmtDuration((new Date(e.actualEnd)-new Date(e.actualStart))/60000)
       : null;
+    const statusLine = e.failed
+      ? `<span style="color:var(--danger)">✕ failed</span> — ${durationText} before it was stopped`
+      : (e.actualEnd ? '→ '+fmtLogTime(e.actualEnd)+' ('+durationText+')' : '— still printing');
     return `
-      <div class="ps-log-entry" data-id="${e.id}">
+      <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
           <b>${escapeHtml(product?product.name:'(deleted product)')}</b> on ${escapeHtml(printer?printer.name:'(deleted printer)')}
-          <div class="mono">${fmtLogTime(e.actualStart)}${e.actualEnd ? ' → '+fmtLogTime(e.actualEnd)+' ('+durationText+')' : ' — still printing'}</div>
+          <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
         </div>
         <div class="ps-row" style="gap:6px;">
-          ${!e.actualEnd ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
+          ${!e.actualEnd && !e.failed ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
+          ${!e.failed ? '<button class="ps-btn ghost small" style="color:var(--danger)" data-action="fail">Mark failed</button>' : '<button class="ps-btn ghost small" data-action="unfail">Undo failure</button>'}
           <button class="ps-btn ghost small" data-action="edit">Edit</button>
           <button class="ps-btn ghost small" data-action="delete">✕</button>
         </div>
@@ -1067,6 +1147,25 @@ function renderLog(){
   }).join('');
 
   root.innerHTML = `
+    ${resolved.length>0 ? `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Failure Stats</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="ps-summary-cell"><div class="ps-summary-num">${totalFailures}</div><div class="ps-summary-label">Total failures</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${failureRate.toFixed(1)}%</div><div class="ps-summary-label">Failure rate (${totalFailures} of ${resolved.length})</div></div>
+      </div>
+      ${perPrinterStats.length>0 ? `
+      <div style="margin-top:12px;">
+        ${perPrinterStats.map(s => `
+          <div class="ps-row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+            <span>${escapeHtml(s.name)}</span>
+            <span class="mono ps-hint">${s.failed} / ${s.total} — ${s.rate.toFixed(1)}%</span>
+          </div>
+        `).join('')}
+      </div>
+      ` : ''}
+    </div>
+    ` : ''}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Log a Print</div>
       <div class="ps-row" style="align-items:flex-end; flex-wrap:wrap;">
@@ -1138,7 +1237,7 @@ function renderLog(){
         const productChanged = e.productId !== productId;
         const printerChanged = e.printerId !== printerId;
 
-        if(productChanged){
+        if(productChanged && !e.failed){
           const product = catalog.find(p=>p.id===productId);
           e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
           // This entry no longer claims a unit of the old product — give it
@@ -1146,6 +1245,9 @@ function renderLog(){
           // claim one of the new product below.
           if(e.consumed){ getOrderEntry(e.productId).qty += 1; }
           e.consumed = false;
+        } else if(productChanged && e.failed){
+          const product = catalog.find(p=>p.id===productId);
+          e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
         }
         if(printerChanged || productChanged){
           // Weight and/or which spool it should draw from may have changed —
@@ -1165,6 +1267,7 @@ function renderLog(){
         e.printerId = printerId;
         e.productId = productId;
         e.actualStart = new Date(startVal).toISOString();
+        e.notifiedFinishSoon = false;
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
         editingLogId = null;
         syncConsumption();
@@ -1185,6 +1288,20 @@ function renderLog(){
         saveLog(); renderLog(); regenerateIfActive();
       });
     }
+    const failBtn = row.querySelector('[data-action="fail"]');
+    if(failBtn){
+      failBtn.addEventListener('click', () => {
+        markFailed(id);
+        renderLog(); regenerateIfActive();
+      });
+    }
+    const unfailBtn = row.querySelector('[data-action="unfail"]');
+    if(unfailBtn){
+      unfailBtn.addEventListener('click', () => {
+        unmarkFailed(id);
+        renderLog(); regenerateIfActive();
+      });
+    }
     row.querySelector('[data-action="edit"]').addEventListener('click', () => {
       editingLogId = id;
       renderLog();
@@ -1192,7 +1309,7 @@ function renderLog(){
     row.querySelector('[data-action="delete"]').addEventListener('click', () => {
       const removed = productionLog.find(x=>x.id===id);
       productionLog = productionLog.filter(x=>x.id!==id);
-      if(removed && removed.consumed){
+      if(removed && removed.consumed && !removed.failed){
         const orderEntry = getOrderEntry(removed.productId);
         orderEntry.qty += 1;
         saveOrder();
@@ -1742,6 +1859,12 @@ function renderSettings(){
       <div class="ps-hint">Applies to every active printer. A print must both start and finish inside the window unless it's longer than the whole window — those are allowed to start inside the window and run unattended past close. Downtime is only inserted between two prints on the same machine, same day; the last print of a day never needs a trailing gap.</div>
     </div>
     <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Notifications</div>
+      <div id="ps-notif-status" class="ps-hint" style="margin-bottom:10px;"></div>
+      <button class="ps-btn" id="ps-notif-enable">Enable browser notifications</button>
+      <div class="ps-hint" style="margin-top:10px;">When something's actually printing (logged with a start but no finish yet), you'll get a notification about 5 minutes before its estimated finish — names the product and which printer. Needs this tab to stay open somewhere (doesn't need to be focused, just not closed), and works best on the deployed site — Claude's chat window may block notification permissions entirely.</div>
+    </div>
+    <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Data</div>
       <div class="ps-row" style="flex-wrap:wrap;">
         <button class="ps-btn" id="ps-export-data">Export all data</button>
@@ -1752,6 +1875,18 @@ function renderSettings(){
       <div id="ps-data-msg" class="ps-hint" style="margin-top:8px;"></div>
     </div>
   `;
+
+  renderNotifStatus();
+  document.getElementById('ps-notif-enable').addEventListener('click', async () => {
+    if(typeof Notification === 'undefined'){
+      document.getElementById('ps-notif-status').textContent = 'Notifications aren\'t available in this browser/context.';
+      return;
+    }
+    try {
+      await Notification.requestPermission();
+    } catch(e){ /* some browsers still use the older callback form; permission getter below handles it either way */ }
+    renderNotifStatus();
+  });
 
   document.getElementById('ps-export-data').addEventListener('click', exportAllData);
   document.getElementById('ps-import-trigger').addEventListener('click', () => {
@@ -1882,6 +2017,7 @@ function regenerateIfActive(){
   if(document.getElementById('ps-tab-filament')) renderFilament();
   if(document.getElementById('ps-tab-estimate')) renderEstimate();
   if(document.getElementById('ps-tab-jobs')) renderJobs();
+  if(document.getElementById('ps-tab-catalog')) renderCatalog();
   if(liveSchedule){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
@@ -2065,7 +2201,8 @@ function renderScheduleOutput(sched, container){
 
         let color, statusLabel;
         if(sched.mode === 'live'){
-          if(j.actual && !j.inProgress){ color = 'var(--ok)'; statusLabel = 'completed'; }
+          if(j.actual && j.failed){ color = 'var(--danger)'; statusLabel = 'failed'; }
+          else if(j.actual && !j.inProgress){ color = 'var(--ok)'; statusLabel = 'completed'; }
           else if(j.actual && j.inProgress){ color = 'var(--heat)'; statusLabel = 'in progress'; }
           else { color = 'var(--cool)'; statusLabel = 'upcoming'; }
         } else {
@@ -2079,7 +2216,7 @@ function renderScheduleOutput(sched, container){
         const changeClass = changeFlags[i] ? 'model-change' : '';
         const stateTitle = statusLabel ? ` (${statusLabel})` : '';
         const changeTitle = changeFlags[i] ? ' — model change' : '';
-        const label = widthPct > 6 ? (j.actual && !j.inProgress ? '✓ ' : '') + escapeHtml(j.name) : '';
+        const label = widthPct > 6 ? (j.failed ? '✕ ' : (j.actual && !j.inProgress ? '✓ ' : '')) + escapeHtml(j.name) : '';
         return `<div class="ps-block ${j.spoolShort?'spool-short':''} ${pulseClass} ${changeClass}" style="left:${leftPct}%;width:${widthPct}%;background:${bg};${j.overnight?'opacity:0.9;':''}" title="${escapeHtml(j.name)}: ${fmtClock(j.start)} – ${fmtClock(j.end)}${j.overnight?' (runs past close)':''}${stateTitle}${changeTitle}${shortTitle}">${label}</div>`;
       }).join('');
 
@@ -2093,7 +2230,7 @@ function renderScheduleOutput(sched, container){
       }
 
       const jobLines = jobs.map((j,i) => {
-        const marker = j.actual ? (j.inProgress ? '<span style="color:var(--heat)">▶ printing now</span> — ' : '✓ ') : '';
+        const marker = j.failed ? '<span style="color:var(--danger)">✕ failed</span> — ' : (j.actual ? (j.inProgress ? '<span style="color:var(--heat)">▶ printing now</span> — ' : '✓ ') : '');
         const changeover = changeFlags[i] ? `<div class="ps-changeover">switch to ${escapeHtml(j.name)}</div>` : '';
         return `
         ${changeover}
@@ -2198,6 +2335,7 @@ function renderScheduleOutput(sched, container){
         <span><i class="ps-swatch sw-done">✓</i>Completed</span>
         <span><i class="ps-swatch sw-progress"></i>In progress</span>
         <span><i class="ps-swatch sw-planned"></i>Upcoming</span>
+        <span><i class="ps-swatch sw-failed">✕</i>Failed</span>
       </div>
     ` : '';
 
@@ -2314,6 +2452,8 @@ async function startApp(){
   renderFilament();
   renderCatalog();
   renderSettings();
+  checkFinishNotifications();
+  setInterval(checkFinishNotifications, 20000);
 }
 // In the normal Claude-artifact context (and in a standalone build with no
 // auth configured), start immediately. A standalone build with auth enabled
