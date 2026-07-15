@@ -194,6 +194,7 @@
       <button class="ps-tab active" data-tab="schedule">Build Schedule</button>
       <button class="ps-tab" data-tab="log">Log</button>
       <button class="ps-tab" data-tab="estimate">Estimate</button>
+      <button class="ps-tab" data-tab="jobs">Jobs</button>
       <button class="ps-tab" data-tab="printers">Printers</button>
       <button class="ps-tab" data-tab="filament">Filament</button>
       <button class="ps-tab" data-tab="catalog">Catalog</button>
@@ -203,6 +204,7 @@
     <div id="ps-tab-schedule"></div>
     <div id="ps-tab-log" style="display:none;"></div>
     <div id="ps-tab-estimate" style="display:none;"></div>
+    <div id="ps-tab-jobs" style="display:none;"></div>
     <div id="ps-tab-printers" style="display:none;"></div>
     <div id="ps-tab-filament" style="display:none;"></div>
     <div id="ps-tab-catalog" style="display:none;"></div>
@@ -413,6 +415,7 @@ let priorityOrder = [];
 let productionLog = [];
 let estimateItems = []; // [{id: productId, qty}] in a custom, user-controlled order
 let estimateScenarios = [1,2,3]; // user-editable list of printer counts to compare
+let jobs = []; // [{id, name, items:[{id,qty}], status:'queued'|'active'|'done', createdAt}]
 let liveSchedule = null;
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
@@ -479,7 +482,12 @@ async function loadState(){
   if(!Array.isArray(estimateScenarios) || estimateScenarios.length===0){
     estimateScenarios = Array.from({length: printers.length||1}, (_,i)=>i+1);
   }
+
+  try { const jb = await window.storage.get('jobs'); jobs = jb ? JSON.parse(jb.value) : []; }
+  catch(e){ jobs = []; }
 }
+
+async function saveJobs(){ try { await window.storage.set('jobs', JSON.stringify(jobs)); flashSave(); } catch(e){ console.error(e); } }
 
 async function saveEstimateItems(){ try { await window.storage.set('estimateItems', JSON.stringify(estimateItems)); flashSave(); } catch(e){ console.error(e); } }
 async function saveEstimateScenarios(){ try { await window.storage.set('estimateScenarios', JSON.stringify(estimateScenarios)); flashSave(); } catch(e){ console.error(e); } }
@@ -719,6 +727,216 @@ function buildMultiSchedule(queue, activePrinters, settings, mode){
 }
 
 // ---------- rendering: Printers tab ----------
+// ---------- rendering: Jobs tab ----------
+function jobTotals(job){
+  let totalMin = 0, totalWeight = 0, totalUnits = 0;
+  job.items.forEach(item => {
+    const p = catalog.find(x=>x.id===item.id);
+    if(!p) return;
+    totalMin += (p.timeH*60+p.timeM) * item.qty;
+    totalWeight += (p.weightG||0) * item.qty;
+    totalUnits += item.qty;
+  });
+  return {totalMin, totalWeight, totalUnits};
+}
+
+function renderJobItemRows(job, editable){
+  return job.items.map((item, idx) => {
+    const p = catalog.find(x=>x.id===item.id);
+    if(!p) return '';
+    if(!editable){
+      return `<div>${item.qty}× <b>${escapeHtml(p.name)}</b></div>`;
+    }
+    return `
+      <tr data-jobid="${job.id}" data-itemid="${item.id}">
+        <td>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn ghost small" data-action="job-item-up" ${idx===0?'disabled':''}>↑</button>
+            <button class="ps-btn ghost small" data-action="job-item-down" ${idx===job.items.length-1?'disabled':''}>↓</button>
+          </div>
+        </td>
+        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
+        <td><input class="ps-input ps-narrow" type="number" min="0" data-action="job-item-qty" value="${item.qty}" /></td>
+        <td><button class="ps-btn ghost small" data-action="job-item-remove">✕</button></td>
+      </tr>`;
+  }).join('');
+}
+
+function renderJobs(){
+  const root = document.getElementById('ps-tab-jobs');
+  const queued = jobs.filter(j=>j.status==='queued');
+  const active = jobs.filter(j=>j.status==='active');
+  const done = jobs.filter(j=>j.status==='done');
+
+  const queuedCards = queued.map(job => {
+    const t = jobTotals(job);
+    const availableProducts = catalog.filter(p => !job.items.some(it=>it.id===p.id));
+    const addOptions = availableProducts.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    return `
+      <div class="ps-printer-card" data-jobid="${job.id}">
+        <div class="ps-printer-top">
+          <input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;" />
+          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
+          <button class="ps-btn primary small" data-action="job-activate">Move to Active Queue</button>
+          <button class="ps-btn ghost small" data-action="job-delete">✕</button>
+        </div>
+        ${job.items.length===0 ? '<div class="ps-empty">No items yet.</div>' : `
+        <div style="overflow-x:auto;">
+        <table class="ps-table">
+          <thead><tr><th style="width:60px">Order</th><th>Product</th><th style="width:70px">Qty</th><th style="width:36px"></th></tr></thead>
+          <tbody>${renderJobItemRows(job, true)}</tbody>
+        </table>
+        </div>
+        `}
+        <div class="ps-row" style="margin-top:10px;flex-wrap:wrap;">
+          <select class="ps-select" data-action="job-add-select" style="max-width:200px;">
+            <option value="">Choose a product…</option>
+            ${addOptions}
+          </select>
+          <button class="ps-btn small" data-action="job-add-item" ${availableProducts.length===0?'disabled':''}>+ Add product</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const activeCards = active.map(job => {
+    const t = jobTotals(job);
+    return `
+      <div class="ps-printer-card" data-jobid="${job.id}">
+        <div class="ps-printer-top">
+          <b style="flex:1.4;">${escapeHtml(job.name)}</b>
+          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
+          <button class="ps-btn small" data-action="job-done">Mark Done</button>
+          <button class="ps-btn ghost small" data-action="job-delete">✕</button>
+        </div>
+        <div class="ps-joblist">${renderJobItemRows(job, false)}</div>
+      </div>
+    `;
+  }).join('');
+
+  const doneCards = done.map(job => {
+    const t = jobTotals(job);
+    return `
+      <div class="ps-printer-card" data-jobid="${job.id}">
+        <div class="ps-printer-top">
+          <span class="ps-hint" style="flex:1.4;">${escapeHtml(job.name)}</span>
+          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''}</span>
+          <button class="ps-btn ghost small" data-action="job-delete">✕</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Queued</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Staged jobs, not yet part of the real production queue. Edit freely, then move each into the active queue whenever a printer's actually ready for it.</div>
+      ${queued.length===0 ? '<div class="ps-empty">Nothing queued — save a scenario as a job from the Estimate tab, or add one directly.</div>' : queuedCards}
+      <div class="ps-row" style="margin-top:14px;">
+        <button class="ps-btn" id="ps-job-new">+ New job</button>
+      </div>
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Active</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Already added to the real Order to Fulfill queue. Mark a job done once you know it's fully printed.</div>
+      ${active.length===0 ? '<div class="ps-empty">Nothing active right now.</div>' : activeCards}
+    </div>
+    ${done.length>0 ? `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Done</div>
+      ${doneCards}
+    </div>` : ''}
+  `;
+
+  // Queued job actions
+  root.querySelectorAll('[data-jobid]').forEach(card => {
+    const jobId = card.getAttribute('data-jobid');
+    const job = jobs.find(j=>j.id===jobId);
+    if(!job) return;
+
+    const renameInput = card.querySelector('[data-action="job-rename"]');
+    if(renameInput){
+      renameInput.addEventListener('change', e => {
+        job.name = e.target.value.trim() || job.name;
+        saveJobs();
+      });
+    }
+    const activateBtn = card.querySelector('[data-action="job-activate"]');
+    if(activateBtn){
+      activateBtn.addEventListener('click', () => {
+        job.items.forEach(item => {
+          const entry = getOrderEntry(item.id);
+          entry.qty += item.qty;
+        });
+        job.status = 'active';
+        saveOrder(); saveJobs();
+        renderJobs(); regenerateIfActive();
+      });
+    }
+    const doneBtn = card.querySelector('[data-action="job-done"]');
+    if(doneBtn){
+      doneBtn.addEventListener('click', () => {
+        job.status = 'done';
+        saveJobs(); renderJobs();
+      });
+    }
+    const deleteBtn = card.querySelector('[data-action="job-delete"]');
+    if(deleteBtn){
+      deleteBtn.addEventListener('click', () => {
+        jobs = jobs.filter(j=>j.id!==jobId);
+        saveJobs(); renderJobs();
+      });
+    }
+    const addSelect = card.querySelector('[data-action="job-add-select"]');
+    const addBtn = card.querySelector('[data-action="job-add-item"]');
+    if(addBtn){
+      addBtn.addEventListener('click', () => {
+        const id = addSelect.value;
+        if(!id) return;
+        job.items.push({id, qty: 1});
+        saveJobs(); renderJobs();
+      });
+    }
+    card.querySelectorAll('[data-action="job-item-qty"]').forEach(input => {
+      input.addEventListener('change', e => {
+        const itemId = e.target.closest('tr').getAttribute('data-itemid');
+        const item = job.items.find(it=>it.id===itemId);
+        if(item) item.qty = Math.max(0, parseInt(e.target.value)||0);
+        saveJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="job-item-remove"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.closest('tr').getAttribute('data-itemid');
+        job.items = job.items.filter(it=>it.id!==itemId);
+        saveJobs(); renderJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="job-item-up"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.closest('tr').getAttribute('data-itemid');
+        const idx = job.items.findIndex(it=>it.id===itemId);
+        if(idx>0){ [job.items[idx],job.items[idx-1]] = [job.items[idx-1],job.items[idx]]; saveJobs(); renderJobs(); }
+      });
+    });
+    card.querySelectorAll('[data-action="job-item-down"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.closest('tr').getAttribute('data-itemid');
+        const idx = job.items.findIndex(it=>it.id===itemId);
+        if(idx<job.items.length-1){ [job.items[idx],job.items[idx+1]] = [job.items[idx+1],job.items[idx]]; saveJobs(); renderJobs(); }
+      });
+    });
+  });
+
+  const newJobBtn = document.getElementById('ps-job-new');
+  if(newJobBtn){
+    newJobBtn.addEventListener('click', () => {
+      jobs.push({id: uid('job'), name: 'New job', items: [], status:'queued', createdAt: new Date().toISOString()});
+      saveJobs(); renderJobs();
+    });
+  }
+}
+
 function renderPrinters(){
   const root = document.getElementById('ps-tab-printers');
   const cards = printers.map(p => {
@@ -1059,6 +1277,15 @@ function renderEstimate(){
         <button class="ps-btn" id="ps-estimate-clear">Clear scenario</button>
       </div>
     </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Save as Job</div>
+      <div class="ps-hint" style="margin-bottom:10px;">Snapshots this product list as a named job on the Jobs tab, ready to move into the real production queue whenever you're ready — this scenario stays here untouched either way.</div>
+      <div class="ps-row" style="flex-wrap:wrap;">
+        <input class="ps-input" id="ps-estimate-jobname" placeholder="Job name" style="max-width:240px;" />
+        <button class="ps-btn" id="ps-estimate-save-job" ${estimateItems.length===0?'disabled':''}>Save as Job</button>
+      </div>
+      <div id="ps-estimate-job-msg" class="ps-hint" style="margin-top:8px;"></div>
+    </div>
     <div id="ps-estimate-output"></div>
   `;
 
@@ -1104,6 +1331,27 @@ function renderEstimate(){
     document.getElementById('ps-estimate-output').innerHTML = '';
     renderEstimate();
   });
+  const saveJobBtn = document.getElementById('ps-estimate-save-job');
+  if(saveJobBtn){
+    saveJobBtn.addEventListener('click', () => {
+      const nameInput = document.getElementById('ps-estimate-jobname');
+      const msgEl = document.getElementById('ps-estimate-job-msg');
+      const name = nameInput.value.trim();
+      if(estimateItems.length===0){ msgEl.textContent = 'Add at least one product first.'; return; }
+      if(!name){ msgEl.textContent = 'Give the job a name first.'; return; }
+      jobs.push({
+        id: uid('job'),
+        name,
+        items: estimateItems.filter(it=>it.qty>0).map(it => ({id: it.id, qty: it.qty})),
+        status: 'queued',
+        createdAt: new Date().toISOString()
+      });
+      saveJobs();
+      nameInput.value = '';
+      msgEl.textContent = `Saved "${name}" to the Jobs tab.`;
+      if(document.getElementById('ps-tab-jobs')) renderJobs();
+    });
+  }
 }
 
 function moveEstimateItem(id, dir){
@@ -1196,7 +1444,7 @@ function runEstimate(){
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>How Long This Scenario Takes</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Total time to finish this whole scenario, starting right now, for each printer count you've checked above — bigger numbers mean it takes longer.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Total time to finish this whole scenario, starting right now, for each printer count you've checked above.</div>
       <div class="ps-row" style="flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
         ${scenarioCells}
       </div>
@@ -1418,7 +1666,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios
+    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -1445,6 +1693,7 @@ async function importAllData(jsonText){
   if(Array.isArray(data.productionLog)) productionLog = data.productionLog;
   if(Array.isArray(data.estimateItems)) estimateItems = data.estimateItems;
   if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
+  if(Array.isArray(data.jobs)) jobs = data.jobs;
 
   // Keep priorityOrder consistent with whatever catalog came in.
   priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
@@ -1455,12 +1704,12 @@ async function importAllData(jsonText){
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs()
   ]);
   syncConsumption();
 
   liveSchedule = null;
-  renderSchedule(); renderLog(); renderEstimate(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
+  renderSchedule(); renderLog(); renderEstimate(); renderJobs(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
 }
 
 function renderSettings(){
@@ -1632,6 +1881,7 @@ function regenerateIfActive(){
   if(document.getElementById('ps-tab-schedule')) renderSchedule();
   if(document.getElementById('ps-tab-filament')) renderFilament();
   if(document.getElementById('ps-tab-estimate')) renderEstimate();
+  if(document.getElementById('ps-tab-jobs')) renderJobs();
   if(liveSchedule){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
@@ -2026,7 +2276,7 @@ function setupTabs(){
       document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
       tab.classList.add('active');
       const target = tab.getAttribute('data-tab');
-      ['schedule','log','estimate','printers','filament','catalog','settings'].forEach(name => {
+      ['schedule','log','estimate','jobs','printers','filament','catalog','settings'].forEach(name => {
         document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
       });
     });
@@ -2059,6 +2309,7 @@ async function startApp(){
   renderSchedule();
   renderLog();
   renderEstimate();
+  renderJobs();
   renderPrinters();
   renderFilament();
   renderCatalog();
