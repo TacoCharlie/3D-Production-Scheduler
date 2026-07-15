@@ -81,8 +81,8 @@
   .ps-btn:disabled { opacity:0.4; cursor:not-allowed; }
 
   .ps-row { display:flex; gap:10px; align-items:center; }
-  .ps-daycheck { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:6px 10px; border:1px solid var(--line); border-radius:20px; cursor:pointer; user-select:none; }
-  .ps-daycheck.on { border-color: var(--heat); color: var(--heat); background: color-mix(in srgb, var(--heat) 10%, transparent); }
+  .ps-daycheck { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:6px 10px; border:1px solid var(--line); border-radius:20px; cursor:pointer; user-select:none; background: var(--panel-2); color: var(--muted); }
+  .ps-daycheck.on { border-color: var(--heat); color: #1a1815; background: var(--heat); font-weight:700; }
   .ps-field-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color: var(--muted); margin-bottom:6px; display:block; }
   .ps-field { margin-bottom: 16px; }
   .ps-hint { color: var(--muted); font-size:11.5px; margin-top:6px; }
@@ -550,6 +550,14 @@ function fmtDuration(min){
   if(m===0) return h+'h';
   return h+'h '+m+'m';
 }
+function fmtSpan(fromDate, toDate){
+  const totalMin = Math.max(0, (toDate - fromDate) / 60000);
+  if(totalMin < 60*24) return fmtDuration(totalMin);
+  let days = Math.floor(totalMin / (60*24));
+  let hours = Math.round((totalMin - days*60*24) / 60);
+  if(hours>=24){ days += 1; hours = 0; }
+  return hours>0 ? `${days}d ${hours}h` : `${days}d`;
+}
 function windowBounds(date, settings){
   const [sh,sm] = settings.startTime.split(':').map(Number);
   const [eh,em] = settings.endTime.split(':').map(Number);
@@ -1013,9 +1021,10 @@ function renderEstimate(){
       </tr>`;
   }).join('');
 
-  const scenarioChips = Array.from({length: Math.max(printers.length,1)}, (_,i) => i+1).map(n => `
-    <span class="ps-daycheck ${estimateScenarios.includes(n)?'on':''}" data-n="${n}">${n} printer${n!==1?'s':''}</span>
-  `).join('');
+  const scenarioChips = Array.from({length: Math.max(printers.length,1)}, (_,i) => i+1).map(n => {
+    const on = estimateScenarios.includes(n);
+    return `<span class="ps-daycheck ${on?'on':''}" data-n="${n}">${on?'✓':'+'} ${n} printer${n!==1?'s':''}</span>`;
+  }).join('');
 
   root.innerHTML = `
     <div class="ps-panel">
@@ -1162,10 +1171,12 @@ function runEstimate(){
     return {n, lastEnd, unassigned: result.unassigned.length};
   });
 
+  const estimateNow = new Date();
   const scenarioCells = scenarios.map(s => `
-    <div class="ps-summary-cell" style="flex:1;min-width:140px;">
-      <div class="ps-summary-num">${s.lastEnd ? fmtDateHead(s.lastEnd) : '—'}</div>
-      <div class="ps-summary-label">${s.n} printer${s.n!==1?'s':''}${s.lastEnd ? ' — done '+fmtClock(s.lastEnd) : ''}</div>
+    <div class="ps-summary-cell" style="flex:1;min-width:150px;">
+      <div class="ps-summary-num">${s.lastEnd ? fmtSpan(estimateNow, s.lastEnd) : '—'}</div>
+      <div class="ps-summary-label">${s.n} printer${s.n!==1?'s':''}</div>
+      ${s.lastEnd ? `<div class="ps-hint mono" style="margin-top:4px;">done ${fmtDateHead(s.lastEnd)} ${fmtClock(s.lastEnd)}</div>` : ''}
       ${s.unassigned>0 ? `<div class="ps-hint" style="color:var(--danger)">${s.unassigned} unplaced</div>` : ''}
     </div>
   `).join('');
@@ -1184,8 +1195,8 @@ function runEstimate(){
       ${stockNote}
     </div>
     <div class="ps-panel">
-      <div class="ps-panel-title"><span class="dot"></span>Time by Printer Count</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Each scenario assumes that many generic printers, all starting fresh right now, using your current work-window and downtime settings from the Settings tab.</div>
+      <div class="ps-panel-title"><span class="dot"></span>How Long This Scenario Takes</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Total time to finish this whole scenario, starting right now, for each printer count you've checked above — bigger numbers mean it takes longer.</div>
       <div class="ps-row" style="flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
         ${scenarioCells}
       </div>
