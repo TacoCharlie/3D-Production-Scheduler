@@ -569,6 +569,21 @@ function unmarkFailed(entryId){
 }
 function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null}; return orderQty[id]; }
 
+// Any time a spool actually starts being used on a printer — whichever of
+// the three ways that happened (guided Change Spool, the Printers tab
+// dropdown, or the Filament tab's assignment dropdown) — stamp it, so the
+// schedule can show exactly when it happened. Doesn't re-stamp if this
+// spool is already the one marked as loaded on this printer (avoids
+// generating a new event just from re-selecting the same thing).
+function stampSpoolLoad(spoolId, printerId){
+  if(!spoolId) return;
+  const spool = spools.find(s=>s.id===spoolId);
+  if(!spool) return;
+  if(spool.loadedOnPrinterId === printerId && spool.loadedAt) return;
+  spool.loadedAt = new Date().toISOString();
+  spool.loadedOnPrinterId = printerId;
+}
+
 function renderNotifStatus(){
   const el = document.getElementById('ps-notif-status');
   if(!el) return;
@@ -1089,6 +1104,7 @@ function renderPrinters(){
     card.querySelector('[data-field="spoolId"]').addEventListener('change', e => {
       const p = printers.find(x=>x.id===id);
       p.spoolId = e.target.value || null;
+      if(p.spoolId){ stampSpoolLoad(p.spoolId, p.id); saveSpools(); }
       savePrinters(); regenerateIfActive();
     });
     card.querySelector('[data-action="remove"]').addEventListener('click', () => {
@@ -1888,8 +1904,9 @@ function renderFilament(){
         if(printerId){
           const p = printers.find(x=>x.id===printerId);
           if(p) p.spoolId = id;
+          stampSpoolLoad(id, printerId);
         }
-        savePrinters();
+        savePrinters(); saveSpools();
         renderFilament(); renderPrinters(); regenerateIfActive();
       });
     }
