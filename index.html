@@ -109,6 +109,7 @@
   .ps-vprogress-track { width:14px; height:52px; background:var(--panel-2); border:1px solid var(--line); border-radius:3px; position:relative; overflow:hidden; flex-shrink:0; }
   .ps-vprogress-fill { position:absolute; bottom:0; left:0; right:0; background:var(--heat); transition:height 0.3s; }
   .ps-vprogress-fill.overdue { background:var(--danger); }
+  .ps-status-overdue-banner { margin-top:10px; padding:9px 12px; background: color-mix(in srgb, var(--danger) 22%, transparent); border:1px solid var(--danger); border-radius:4px; color: var(--danger); font-weight:700; font-size:12.5px; }
   .ps-printer-block-head .dot { width:7px; height:7px; border-radius:50%; background: var(--ok); display:inline-block; }
 
   .ps-day { margin-bottom: 16px; }
@@ -1129,6 +1130,16 @@ function renderStatus(){
       const elapsedMin = Math.max(0, (now - new Date(inProgress.actualStart))/60000);
       const overdue = now > estFinish;
       const progressPct = inProgress.plannedMin>0 ? Math.min(100, (elapsedMin/inProgress.plannedMin)*100) : 0;
+      let timeLine, overdueBanner = '';
+      if(inProgress.plannedMin>0 && overdue){
+        timeLine = `started ${fmtClock(new Date(inProgress.actualStart))} · running ${fmtDuration(elapsedMin)}`;
+        overdueBanner = `<div class="ps-status-overdue-banner">⚠ Should be done by now — go check it</div>`;
+      } else if(inProgress.plannedMin>0){
+        const remainingMin = inProgress.plannedMin - elapsedMin;
+        timeLine = `started ${fmtClock(new Date(inProgress.actualStart))} · check in ~${fmtDuration(remainingMin)} · est. done ${fmtClock(estFinish)}`;
+      } else {
+        timeLine = `started ${fmtClock(new Date(inProgress.actualStart))} · running ${fmtDuration(elapsedMin)} · no time estimate`;
+      }
       currentBlock = `
         <div class="ps-status-current">
           <div class="ps-vprogress-track" title="${Math.round(progressPct)}% of estimated time elapsed">
@@ -1137,9 +1148,10 @@ function renderStatus(){
           <div class="ps-status-dot printing"></div>
           <div>
             <div><b>${escapeHtml(name)}</b></div>
-            <div class="ps-hint mono">started ${fmtClock(new Date(inProgress.actualStart))} · running ${fmtDuration(elapsedMin)}${overdue ? ' <span style="color:var(--heat)">— past estimated finish</span>' : ' · est. done '+fmtClock(estFinish)}</div>
+            <div class="ps-hint mono">${timeLine}</div>
           </div>
         </div>
+        ${overdueBanner}
       `;
     } else {
       currentBlock = `
@@ -1168,11 +1180,26 @@ function renderStatus(){
       nextBlock = `<div class="ps-hint">No schedule generated yet — check the Build Schedule tab.</div>`;
     }
 
+    // Filament status for whatever spool is actually loaded on this printer.
+    const spool = p.spoolId ? spools.find(s => s.id === p.spoolId && !s.retired) : null;
+    let filamentBlock;
+    if(spool){
+      const pct = spool.totalG>0 ? Math.max(0, Math.min(100, (spool.remainingG/spool.totalG)*100)) : 0;
+      const low = spool.remainingG <= LOW_STOCK_G;
+      filamentBlock = `
+        <div class="ps-hint">Filament: <b style="color:var(--text);">${escapeHtml(spool.label)}</b> — ${spool.remainingG}g left${low ? ' <span class="ps-badge-low">Low</span>' : ''}</div>
+        <div class="ps-spool-bar-track" style="margin-top:5px;max-width:220px;"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
+      `;
+    } else {
+      filamentBlock = `<div class="ps-hint">No spool assigned — set one on the Printers tab.</div>`;
+    }
+
     return `
       <div class="ps-panel">
         <div class="ps-printer-block-head" style="margin-bottom:12px;"><span class="dot"></span>${escapeHtml(p.name)}</div>
         ${currentBlock}
         <div style="margin-top:10px;">${nextBlock}</div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">${filamentBlock}</div>
       </div>
     `;
   }).join('');
