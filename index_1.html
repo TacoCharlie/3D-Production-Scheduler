@@ -81,8 +81,8 @@
   .ps-btn:disabled { opacity:0.4; cursor:not-allowed; }
 
   .ps-row { display:flex; gap:10px; align-items:center; }
-  .ps-daycheck { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:6px 10px; border:1px solid var(--line); border-radius:20px; cursor:pointer; user-select:none; }
-  .ps-daycheck.on { border-color: var(--heat); color: var(--heat); background: color-mix(in srgb, var(--heat) 10%, transparent); }
+  .ps-daycheck { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:6px 10px; border:1px solid var(--line); border-radius:20px; cursor:pointer; user-select:none; background: var(--panel-2); color: var(--muted); }
+  .ps-daycheck.on { border-color: var(--heat); color: #1a1815; background: var(--heat); font-weight:700; }
   .ps-field-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color: var(--muted); margin-bottom:6px; display:block; }
   .ps-field { margin-bottom: 16px; }
   .ps-hint { color: var(--muted); font-size:11.5px; margin-top:6px; }
@@ -108,6 +108,10 @@
   .ps-day-head { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
   .ps-day-date { font-family:'Archivo Expanded',sans-serif; font-weight:700; font-size:13px; text-transform:uppercase; letter-spacing:0.3px; }
   .ps-day-meta { color: var(--muted); font-size:11px; font-family:'JetBrains Mono',monospace; }
+  .ps-day-collapsed .ps-day-date { color: var(--muted); }
+  .ps-week-collapsed { background: var(--panel-2); border-radius: 4px; padding: 4px 10px; }
+  .ps-week-collapsed .ps-day-date { color: var(--muted); font-size: 12px; }
+  .ps-week-group-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 2px; margin-bottom:8px; border-bottom:1px dashed var(--line); color: var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.4px; }
 
   .ps-gantt { position:relative; height:44px; background: repeating-linear-gradient(90deg, var(--panel-2), var(--panel-2) 1px, transparent 1px, transparent calc(100%/12)); border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   .ps-block { position:absolute; top:5px; bottom:5px; border-radius:3px; display:flex; align-items:center; padding:0 8px; font-size:11px; font-weight:600; overflow:hidden; white-space:nowrap; color:#1a1815; }
@@ -139,6 +143,7 @@
   .ps-type-swatch-input { width:36px; height:32px; padding:2px; flex-shrink:0; }
   .ps-type-error { color: var(--danger); font-size:11.5px; margin-top:8px; }
   .ps-log-entry { display:flex; align-items:baseline; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--line); font-size:12.5px; flex-wrap:wrap; }
+  .ps-log-failed { background: color-mix(in srgb, var(--danger) 8%, transparent); border-radius:4px; padding-left:8px; padding-right:8px; }
   .ps-log-entry:last-child { border-bottom:none; }
   .ps-log-entry .mono { color: var(--muted); }
   .ps-view-toggle .ps-btn { border-radius:20px; }
@@ -152,6 +157,7 @@
   .ps-swatch.sw-done { background: var(--ok); }
   .ps-swatch.sw-progress { background: var(--heat); animation: ps-pulse 1.4s ease-in-out infinite; }
   .ps-swatch.sw-planned { background: var(--cool); }
+  .ps-swatch.sw-failed { background: var(--danger); }
   .ps-block.model-change { border-left: 3px solid var(--text); }
   .ps-changeover { display:flex; align-items:center; gap:8px; margin:4px 0; color: var(--muted); font-size:10.5px; }
   .ps-changeover::before, .ps-changeover::after { content:''; flex:1; height:1px; background: var(--line); }
@@ -189,6 +195,8 @@
     <div class="ps-tabs">
       <button class="ps-tab active" data-tab="schedule">Build Schedule</button>
       <button class="ps-tab" data-tab="log">Log</button>
+      <button class="ps-tab" data-tab="estimate">Estimate</button>
+      <button class="ps-tab" data-tab="jobs">Jobs</button>
       <button class="ps-tab" data-tab="printers">Printers</button>
       <button class="ps-tab" data-tab="filament">Filament</button>
       <button class="ps-tab" data-tab="catalog">Catalog</button>
@@ -197,6 +205,8 @@
 
     <div id="ps-tab-schedule"></div>
     <div id="ps-tab-log" style="display:none;"></div>
+    <div id="ps-tab-estimate" style="display:none;"></div>
+    <div id="ps-tab-jobs" style="display:none;"></div>
     <div id="ps-tab-printers" style="display:none;"></div>
     <div id="ps-tab-filament" style="display:none;"></div>
     <div id="ps-tab-catalog" style="display:none;"></div>
@@ -288,7 +298,12 @@ function showAuthScreen(){
   document.querySelector('.ps-shell').style.display = 'none';
 }
 function showApp(){
-  document.getElementById('ps-auth-screen').style.display = 'none';
+  // Remove (not just hide) the auth screen once signed in — a hidden-but-
+  // still-present password field keeps getting tracked by the browser's
+  // password manager, which is what was causing the repeated "Update
+  // password?" prompt on unrelated actions elsewhere in the app.
+  const authScreen = document.getElementById('ps-auth-screen');
+  if(authScreen) authScreen.remove();
   document.querySelector('.ps-shell').style.display = '';
   const signout = document.getElementById('ps-auth-signout');
   if(signout) signout.style.display = '';
@@ -383,13 +398,14 @@ const DEFAULT_CATALOG = [
   {id:'cutter2', name:'Back Cutter 2', type:'cutter', timeH:0, timeM:0, weightG:0},
   {id:'cutter3', name:'Back Cutter 3', type:'cutter', timeH:0, timeM:0, weightG:0},
 ];
-const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15 };
+const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15, estimateSpoolG:1000 };
 const DEFAULT_PRINTERS = [
   {id:'printer1', name:'Centauri Carbon 1', status:'active', spoolId:null},
   {id:'printer2', name:'Centauri Carbon 2', status:'active', spoolId:null},
   {id:'printer3', name:'Kobra Max',         status:'active', spoolId:null},
 ];
 const DEFAULT_SPOOLS = [];
+const DEFAULT_STOCK = [];
 const LOW_STOCK_G = 150;
 
 let catalog = null;
@@ -397,11 +413,13 @@ let types = null;
 let settings = null;
 let printers = null;
 let spools = null;
+let stock = null; // unopened inventory: [{id, label, material, colorHex, weightPerSpoolG, qty}]
 let orderQty = {};
 let priorityOrder = [];
 let productionLog = [];
-let scheduleView = 'theoretical';
-let theoreticalSchedule = null;
+let estimateItems = []; // [{id: productId, qty}] in a custom, user-controlled order
+let estimateScenarios = [1,2,3]; // user-editable list of printer counts to compare
+let jobs = []; // [{id, name, items:[{id,qty}], status:'queued'|'active'|'done', createdAt}]
 let liveSchedule = null;
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
@@ -418,6 +436,7 @@ async function loadState(){
 
   try { const s = await window.storage.get('settings'); settings = s ? JSON.parse(s.value) : JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
   catch(e){ settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
+  if(typeof settings.estimateSpoolG !== 'number') settings.estimateSpoolG = 1000;
 
   try { const pr = await window.storage.get('printers'); printers = pr ? JSON.parse(pr.value) : JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
   catch(e){ printers = JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
@@ -425,6 +444,11 @@ async function loadState(){
 
   try { const sp = await window.storage.get('spools'); spools = sp ? JSON.parse(sp.value) : JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
   catch(e){ spools = JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
+  spools.forEach(s => { if(typeof s.retired !== 'boolean') s.retired = false; });
+
+  try { const st = await window.storage.get('stock'); stock = st ? JSON.parse(st.value) : JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
+  catch(e){ stock = JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
+  stock.forEach(st => { if(typeof st.qtyOnOrder !== 'number') st.qtyOnOrder = 0; });
 
   try {
     const o = await window.storage.get('lastOrder');
@@ -449,8 +473,33 @@ async function loadState(){
 
   try { const lg = await window.storage.get('productionLog'); productionLog = lg ? JSON.parse(lg.value) : []; }
   catch(e){ productionLog = []; }
-  scheduleView = productionLog.length > 0 ? 'live' : 'theoretical';
+
+  try { const ei = await window.storage.get('estimateItems'); estimateItems = ei ? JSON.parse(ei.value) : []; }
+  catch(e){ estimateItems = []; }
+  // Migrate from the old qty-map format if that's all that exists.
+  if(estimateItems.length===0){
+    try {
+      const legacy = await window.storage.get('estimateQty');
+      if(legacy){
+        const map = JSON.parse(legacy.value);
+        estimateItems = Object.keys(map).filter(id=>map[id]>0).map(id=>({id, qty: map[id]}));
+      }
+    } catch(e){ /* nothing to migrate */ }
+  }
+  try { const es = await window.storage.get('estimateScenarios'); estimateScenarios = es ? JSON.parse(es.value) : []; }
+  catch(e){ estimateScenarios = []; }
+  if(!Array.isArray(estimateScenarios) || estimateScenarios.length===0){
+    estimateScenarios = Array.from({length: printers.length||1}, (_,i)=>i+1);
+  }
+
+  try { const jb = await window.storage.get('jobs'); jobs = jb ? JSON.parse(jb.value) : []; }
+  catch(e){ jobs = []; }
 }
+
+async function saveJobs(){ try { await window.storage.set('jobs', JSON.stringify(jobs)); flashSave(); } catch(e){ console.error(e); } }
+
+async function saveEstimateItems(){ try { await window.storage.set('estimateItems', JSON.stringify(estimateItems)); flashSave(); } catch(e){ console.error(e); } }
+async function saveEstimateScenarios(){ try { await window.storage.set('estimateScenarios', JSON.stringify(estimateScenarios)); flashSave(); } catch(e){ console.error(e); } }
 
 async function saveCatalog(){ try { await window.storage.set('catalog', JSON.stringify(catalog)); flashSave(); } catch(e){ console.error(e); } }
 async function saveTypes(){ try { await window.storage.set('types', JSON.stringify(types)); flashSave(); } catch(e){ console.error(e); } }
@@ -462,6 +511,7 @@ function renderTag(typeId){
 async function saveSettings(){ try { await window.storage.set('settings', JSON.stringify(settings)); flashSave(); } catch(e){ console.error(e); } }
 async function savePrinters(){ try { await window.storage.set('printers', JSON.stringify(printers)); flashSave(); } catch(e){ console.error(e); } }
 async function saveSpools(){ try { await window.storage.set('spools', JSON.stringify(spools)); flashSave(); } catch(e){ console.error(e); } }
+async function saveStock(){ try { await window.storage.set('stock', JSON.stringify(stock)); flashSave(); } catch(e){ console.error(e); } }
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
 async function saveLog(){ try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); } }
 // Every log entry claims exactly one unit of its product's queued quantity,
@@ -490,7 +540,86 @@ function syncConsumption(){
   if(changed){ saveOrder(); saveLog(); saveSpools(); }
   return changed;
 }
+
+// A failed print never produced a usable unit, so it shouldn't count toward
+// the queue the way a real completion does — but the filament it used is
+// genuinely gone, so that stays consumed. Locks the entry (consumed=true)
+// so syncConsumption never tries to touch it again.
+function markFailed(entryId){
+  const e = productionLog.find(x=>x.id===entryId);
+  if(!e || e.failed) return;
+  if(e.consumed){
+    getOrderEntry(e.productId).qty += 1;
+  }
+  e.failed = true;
+  if(!e.actualEnd) e.actualEnd = new Date().toISOString();
+  e.consumed = true; // locked — this was never a real unit, don't let it get re-claimed
+  saveLog(); saveOrder();
+}
+
+// Reverses markFailed — lets syncConsumption treat it as a normal completed
+// print again (claims a unit toward the queue, as it should have all along).
+function unmarkFailed(entryId){
+  const e = productionLog.find(x=>x.id===entryId);
+  if(!e || !e.failed) return;
+  e.failed = false;
+  e.consumed = false;
+  saveLog();
+  syncConsumption();
+}
 function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null}; return orderQty[id]; }
+
+// Any time a spool actually starts being used on a printer — whichever of
+// the three ways that happened (guided Change Spool, the Printers tab
+// dropdown, or the Filament tab's assignment dropdown) — stamp it, so the
+// schedule can show exactly when it happened. Doesn't re-stamp if this
+// spool is already the one marked as loaded on this printer (avoids
+// generating a new event just from re-selecting the same thing).
+function stampSpoolLoad(spoolId, printerId){
+  if(!spoolId) return;
+  const spool = spools.find(s=>s.id===spoolId);
+  if(!spool) return;
+  if(spool.loadedOnPrinterId === printerId && spool.loadedAt) return;
+  spool.loadedAt = new Date().toISOString();
+  spool.loadedOnPrinterId = printerId;
+}
+
+function renderNotifStatus(){
+  const el = document.getElementById('ps-notif-status');
+  if(!el) return;
+  if(typeof Notification === 'undefined'){
+    el.textContent = 'Not available in this browser/context.';
+    return;
+  }
+  const p = Notification.permission;
+  el.textContent = p==='granted' ? 'Enabled — you\'ll get finish-soon alerts.'
+    : p==='denied' ? 'Blocked — check your browser\'s site settings to allow notifications.'
+    : 'Not enabled yet.';
+}
+
+const NOTIFY_MIN_BEFORE = 5;
+function checkFinishNotifications(){
+  if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  const now = new Date();
+  let changed = false;
+  productionLog.forEach(e => {
+    if(e.actualEnd || e.failed || e.notifiedFinishSoon) return;
+    const estFinish = new Date(new Date(e.actualStart).getTime() + (e.plannedMin||0)*60000);
+    const minLeft = (estFinish - now) / 60000;
+    if(minLeft <= NOTIFY_MIN_BEFORE){
+      const product = catalog.find(p=>p.id===e.productId);
+      const printer = printers.find(p=>p.id===e.printerId);
+      try {
+        new Notification('Print finishing soon', {
+          body: `${product?product.name:'A print'} on ${printer?printer.name:'a printer'} — est. ${fmtClock(estFinish)}`
+        });
+      } catch(err){ console.error('notification failed', err); }
+      e.notifiedFinishSoon = true;
+      changed = true;
+    }
+  });
+  if(changed) saveLog();
+}
 
 let flashTimer = null;
 function flashSave(){
@@ -517,6 +646,14 @@ function fmtDuration(min){
   if(h<=0) return m+'m';
   if(m===0) return h+'h';
   return h+'h '+m+'m';
+}
+function fmtSpan(fromDate, toDate){
+  const totalMin = Math.max(0, (toDate - fromDate) / 60000);
+  if(totalMin < 60*24) return fmtDuration(totalMin);
+  let days = Math.floor(totalMin / (60*24));
+  let hours = Math.round((totalMin - days*60*24) / 60);
+  if(hours>=24){ days += 1; hours = 0; }
+  return hours>0 ? `${days}d ${hours}h` : `${days}d`;
 }
 function windowBounds(date, settings){
   const [sh,sm] = settings.startTime.split(':').map(Number);
@@ -547,7 +684,12 @@ function computeLiveCursor(printerId, settings){
     ? new Date(last.actualEnd)
     : new Date(new Date(last.actualStart).getTime() + last.plannedMin*60000);
   const withDowntime = new Date(endTime.getTime() + settings.downtimeMin*60000);
-  return nextStart(withDowntime, settings);
+  const now = new Date();
+  // A printer's next slot should never be treated as "available" in the
+  // past — if nothing's been logged since that entry, the honest read is
+  // "free as of right now," not "still queued starting from days ago."
+  const cursor = withDowntime > now ? withDowntime : now;
+  return nextStart(cursor, settings);
 }
 function toLocalInputValue(date){
   const pad = n => String(n).padStart(2,'0');
@@ -558,7 +700,7 @@ function fmtLogTime(iso){
   return fmtDateHead(d) + ' ' + fmtClock(d);
 }
 function productAvgActual(productId){
-  const entries = productionLog.filter(e => e.productId === productId && e.actualEnd);
+  const entries = productionLog.filter(e => e.productId === productId && e.actualEnd && !e.failed);
   if(entries.length === 0) return null;
   const totalMin = entries.reduce((s,e) => s + (new Date(e.actualEnd) - new Date(e.actualStart))/60000, 0);
   return {avgMin: totalMin/entries.length, count: entries.length};
@@ -573,15 +715,20 @@ function getActualJobsForDay(printerId, dateKey){
     .map(e => {
       const product = catalog.find(p=>p.id===e.productId);
       const end = e.actualEnd ? new Date(e.actualEnd) : new Date(new Date(e.actualStart).getTime() + (e.plannedMin||0)*60000);
+      const testDesc = product && e.testLabel ? `${product.name} — ${e.testLabel}`
+        : product ? product.name
+        : e.testLabel ? e.testLabel
+        : 'untitled';
       return {
-        name: product ? product.name : '(deleted product)',
+        name: e.isTest ? ('Test: '+testDesc) : (product ? product.name : '(deleted product)'),
         type: product ? product.type : null,
         productId: e.productId,
         start: new Date(e.actualStart),
         end,
-        weightG: product ? product.weightG : 0,
+        weightG: e.isTest ? (e.weightGAtLogTime||0) : (product ? product.weightG : 0),
         actual: true,
-        inProgress: !e.actualEnd,
+        inProgress: !e.actualEnd && !e.failed,
+        failed: !!e.failed,
         overnight: false
       };
     });
@@ -674,12 +821,244 @@ function buildMultiSchedule(queue, activePrinters, settings, mode){
 }
 
 // ---------- rendering: Printers tab ----------
+// ---------- rendering: Jobs tab ----------
+function jobTotals(job){
+  let totalMin = 0, totalWeight = 0, totalUnits = 0;
+  job.items.forEach(item => {
+    const p = catalog.find(x=>x.id===item.id);
+    if(!p) return;
+    totalMin += (p.timeH*60+p.timeM) * item.qty;
+    totalWeight += (p.weightG||0) * item.qty;
+    totalUnits += item.qty;
+  });
+  return {totalMin, totalWeight, totalUnits};
+}
+
+function renderJobItemRows(job, editable){
+  return job.items.map((item, idx) => {
+    const p = catalog.find(x=>x.id===item.id);
+    if(!p) return '';
+    if(!editable){
+      return `<div>${item.qty}× <b>${escapeHtml(p.name)}</b></div>`;
+    }
+    return `
+      <tr data-jobid="${job.id}" data-itemid="${item.id}">
+        <td>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn ghost small" data-action="job-item-up" ${idx===0?'disabled':''}>↑</button>
+            <button class="ps-btn ghost small" data-action="job-item-down" ${idx===job.items.length-1?'disabled':''}>↓</button>
+          </div>
+        </td>
+        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
+        <td><input class="ps-input ps-narrow" type="number" min="0" data-action="job-item-qty" value="${item.qty}" /></td>
+        <td><button class="ps-btn ghost small" data-action="job-item-remove">✕</button></td>
+      </tr>`;
+  }).join('');
+}
+
+function renderJobs(){
+  const root = document.getElementById('ps-tab-jobs');
+  const queued = jobs.filter(j=>j.status==='queued');
+  const active = jobs.filter(j=>j.status==='active');
+  const done = jobs.filter(j=>j.status==='done');
+
+  const queuedCards = queued.map(job => {
+    const t = jobTotals(job);
+    const availableProducts = catalog.filter(p => !job.items.some(it=>it.id===p.id));
+    const addOptions = availableProducts.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    return `
+      <div class="ps-printer-card" data-jobid="${job.id}">
+        <div class="ps-printer-top">
+          <input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;" />
+          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
+          <button class="ps-btn primary small" data-action="job-activate">Move to Active Queue</button>
+          <button class="ps-btn ghost small" data-action="job-delete">✕</button>
+        </div>
+        ${job.items.length===0 ? '<div class="ps-empty">No items yet.</div>' : `
+        <div style="overflow-x:auto;">
+        <table class="ps-table">
+          <thead><tr><th style="width:60px">Order</th><th>Product</th><th style="width:70px">Qty</th><th style="width:36px"></th></tr></thead>
+          <tbody>${renderJobItemRows(job, true)}</tbody>
+        </table>
+        </div>
+        `}
+        <div class="ps-row" style="margin-top:10px;flex-wrap:wrap;">
+          <select class="ps-select" data-action="job-add-select" style="max-width:200px;">
+            <option value="">Choose a product…</option>
+            ${addOptions}
+          </select>
+          <button class="ps-btn small" data-action="job-add-item" ${availableProducts.length===0?'disabled':''}>+ Add product</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const activeCards = active.map(job => {
+    const t = jobTotals(job);
+    return `
+      <div class="ps-printer-card" data-jobid="${job.id}">
+        <div class="ps-printer-top">
+          <b style="flex:1.4;">${escapeHtml(job.name)}</b>
+          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
+          <button class="ps-btn small" data-action="job-done">Mark Done</button>
+          <button class="ps-btn ghost small" data-action="job-delete">✕</button>
+        </div>
+        <div class="ps-joblist">${renderJobItemRows(job, false)}</div>
+      </div>
+    `;
+  }).join('');
+
+  const doneCards = done.map(job => {
+    const t = jobTotals(job);
+    return `
+      <div class="ps-printer-card" data-jobid="${job.id}">
+        <div class="ps-printer-top">
+          <span class="ps-hint" style="flex:1.4;">${escapeHtml(job.name)}</span>
+          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''}</span>
+          <button class="ps-btn ghost small" data-action="job-delete">✕</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Queued</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Staged jobs, not yet part of the real production queue. Edit freely, then move each into the active queue whenever a printer's actually ready for it.</div>
+      ${queued.length===0 ? '<div class="ps-empty">Nothing queued — save a scenario as a job from the Estimate tab, or add one directly.</div>' : queuedCards}
+      <div class="ps-row" style="margin-top:14px;">
+        <button class="ps-btn" id="ps-job-new">+ New job</button>
+      </div>
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Active</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Already added to the real Order to Fulfill queue. Mark a job done once you know it's fully printed.</div>
+      ${active.length===0 ? '<div class="ps-empty">Nothing active right now.</div>' : activeCards}
+    </div>
+    ${done.length>0 ? `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Done</div>
+      ${doneCards}
+    </div>` : ''}
+  `;
+
+  // Queued job actions
+  root.querySelectorAll('[data-jobid]').forEach(card => {
+    const jobId = card.getAttribute('data-jobid');
+    const job = jobs.find(j=>j.id===jobId);
+    if(!job) return;
+
+    const renameInput = card.querySelector('[data-action="job-rename"]');
+    if(renameInput){
+      renameInput.addEventListener('change', e => {
+        job.name = e.target.value.trim() || job.name;
+        saveJobs();
+      });
+    }
+    const activateBtn = card.querySelector('[data-action="job-activate"]');
+    if(activateBtn){
+      activateBtn.addEventListener('click', () => {
+        job.items.forEach(item => {
+          const entry = getOrderEntry(item.id);
+          entry.qty += item.qty;
+        });
+        job.status = 'active';
+        saveOrder(); saveJobs();
+        renderJobs(); regenerateIfActive();
+      });
+    }
+    const doneBtn = card.querySelector('[data-action="job-done"]');
+    if(doneBtn){
+      doneBtn.addEventListener('click', () => {
+        job.status = 'done';
+        saveJobs(); renderJobs();
+      });
+    }
+    const deleteBtn = card.querySelector('[data-action="job-delete"]');
+    if(deleteBtn){
+      deleteBtn.addEventListener('click', () => {
+        jobs = jobs.filter(j=>j.id!==jobId);
+        saveJobs(); renderJobs();
+      });
+    }
+    const addSelect = card.querySelector('[data-action="job-add-select"]');
+    const addBtn = card.querySelector('[data-action="job-add-item"]');
+    if(addBtn){
+      addBtn.addEventListener('click', () => {
+        const id = addSelect.value;
+        if(!id) return;
+        job.items.push({id, qty: 1});
+        saveJobs(); renderJobs();
+      });
+    }
+    card.querySelectorAll('[data-action="job-item-qty"]').forEach(input => {
+      input.addEventListener('change', e => {
+        const itemId = e.target.closest('tr').getAttribute('data-itemid');
+        const item = job.items.find(it=>it.id===itemId);
+        if(item) item.qty = Math.max(0, parseInt(e.target.value)||0);
+        saveJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="job-item-remove"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.closest('tr').getAttribute('data-itemid');
+        job.items = job.items.filter(it=>it.id!==itemId);
+        saveJobs(); renderJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="job-item-up"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.closest('tr').getAttribute('data-itemid');
+        const idx = job.items.findIndex(it=>it.id===itemId);
+        if(idx>0){ [job.items[idx],job.items[idx-1]] = [job.items[idx-1],job.items[idx]]; saveJobs(); renderJobs(); }
+      });
+    });
+    card.querySelectorAll('[data-action="job-item-down"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.closest('tr').getAttribute('data-itemid');
+        const idx = job.items.findIndex(it=>it.id===itemId);
+        if(idx<job.items.length-1){ [job.items[idx],job.items[idx+1]] = [job.items[idx+1],job.items[idx]]; saveJobs(); renderJobs(); }
+      });
+    });
+  });
+
+  const newJobBtn = document.getElementById('ps-job-new');
+  if(newJobBtn){
+    newJobBtn.addEventListener('click', () => {
+      jobs.push({id: uid('job'), name: 'New job', items: [], status:'queued', createdAt: new Date().toISOString()});
+      saveJobs(); renderJobs();
+    });
+  }
+}
+
+let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
+
 function renderPrinters(){
   const root = document.getElementById('ps-tab-printers');
   const cards = printers.map(p => {
-    const spoolOptions = `<option value="">— none assigned —</option>` + spools.map(s =>
+    const activeSpoolOptions = `<option value="">— none assigned —</option>` + spools.filter(s=>!s.retired).map(s =>
       `<option value="${s.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(s.label)} (${s.remainingG}g left)</option>`
     ).join('');
+    const currentSpool = spools.find(s=>s.id===p.spoolId);
+    const availableStock = stock.filter(st=>st.qty>0);
+    const changeOpen = changeSpoolOpenFor.has(p.id);
+
+    const changePicker = changeOpen ? `
+      <div class="ps-field" style="margin-top:10px;margin-bottom:0;background:var(--panel-2);border-radius:4px;padding:10px;">
+        <span class="ps-field-label">Load fresh spool from Stock</span>
+        ${availableStock.length===0 ? `<div class="ps-hint" style="color:var(--danger)">Nothing in Stock — add some on the Filament tab first.</div>` : `
+        <select class="ps-select" data-action="change-spool-select" style="max-width:260px;">
+          ${availableStock.map(st => `<option value="${st.id}">${escapeHtml(st.label)} (${st.weightPerSpoolG}g, ${st.qty} in stock)</option>`).join('')}
+        </select>
+        <div class="ps-row" style="margin-top:8px;gap:8px;">
+          <button class="ps-btn primary small" data-action="confirm-change-spool">Confirm Swap</button>
+          <button class="ps-btn ghost small" data-action="cancel-change-spool">Cancel</button>
+        </div>
+        <div class="ps-hint" style="margin-top:6px;">${currentSpool ? `Retires "${escapeHtml(currentSpool.label)}" (keeps its history) and loads the fresh one.` : `Loads the fresh one — nothing's currently assigned here.`}</div>
+        `}
+      </div>
+    ` : '';
+
     return `
       <div class="ps-printer-card" data-id="${p.id}">
         <div class="ps-printer-top">
@@ -689,8 +1068,12 @@ function renderPrinters(){
         </div>
         <div class="ps-field" style="margin-bottom:0;">
           <span class="ps-field-label">Loaded spool</span>
-          <select class="ps-select" data-field="spoolId">${spoolOptions}</select>
+          <div class="ps-row" style="gap:8px;">
+            <select class="ps-select" data-field="spoolId" style="flex:1;">${activeSpoolOptions}</select>
+            <button class="ps-btn small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
+          </div>
           <div class="ps-hint">Used to flag when the schedule will run this machine out of filament.</div>
+          ${changePicker}
         </div>
       </div>
     `;
@@ -703,7 +1086,7 @@ function renderPrinters(){
       <div style="margin-top:14px;">
         <button class="ps-btn" id="ps-add-printer">+ Add printer</button>
       </div>
-      <div class="ps-hint" style="margin-top:12px;">Mark a printer "Down" to pull it out of the rotation entirely — its share of the queue gets redistributed to the active printers. To tell the Live Schedule what a printer's actually doing right now, log its prints on the Log tab.</div>
+      <div class="ps-hint" style="margin-top:12px;">Mark a printer "Down" to pull it out of the rotation entirely — its share of the queue gets redistributed to the active printers. To tell the Live Schedule what a printer's actually doing right now, log its prints on the Log tab. Use "Change Spool" when you actually swap the physical spool — it retires the old one and pulls a fresh one from Stock.</div>
     </div>
   `;
 
@@ -721,12 +1104,52 @@ function renderPrinters(){
     card.querySelector('[data-field="spoolId"]').addEventListener('change', e => {
       const p = printers.find(x=>x.id===id);
       p.spoolId = e.target.value || null;
+      if(p.spoolId){ stampSpoolLoad(p.spoolId, p.id); saveSpools(); }
       savePrinters(); regenerateIfActive();
     });
     card.querySelector('[data-action="remove"]').addEventListener('click', () => {
       printers = printers.filter(x=>x.id!==id);
       savePrinters(); renderPrinters(); regenerateIfActive();
     });
+    card.querySelector('[data-action="toggle-change-spool"]').addEventListener('click', () => {
+      if(changeSpoolOpenFor.has(id)) changeSpoolOpenFor.delete(id);
+      else changeSpoolOpenFor.add(id);
+      renderPrinters();
+    });
+    const cancelBtn = card.querySelector('[data-action="cancel-change-spool"]');
+    if(cancelBtn){
+      cancelBtn.addEventListener('click', () => { changeSpoolOpenFor.delete(id); renderPrinters(); });
+    }
+    const confirmBtn = card.querySelector('[data-action="confirm-change-spool"]');
+    if(confirmBtn){
+      confirmBtn.addEventListener('click', () => {
+        const select = card.querySelector('[data-action="change-spool-select"]');
+        const stockId = select ? select.value : '';
+        const st = stock.find(x=>x.id===stockId);
+        if(!st || st.qty<=0) return;
+
+        const p = printers.find(x=>x.id===id);
+        // Retire whatever's currently loaded — keeps its history, just takes
+        // it out of rotation — rather than deleting it outright.
+        if(p.spoolId){
+          const oldSpool = spools.find(x=>x.id===p.spoolId);
+          if(oldSpool) oldSpool.retired = true;
+        }
+        // Pull a fresh one from Stock.
+        st.qty -= 1;
+        const newSpool = {
+          id: uid('spool'), label: st.label, material: st.material, colorHex: st.colorHex,
+          totalG: st.weightPerSpoolG, remainingG: st.weightPerSpoolG, retired: false,
+          loadedAt: new Date().toISOString(), loadedOnPrinterId: id
+        };
+        spools.push(newSpool);
+        p.spoolId = newSpool.id;
+
+        changeSpoolOpenFor.delete(id);
+        saveSpools(); saveStock(); savePrinters();
+        renderPrinters(); renderFilament(); regenerateIfActive();
+      });
+    }
   });
 
   document.getElementById('ps-add-printer').addEventListener('click', () => {
@@ -737,11 +1160,26 @@ function renderPrinters(){
 
 // ---------- rendering: Log tab ----------
 let editingLogId = null;
+// Which past days/weeks a person has manually expanded, keyed by
+// "machineId|dateKey" or "machineId|weekStartDateKey". Session-only — not
+// persisted, and not relevant for Theoretical view (no "past" there since
+// nothing's actually happened yet).
+let expandedPastDays = new Set();
+let expandedPastWeeks = new Set();
 
 function renderLog(){
   const root = document.getElementById('ps-tab-log');
   const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
   const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+  const resolved = productionLog.filter(e => !e.isTest && (e.failed || e.actualEnd));
+  const totalFailures = resolved.filter(e=>e.failed).length;
+  const failureRate = resolved.length>0 ? (totalFailures/resolved.length*100) : 0;
+  const perPrinterStats = printers.map(p => {
+    const pResolved = resolved.filter(e=>e.printerId===p.id);
+    const pFailed = pResolved.filter(e=>e.failed).length;
+    return {name: p.name, failed: pFailed, total: pResolved.length, rate: pResolved.length>0 ? (pFailed/pResolved.length*100) : null};
+  }).filter(s => s.total>0);
 
   const entries = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
   const rows = entries.map(e => {
@@ -782,15 +1220,26 @@ function renderLog(){
     const durationText = e.actualEnd
       ? fmtDuration((new Date(e.actualEnd)-new Date(e.actualStart))/60000)
       : null;
+    const statusLine = e.failed
+      ? `<span style="color:var(--danger)">✕ failed</span> — ${durationText} before it was stopped`
+      : (e.actualEnd ? '→ '+fmtLogTime(e.actualEnd)+' ('+durationText+')' : '— still printing');
+    const testDesc = e.isTest
+      ? (product && e.testLabel ? `${escapeHtml(product.name)} — ${escapeHtml(e.testLabel)}`
+        : product ? escapeHtml(product.name)
+        : e.testLabel ? escapeHtml(e.testLabel)
+        : '(untitled test)')
+      : null;
+    const titleText = e.isTest ? `<span class="ps-hint" style="text-transform:uppercase;font-weight:700;letter-spacing:0.4px;">Test</span> ${testDesc}` : escapeHtml(product?product.name:'(deleted product)');
     return `
-      <div class="ps-log-entry" data-id="${e.id}">
+      <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
-          <b>${escapeHtml(product?product.name:'(deleted product)')}</b> on ${escapeHtml(printer?printer.name:'(deleted printer)')}
-          <div class="mono">${fmtLogTime(e.actualStart)}${e.actualEnd ? ' → '+fmtLogTime(e.actualEnd)+' ('+durationText+')' : ' — still printing'}</div>
+          <b>${titleText}</b> on ${escapeHtml(printer?printer.name:'(deleted printer)')}${e.isTest && e.weightGAtLogTime>0 ? ' — '+e.weightGAtLogTime+'g' : ''}
+          <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
         </div>
         <div class="ps-row" style="gap:6px;">
-          ${!e.actualEnd ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
-          <button class="ps-btn ghost small" data-action="edit">Edit</button>
+          ${!e.actualEnd && !e.failed ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
+          ${!e.isTest ? (!e.failed ? '<button class="ps-btn ghost small" style="color:var(--danger)" data-action="fail">Mark failed</button>' : '<button class="ps-btn ghost small" data-action="unfail">Undo failure</button>') : ''}
+          ${!e.isTest ? '<button class="ps-btn ghost small" data-action="edit">Edit</button>' : ''}
           <button class="ps-btn ghost small" data-action="delete">✕</button>
         </div>
       </div>
@@ -798,16 +1247,54 @@ function renderLog(){
   }).join('');
 
   root.innerHTML = `
+    ${resolved.length>0 ? `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Failure Stats</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="ps-summary-cell"><div class="ps-summary-num">${totalFailures}</div><div class="ps-summary-label">Total failures</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${failureRate.toFixed(1)}%</div><div class="ps-summary-label">Failure rate (${totalFailures} of ${resolved.length})</div></div>
+      </div>
+      ${perPrinterStats.length>0 ? `
+      <div style="margin-top:12px;">
+        ${perPrinterStats.map(s => `
+          <div class="ps-row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+            <span>${escapeHtml(s.name)}</span>
+            <span class="mono ps-hint">${s.failed} / ${s.total} — ${s.rate.toFixed(1)}%</span>
+          </div>
+        `).join('')}
+      </div>
+      ` : ''}
+    </div>
+    ` : ''}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Log a Print</div>
+      <label class="ps-row" style="gap:6px;margin-bottom:12px;cursor:pointer;">
+        <input type="checkbox" id="ps-log-istest" />
+        <span class="ps-hint">Test / R&D print — not for an order, doesn't touch quantities or failure stats</span>
+      </label>
       <div class="ps-row" style="align-items:flex-end; flex-wrap:wrap;">
         <div class="ps-field" style="flex:1;min-width:160px;margin-bottom:0;">
           <span class="ps-field-label">Printer</span>
           <select class="ps-select" id="ps-log-printer">${printerOptions}</select>
         </div>
-        <div class="ps-field" style="flex:1;min-width:160px;margin-bottom:0;">
+        <div class="ps-field" id="ps-log-product-field" style="flex:1;min-width:160px;margin-bottom:0;">
           <span class="ps-field-label">Product</span>
           <select class="ps-select" id="ps-log-product">${productOptions}</select>
+        </div>
+        <div class="ps-field" id="ps-log-testproduct-field" style="flex:1;min-width:160px;margin-bottom:0;display:none;">
+          <span class="ps-field-label">Product (optional)</span>
+          <select class="ps-select" id="ps-log-testproduct">
+            <option value="">— not a specific product —</option>
+            ${productOptions}
+          </select>
+        </div>
+        <div class="ps-field" id="ps-log-testlabel-field" style="flex:1;min-width:160px;margin-bottom:0;display:none;">
+          <span class="ps-field-label">Note (optional if product picked)</span>
+          <input class="ps-input" id="ps-log-testlabel" placeholder="e.g. new retraction settings" />
+        </div>
+        <div class="ps-field" id="ps-log-testweight-field" style="flex:1;min-width:120px;margin-bottom:0;display:none;">
+          <span class="ps-field-label">Filament used (g)</span>
+          <input class="ps-input" type="number" min="0" id="ps-log-testweight" value="0" />
         </div>
         <div class="ps-field" style="flex:1;min-width:180px;margin-bottom:0;">
           <span class="ps-field-label">Actual start</span>
@@ -829,29 +1316,64 @@ function renderLog(){
     </div>
   `;
 
+  const testCheckbox = document.getElementById('ps-log-istest');
+  testCheckbox.addEventListener('change', () => {
+    const isTest = testCheckbox.checked;
+    document.getElementById('ps-log-product-field').style.display = isTest ? 'none' : '';
+    document.getElementById('ps-log-testproduct-field').style.display = isTest ? '' : 'none';
+    document.getElementById('ps-log-testlabel-field').style.display = isTest ? '' : 'none';
+    document.getElementById('ps-log-testweight-field').style.display = isTest ? '' : 'none';
+  });
+  const testProductSelect = document.getElementById('ps-log-testproduct');
+  testProductSelect.addEventListener('change', () => {
+    const p = catalog.find(x=>x.id===testProductSelect.value);
+    if(p && p.weightG>0){
+      document.getElementById('ps-log-testweight').value = p.weightG;
+    }
+  });
+
   document.getElementById('ps-log-submit').addEventListener('click', () => {
+    const isTest = document.getElementById('ps-log-istest').checked;
     const printerId = document.getElementById('ps-log-printer').value;
-    const productId = document.getElementById('ps-log-product').value;
     const startVal = document.getElementById('ps-log-start').value;
     const endVal = document.getElementById('ps-log-end').value;
-    if(!printerId || !productId || !startVal) return;
-    const product = catalog.find(p=>p.id===productId);
     const printer = printers.find(p=>p.id===printerId);
-    const plannedMin = product ? (product.timeH*60+product.timeM) : 0;
-    productionLog.push({
-      id: uid('log'),
-      printerId, productId,
-      actualStart: new Date(startVal).toISOString(),
-      actualEnd: endVal ? new Date(endVal).toISOString() : null,
-      plannedMin,
-      weightGAtLogTime: product ? (product.weightG||0) : 0,
-      spoolIdAtLogTime: printer ? (printer.spoolId||null) : null
-    });
+
+    if(isTest){
+      const testProductId = document.getElementById('ps-log-testproduct').value || null;
+      const testLabel = document.getElementById('ps-log-testlabel').value.trim();
+      const testWeight = Math.max(0, parseFloat(document.getElementById('ps-log-testweight').value)||0);
+      if(!printerId || (!testProductId && !testLabel) || !startVal) return;
+      productionLog.push({
+        id: uid('log'),
+        printerId, productId: testProductId, isTest: true, testLabel,
+        actualStart: new Date(startVal).toISOString(),
+        actualEnd: endVal ? new Date(endVal).toISOString() : null,
+        plannedMin: 0,
+        weightGAtLogTime: testWeight,
+        spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
+        consumed: true // no order impact regardless of whether a product is tied to it
+      });
+    } else {
+      const productId = document.getElementById('ps-log-product').value;
+      if(!printerId || !productId || !startVal) return;
+      const product = catalog.find(p=>p.id===productId);
+      const plannedMin = product ? (product.timeH*60+product.timeM) : 0;
+      productionLog.push({
+        id: uid('log'),
+        printerId, productId,
+        actualStart: new Date(startVal).toISOString(),
+        actualEnd: endVal ? new Date(endVal).toISOString() : null,
+        plannedMin,
+        weightGAtLogTime: product ? (product.weightG||0) : 0,
+        spoolIdAtLogTime: printer ? (printer.spoolId||null) : null
+      });
+    }
     // Logging a print permanently claims one unit from the queue — it doesn't
     // come back on its own the next day. Deleting or re-pointing this entry
-    // (see below) reverses it.
+    // (see below) reverses it. Test prints skip that entirely (consumed:true
+    // above), but still draw down the spool like any real print would.
     syncConsumption();
-    scheduleView = 'live';
     renderLog(); regenerateIfActive();
   });
 
@@ -870,7 +1392,7 @@ function renderLog(){
         const productChanged = e.productId !== productId;
         const printerChanged = e.printerId !== printerId;
 
-        if(productChanged){
+        if(productChanged && !e.failed){
           const product = catalog.find(p=>p.id===productId);
           e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
           // This entry no longer claims a unit of the old product — give it
@@ -878,6 +1400,9 @@ function renderLog(){
           // claim one of the new product below.
           if(e.consumed){ getOrderEntry(e.productId).qty += 1; }
           e.consumed = false;
+        } else if(productChanged && e.failed){
+          const product = catalog.find(p=>p.id===productId);
+          e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
         }
         if(printerChanged || productChanged){
           // Weight and/or which spool it should draw from may have changed —
@@ -897,6 +1422,7 @@ function renderLog(){
         e.printerId = printerId;
         e.productId = productId;
         e.actualStart = new Date(startVal).toISOString();
+        e.notifiedFinishSoon = false;
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
         editingLogId = null;
         syncConsumption();
@@ -917,14 +1443,31 @@ function renderLog(){
         saveLog(); renderLog(); regenerateIfActive();
       });
     }
-    row.querySelector('[data-action="edit"]').addEventListener('click', () => {
-      editingLogId = id;
-      renderLog();
-    });
+    const failBtn = row.querySelector('[data-action="fail"]');
+    if(failBtn){
+      failBtn.addEventListener('click', () => {
+        markFailed(id);
+        renderLog(); regenerateIfActive();
+      });
+    }
+    const unfailBtn = row.querySelector('[data-action="unfail"]');
+    if(unfailBtn){
+      unfailBtn.addEventListener('click', () => {
+        unmarkFailed(id);
+        renderLog(); regenerateIfActive();
+      });
+    }
+    const editBtn = row.querySelector('[data-action="edit"]');
+    if(editBtn){
+      editBtn.addEventListener('click', () => {
+        editingLogId = id;
+        renderLog();
+      });
+    }
     row.querySelector('[data-action="delete"]').addEventListener('click', () => {
       const removed = productionLog.find(x=>x.id===id);
       productionLog = productionLog.filter(x=>x.id!==id);
-      if(removed && removed.consumed){
+      if(removed && removed.consumed && !removed.failed && removed.productId){
         const orderEntry = getOrderEntry(removed.productId);
         orderEntry.qty += 1;
         saveOrder();
@@ -939,50 +1482,408 @@ function renderLog(){
 }
 
 
-function renderFilament(){
-  const root = document.getElementById('ps-tab-filament');
-  const cards = spools.map(s => {
-    const pct = s.totalG>0 ? Math.max(0,Math.min(100, (s.remainingG/s.totalG)*100)) : 0;
-    const low = s.remainingG <= LOW_STOCK_G;
+// ---------- rendering: Estimate tab ----------
+function renderEstimate(){
+  const root = document.getElementById('ps-tab-estimate');
+
+  const availableProducts = catalog.filter(p => !estimateItems.some(it=>it.id===p.id));
+  const addOptions = availableProducts.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+  const rows = estimateItems.map((item, idx) => {
+    const p = catalog.find(x=>x.id===item.id);
+    if(!p) return '';
+    const printMin = p.timeH*60 + p.timeM;
+    const incomplete = printMin<=0;
     return `
-      <div class="ps-spool-card" data-id="${s.id}">
-        <div class="ps-spool-top">
-          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
-          <input class="ps-input ps-name" data-field="label" value="${escapeHtml(s.label)}" placeholder="e.g. PCTG Pro — Natural" />
-          <input class="ps-input" style="max-width:110px" data-field="material" value="${escapeHtml(s.material)}" placeholder="Material" />
-          <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${s.colorHex||'#cccccc'}" />
-          ${low ? '<span class="ps-badge-low">Low</span>' : ''}
-          <button class="ps-btn ghost small" data-action="remove" title="Remove spool">✕</button>
-        </div>
-        <div class="ps-row">
-          <div class="ps-field" style="flex:1;margin-bottom:0;">
-            <span class="ps-field-label">Remaining (g)</span>
-            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${s.remainingG}" />
+      <tr data-id="${item.id}">
+        <td>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn ghost small" data-action="up" ${idx===0?'disabled':''}>↑</button>
+            <button class="ps-btn ghost small" data-action="down" ${idx===estimateItems.length-1?'disabled':''}>↓</button>
           </div>
-          <div class="ps-field" style="flex:1;margin-bottom:0;">
-            <span class="ps-field-label">Full spool weight (g)</span>
-            <input class="ps-input" type="number" min="0" data-field="totalG" value="${s.totalG}" />
-          </div>
-        </div>
-        <div class="ps-spool-bar-track"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
-      </div>
-    `;
+        </td>
+        <td>
+          ${renderTag(p.type)}
+          &nbsp;${escapeHtml(p.name)}
+          ${incomplete?'<span class="ps-hint" style="color:var(--danger)"> — no print time set</span>':''}
+        </td>
+        <td class="mono ps-hint">${incomplete? '—' : fmtDuration(printMin)}</td>
+        <td class="mono ps-hint">${p.weightG>0 ? p.weightG+'g' : '—'}</td>
+        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${item.qty}" /></td>
+        <td><button class="ps-btn ghost small" data-action="remove">✕</button></td>
+      </tr>`;
+  }).join('');
+
+  const scenarioChips = Array.from({length: Math.max(printers.length,1)}, (_,i) => i+1).map(n => {
+    const on = estimateScenarios.includes(n);
+    return `<span class="ps-daycheck ${on?'on':''}" data-n="${n}">${on?'✓':'+'} ${n} printer${n!==1?'s':''}</span>`;
   }).join('');
 
   root.innerHTML = `
     <div class="ps-panel">
-      <div class="ps-panel-title"><span class="dot"></span>Filament Inventory</div>
-      ${spools.length===0 ? '<div class="ps-empty">No spools yet — add what you\'ve got on hand.</div>' : `<div id="ps-spools-list">${cards}</div>`}
-      <div style="margin-top:14px;">
-        <button class="ps-btn" id="ps-add-spool">+ Add spool</button>
+      <div class="ps-panel-title"><span class="dot"></span>Scenario</div>
+      <div class="ps-hint" style="margin-bottom:12px;">A scratch what-if — completely separate from your real order on the Schedule tab. Nothing here touches your queue, your quantities, or your filament stock.</div>
+      ${estimateItems.length===0 ? '<div class="ps-empty">No products in this scenario yet — add some below.</div>' : `
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th style="width:60px">Order</th><th>Product</th><th style="width:80px">Print time</th><th style="width:70px">Weight</th><th style="width:70px">Qty</th><th style="width:36px"></th></tr></thead>
+        <tbody id="ps-estimate-body">${rows}</tbody>
+      </table>
       </div>
-      <div class="ps-hint" style="margin-top:12px;">Assign a spool to a printer on the Printers tab so the schedule can flag when that machine will run out mid-queue. Update "Remaining" here whenever you weigh a spool or load a fresh one — spools flagged "Low" are under ${LOW_STOCK_G}g.</div>
+      `}
+      <div class="ps-row" style="margin-top:14px;flex-wrap:wrap;">
+        <select class="ps-select" id="ps-estimate-add-select" style="max-width:220px;">
+          <option value="">Choose a product…</option>
+          ${addOptions}
+        </select>
+        <button class="ps-btn" id="ps-estimate-add-btn" ${availableProducts.length===0?'disabled':''}>+ Add to scenario</button>
+      </div>
     </div>
+
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Printer Counts to Compare</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Based on your ${printers.length} configured printer${printers.length!==1?'s':''} — check which counts you want compared.</div>
+      <div class="ps-row" style="gap:8px;flex-wrap:wrap;" id="ps-scenario-chips">${scenarioChips}</div>
+    </div>
+
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Filament Assumption</div>
+      <div class="ps-field" style="max-width:220px;margin-bottom:0;">
+        <span class="ps-field-label">Typical spool weight (g)</span>
+        <input class="ps-input" type="number" min="1" id="ps-estimate-spool-g" value="${settings.estimateSpoolG}" />
+      </div>
+      <div class="ps-hint" style="margin-top:8px;">Only used to turn this scenario's total filament weight into a rough spool count below — not tied to your actual spool inventory on the Filament tab.</div>
+    </div>
+
+    <div class="ps-panel">
+      <div class="ps-row">
+        <button class="ps-btn primary" id="ps-estimate-run">Calculate</button>
+        <button class="ps-btn" id="ps-estimate-clear">Clear scenario</button>
+      </div>
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Save as Job</div>
+      <div class="ps-hint" style="margin-bottom:10px;">Snapshots this product list as a named job on the Jobs tab, ready to move into the real production queue whenever you're ready — this scenario stays here untouched either way.</div>
+      <div class="ps-row" style="flex-wrap:wrap;">
+        <input class="ps-input" id="ps-estimate-jobname" placeholder="Job name" style="max-width:240px;" />
+        <button class="ps-btn" id="ps-estimate-save-job" ${estimateItems.length===0?'disabled':''}>Save as Job</button>
+      </div>
+      <div id="ps-estimate-job-msg" class="ps-hint" style="margin-top:8px;"></div>
+    </div>
+    <div id="ps-estimate-output"></div>
   `;
 
+  root.querySelectorAll('#ps-estimate-body tr').forEach(tr => {
+    const id = tr.getAttribute('data-id');
+    tr.querySelector('[data-field="qty"]').addEventListener('change', e => {
+      const item = estimateItems.find(it=>it.id===id);
+      if(item) item.qty = Math.max(0, parseInt(e.target.value)||0);
+      saveEstimateItems();
+    });
+    tr.querySelector('[data-action="remove"]').addEventListener('click', () => {
+      estimateItems = estimateItems.filter(it=>it.id!==id);
+      saveEstimateItems(); renderEstimate();
+    });
+    const upBtn = tr.querySelector('[data-action="up"]');
+    const downBtn = tr.querySelector('[data-action="down"]');
+    if(upBtn) upBtn.addEventListener('click', () => moveEstimateItem(id, -1));
+    if(downBtn) downBtn.addEventListener('click', () => moveEstimateItem(id, 1));
+  });
+
+  document.getElementById('ps-estimate-add-btn').addEventListener('click', () => {
+    const sel = document.getElementById('ps-estimate-add-select');
+    const id = sel.value;
+    if(!id) return;
+    estimateItems.push({id, qty: 1});
+    saveEstimateItems(); renderEstimate();
+  });
+
+  root.querySelectorAll('#ps-scenario-chips .ps-daycheck').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const n = parseInt(chip.getAttribute('data-n'));
+      if(estimateScenarios.includes(n)) estimateScenarios = estimateScenarios.filter(x=>x!==n);
+      else estimateScenarios.push(n);
+      estimateScenarios.sort((a,b)=>a-b);
+      saveEstimateScenarios(); renderEstimate();
+    });
+  });
+
+  document.getElementById('ps-estimate-spool-g').addEventListener('change', (e) => {
+    settings.estimateSpoolG = Math.max(1, parseFloat(e.target.value)||1000);
+    saveSettings(); regenerateIfActive();
+  });
+
+  document.getElementById('ps-estimate-run').addEventListener('click', runEstimate);
+  document.getElementById('ps-estimate-clear').addEventListener('click', () => {
+    estimateItems = [];
+    saveEstimateItems();
+    document.getElementById('ps-estimate-output').innerHTML = '';
+    renderEstimate();
+  });
+  const saveJobBtn = document.getElementById('ps-estimate-save-job');
+  if(saveJobBtn){
+    saveJobBtn.addEventListener('click', () => {
+      const nameInput = document.getElementById('ps-estimate-jobname');
+      const msgEl = document.getElementById('ps-estimate-job-msg');
+      const name = nameInput.value.trim();
+      if(estimateItems.length===0){ msgEl.textContent = 'Add at least one product first.'; return; }
+      if(!name){ msgEl.textContent = 'Give the job a name first.'; return; }
+      jobs.push({
+        id: uid('job'),
+        name,
+        items: estimateItems.filter(it=>it.qty>0).map(it => ({id: it.id, qty: it.qty})),
+        status: 'queued',
+        createdAt: new Date().toISOString()
+      });
+      saveJobs();
+      nameInput.value = '';
+      msgEl.textContent = `Saved "${name}" to the Jobs tab.`;
+      if(document.getElementById('ps-tab-jobs')) renderJobs();
+    });
+  }
+}
+
+function moveEstimateItem(id, dir){
+  const idx = estimateItems.findIndex(it=>it.id===id);
+  const newIdx = idx+dir;
+  if(newIdx<0 || newIdx>=estimateItems.length) return;
+  [estimateItems[idx], estimateItems[newIdx]] = [estimateItems[newIdx], estimateItems[idx]];
+  saveEstimateItems(); renderEstimate();
+}
+
+function runEstimate(){
+  const outEl = document.getElementById('ps-estimate-output');
+  if(!outEl) return;
+
+  const missing = [];
+  const queue = [];
+  estimateItems.forEach(item => {
+    if(item.qty<=0) return;
+    const p = catalog.find(x=>x.id===item.id);
+    if(!p) return;
+    const printTimeMin = p.timeH*60 + p.timeM;
+    if(printTimeMin<=0){ missing.push(p.name); return; }
+    for(let i=0;i<item.qty;i++){
+      queue.push({productId:item.id, name:p.name, type:p.type, weightG:p.weightG, printTimeMin, pin:null});
+    }
+  });
+
+  if(missing.length>0){
+    outEl.innerHTML = `<div class="ps-warnbox">Set a print time for: ${missing.map(escapeHtml).join(', ')} before calculating.</div>`;
+    return;
+  }
+  if(queue.length===0){
+    outEl.innerHTML = `<div class="ps-empty">Add at least one product with a quantity above 0 to calculate.</div>`;
+    return;
+  }
+  if(estimateScenarios.filter(n => n <= Math.max(printers.length,1)).length===0){
+    outEl.innerHTML = `<div class="ps-warnbox">Check at least one printer count to compare.</div>`;
+    return;
+  }
+  if(settings.workDays.length===0){
+    outEl.innerHTML = `<div class="ps-warnbox">No work days are checked on the Settings tab, so there's never a valid window to print in.</div>`;
+    return;
+  }
+  const [wsH,wsM] = settings.startTime.split(':').map(Number);
+  const [weH,weM] = settings.endTime.split(':').map(Number);
+  if(wsH*60+wsM >= weH*60+weM){
+    outEl.innerHTML = `<div class="ps-warnbox">On the Settings tab, the window closes at or before it opens — nothing can be scheduled.</div>`;
+    return;
+  }
+
+  const totalWeight = queue.reduce((s,j)=>s+(j.weightG||0), 0);
+  const spoolsNeeded = totalWeight>0 ? Math.ceil(totalWeight / settings.estimateSpoolG) : 0;
+  const stockOnHand = spools.reduce((s,sp)=>s+sp.remainingG, 0);
+  const stockDelta = stockOnHand - totalWeight;
+
+  const scenarios = estimateScenarios.filter(n => n <= Math.max(printers.length,1)).map(n => {
+    const simPrinters = Array.from({length:n}, (_,i) => ({id:'sim'+i, name:'Printer '+(i+1), status:'active'}));
+    const result = buildMultiSchedule(queue, simPrinters, settings, 'theoretical');
+    let lastEnd = null;
+    result.machines.forEach(m => m.days.forEach(d => {
+      if(d.jobs.length===0) return;
+      const lastJob = d.jobs[d.jobs.length-1];
+      if(!lastEnd || lastJob.end > lastEnd) lastEnd = lastJob.end;
+    }));
+    return {n, lastEnd, unassigned: result.unassigned.length};
+  });
+
+  const estimateNow = new Date();
+  const scenarioCells = scenarios.map(s => `
+    <div class="ps-summary-cell" style="flex:1;min-width:150px;">
+      <div class="ps-summary-num">${s.lastEnd ? fmtSpan(estimateNow, s.lastEnd) : '—'}</div>
+      <div class="ps-summary-label">${s.n} printer${s.n!==1?'s':''}</div>
+      ${s.lastEnd ? `<div class="ps-hint mono" style="margin-top:4px;">done ${fmtDateHead(s.lastEnd)} ${fmtClock(s.lastEnd)}</div>` : ''}
+      ${s.unassigned>0 ? `<div class="ps-hint" style="color:var(--danger)">${s.unassigned} unplaced</div>` : ''}
+    </div>
+  `).join('');
+
+  const stockNote = totalWeight<=0 ? '' : (stockDelta>=0
+    ? `<div class="ps-hint" style="margin-top:8px;">You have ${stockOnHand}g on hand across your tracked spools — enough, with ${stockDelta}g to spare.</div>`
+    : `<div class="ps-hint" style="margin-top:8px;color:var(--danger)">You have ${stockOnHand}g on hand — short by ${Math.abs(stockDelta)}g (about ${Math.ceil(Math.abs(stockDelta)/settings.estimateSpoolG)} more spool${Math.ceil(Math.abs(stockDelta)/settings.estimateSpoolG)!==1?'s':''} at ${settings.estimateSpoolG}g each).</div>`);
+
+  outEl.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Filament Needed</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="ps-summary-cell"><div class="ps-summary-num">${totalWeight>0?totalWeight+'g':'—'}</div><div class="ps-summary-label">Total filament</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${spoolsNeeded>0?'≈'+spoolsNeeded:'—'}</div><div class="ps-summary-label">Spools at ${settings.estimateSpoolG}g each</div></div>
+      </div>
+      ${stockNote}
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>How Long This Scenario Takes</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Total time to finish this whole scenario, starting right now, for each printer count you've checked above.</div>
+      <div class="ps-row" style="flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
+        ${scenarioCells}
+      </div>
+    </div>
+  `;
+}
+
+function renderFilament(){
+  const root = document.getElementById('ps-tab-filament');
+
+  // ---- Stock (unopened inventory) ----
+  const stockRows = stock.map(st => `
+    <tr data-id="${st.id}">
+      <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
+      <td><input class="ps-input ps-name" data-field="label" value="${escapeHtml(st.label)}" placeholder="e.g. PCTG Pro — Natural" /></td>
+      <td><input class="ps-input" data-field="material" value="${escapeHtml(st.material)}" placeholder="Material" /></td>
+      <td><input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" /></td>
+      <td><input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" /></td>
+      <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" /></td>
+      <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" /></td>
+      <td>${st.qtyOnOrder>0 ? `<button class="ps-btn small" data-action="receive-stock">Receive</button>` : ''}</td>
+      <td><button class="ps-btn ghost small" data-action="remove-stock">✕</button></td>
+    </tr>
+  `).join('');
+
+  // ---- Active spools (opened, in use or spare) ----
+  const activeSpools = spools.filter(s => !s.retired);
+  const retiredSpools = spools.filter(s => s.retired);
+
+  function spoolCard(s, retired){
+    const pct = s.totalG>0 ? Math.max(0,Math.min(100, (s.remainingG/s.totalG)*100)) : 0;
+    const low = !retired && s.remainingG <= LOW_STOCK_G;
+    const logEntries = productionLog.filter(e => e.spoolIdAtLogTime === s.id);
+    const loggedWeight = logEntries.reduce((sum,e) => sum + (e.weightGAtLogTime||0), 0);
+    const printerOptions = `<option value="">— none —</option>` + printers.map(p =>
+      `<option value="${p.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`
+    ).join('');
+    const usageLine = logEntries.length===0
+      ? 'No logged prints have drawn from this spool yet.'
+      : `Used in ${logEntries.length} logged print${logEntries.length!==1?'s':''} — ${loggedWeight}g accounted for so far.`;
+    return `
+      <div class="ps-spool-card" data-id="${s.id}">
+        <div class="ps-spool-top">
+          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
+          <input class="ps-input ps-name" data-field="label" value="${escapeHtml(s.label)}" placeholder="e.g. PCTG Pro — Natural" ${retired?'disabled':''} />
+          <input class="ps-input" style="max-width:110px" data-field="material" value="${escapeHtml(s.material)}" placeholder="Material" ${retired?'disabled':''} />
+          <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${s.colorHex||'#cccccc'}" ${retired?'disabled':''} />
+          ${low ? '<span class="ps-badge-low">Low</span>' : ''}
+          ${retired ? '<span class="ps-hint">Retired</span>' : ''}
+          <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
+        </div>
+        <div class="ps-row">
+          <div class="ps-field" style="flex:1;margin-bottom:0;">
+            <span class="ps-field-label">Remaining (g)</span>
+            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${s.remainingG}" ${retired?'disabled':''} />
+          </div>
+          <div class="ps-field" style="flex:1;margin-bottom:0;">
+            <span class="ps-field-label">Full spool weight (g)</span>
+            <input class="ps-input" type="number" min="0" data-field="totalG" value="${s.totalG}" ${retired?'disabled':''} />
+          </div>
+        </div>
+        <div class="ps-spool-bar-track"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
+        ${retired ? '' : `
+        <div class="ps-field" style="margin-top:10px;margin-bottom:0;">
+          <span class="ps-field-label">Loaded on printer</span>
+          <select class="ps-select" data-field="assign-printer" style="max-width:240px;">${printerOptions}</select>
+        </div>
+        `}
+        <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
+      </div>
+    `;
+  }
+
+  const activeCards = activeSpools.map(s => spoolCard(s, false)).join('');
+  const retiredCards = retiredSpools.map(s => spoolCard(s, true)).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Stock — Unopened Inventory</div>
+      <div class="ps-hint" style="margin-bottom:12px;">What you've got sitting in reserve, not loaded on anything yet — plus what's on its way. "In Stock" is available right now; "On Order" is tracked separately and doesn't count as available until you hit Receive.</div>
+      ${stock.length===0 ? '<div class="ps-empty">Nothing in stock yet.</div>' : `
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th></th><th>Label</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:80px"></th><th></th></tr></thead>
+        <tbody id="ps-stock-body">${stockRows}</tbody>
+      </table>
+      </div>
+      `}
+      <div style="margin-top:14px;">
+        <button class="ps-btn" id="ps-add-stock">+ Add stock</button>
+      </div>
+    </div>
+
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Active Spools — Opened / In Use</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Spools that have actually been opened — loaded on a printer or sitting spare, tracked precisely. To swap what's loaded on a printer, use "Change Spool" on the Printers tab — it retires the old one (keeping its history) and pulls a fresh one from Stock automatically.</div>
+      ${activeSpools.length===0 ? '<div class="ps-empty">No active spools — use "Change Spool" on the Printers tab to load one from Stock, or add one manually below.</div>' : `<div id="ps-spools-list">${activeCards}</div>`}
+      <div style="margin-top:14px;">
+        <button class="ps-btn" id="ps-add-spool">+ Add spool manually</button>
+      </div>
+      <div class="ps-hint" style="margin-top:12px;">Spools flagged "Low" are under ${LOW_STOCK_G}g.</div>
+    </div>
+
+    ${retiredSpools.length>0 ? `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Retired Spools</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Taken out of rotation via "Change Spool" — kept here just for usage history. Safe to delete once you don't need the record.</div>
+      <div id="ps-retired-list">${retiredCards}</div>
+    </div>
+    ` : ''}
+  `;
+
+  // ---- Stock handlers ----
+  root.querySelectorAll('#ps-stock-body tr').forEach(tr => {
+    const id = tr.getAttribute('data-id');
+    tr.querySelectorAll('[data-field]').forEach(input => {
+      input.addEventListener('change', () => {
+        const st = stock.find(x=>x.id===id);
+        const field = input.getAttribute('data-field');
+        if(field==='weightPerSpoolG' || field==='qty' || field==='qtyOnOrder'){
+          st[field] = Math.max(field==='weightPerSpoolG'?1:0, parseInt(input.value)||0);
+        } else {
+          st[field] = input.value;
+        }
+        saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+      });
+    });
+    const receiveBtn = tr.querySelector('[data-action="receive-stock"]');
+    if(receiveBtn){
+      receiveBtn.addEventListener('click', () => {
+        const st = stock.find(x=>x.id===id);
+        st.qty += st.qtyOnOrder;
+        st.qtyOnOrder = 0;
+        saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+      });
+    }
+    tr.querySelector('[data-action="remove-stock"]').addEventListener('click', () => {
+      stock = stock.filter(x=>x.id!==id);
+      saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+    });
+  });
+  document.getElementById('ps-add-stock').addEventListener('click', () => {
+    stock.push({id: uid('stock'), label:'New material', material:'PCTG', colorHex:'#cccccc', weightPerSpoolG:1000, qty:0, qtyOnOrder:0});
+    saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+  });
+
+  // ---- Active/retired spool handlers ----
   root.querySelectorAll('.ps-spool-card').forEach(card => {
     const id = card.getAttribute('data-id');
-    card.querySelectorAll('[data-field]').forEach(input => {
+    card.querySelectorAll('[data-field]:not([data-field="assign-printer"])').forEach(input => {
       input.addEventListener('change', () => {
         const s = spools.find(x=>x.id===id);
         const field = input.getAttribute('data-field');
@@ -995,6 +1896,20 @@ function renderFilament(){
         renderFilament();
       });
     });
+    const assignSelect = card.querySelector('[data-field="assign-printer"]');
+    if(assignSelect){
+      assignSelect.addEventListener('change', (e) => {
+        const printerId = e.target.value;
+        printers.forEach(p => { if(p.spoolId === id) p.spoolId = null; });
+        if(printerId){
+          const p = printers.find(x=>x.id===printerId);
+          if(p) p.spoolId = id;
+          stampSpoolLoad(id, printerId);
+        }
+        savePrinters(); saveSpools();
+        renderFilament(); renderPrinters(); regenerateIfActive();
+      });
+    }
     card.querySelector('[data-action="remove"]').addEventListener('click', () => {
       spools = spools.filter(x=>x.id!==id);
       printers.forEach(p => { if(p.spoolId===id) p.spoolId = null; });
@@ -1004,10 +1919,11 @@ function renderFilament(){
   });
 
   document.getElementById('ps-add-spool').addEventListener('click', () => {
-    spools.push({id: uid('spool'), label:'New spool', material:'PCTG', colorHex:'#cccccc', totalG:1000, remainingG:1000});
+    spools.push({id: uid('spool'), label:'New spool', material:'PCTG', colorHex:'#cccccc', totalG:1000, remainingG:1000, retired:false});
     saveSpools(); renderFilament();
   });
 }
+
 
 // ---------- rendering: Catalog tab ----------
 let typeErrorMsg = '';
@@ -1140,7 +2056,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, orderQty, priorityOrder, productionLog
+    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -1162,9 +2078,13 @@ async function importAllData(jsonText){
   if(data.settings && typeof data.settings === 'object') settings = data.settings;
   if(Array.isArray(data.printers)) printers = data.printers;
   if(Array.isArray(data.spools)) spools = data.spools;
+  if(Array.isArray(data.stock)) stock = data.stock;
   if(data.orderQty && typeof data.orderQty === 'object') orderQty = data.orderQty;
   if(Array.isArray(data.priorityOrder)) priorityOrder = data.priorityOrder;
   if(Array.isArray(data.productionLog)) productionLog = data.productionLog;
+  if(Array.isArray(data.estimateItems)) estimateItems = data.estimateItems;
+  if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
+  if(Array.isArray(data.jobs)) jobs = data.jobs;
 
   // Keep priorityOrder consistent with whatever catalog came in.
   priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
@@ -1175,12 +2095,12 @@ async function importAllData(jsonText){
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveOrder(), saveLog()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs()
   ]);
   syncConsumption();
 
-  theoreticalSchedule = null; liveSchedule = null;
-  renderSchedule(); renderLog(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
+  liveSchedule = null;
+  renderSchedule(); renderLog(); renderEstimate(); renderJobs(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
 }
 
 function renderSettings(){
@@ -1213,6 +2133,12 @@ function renderSettings(){
       <div class="ps-hint">Applies to every active printer. A print must both start and finish inside the window unless it's longer than the whole window — those are allowed to start inside the window and run unattended past close. Downtime is only inserted between two prints on the same machine, same day; the last print of a day never needs a trailing gap.</div>
     </div>
     <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Notifications</div>
+      <div id="ps-notif-status" class="ps-hint" style="margin-bottom:10px;"></div>
+      <button class="ps-btn" id="ps-notif-enable">Enable browser notifications</button>
+      <div class="ps-hint" style="margin-top:10px;">When something's actually printing (logged with a start but no finish yet), you'll get a notification about 5 minutes before its estimated finish — names the product and which printer. Needs this tab to stay open somewhere (doesn't need to be focused, just not closed), and works best on the deployed site — Claude's chat window may block notification permissions entirely.</div>
+    </div>
+    <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Data</div>
       <div class="ps-row" style="flex-wrap:wrap;">
         <button class="ps-btn" id="ps-export-data">Export all data</button>
@@ -1223,6 +2149,18 @@ function renderSettings(){
       <div id="ps-data-msg" class="ps-hint" style="margin-top:8px;"></div>
     </div>
   `;
+
+  renderNotifStatus();
+  document.getElementById('ps-notif-enable').addEventListener('click', async () => {
+    if(typeof Notification === 'undefined'){
+      document.getElementById('ps-notif-status').textContent = 'Notifications aren\'t available in this browser/context.';
+      return;
+    }
+    try {
+      await Notification.requestPermission();
+    } catch(e){ /* some browsers still use the older callback form; permission getter below handles it either way */ }
+    renderNotifStatus();
+  });
 
   document.getElementById('ps-export-data').addEventListener('click', exportAllData);
   document.getElementById('ps-import-trigger').addEventListener('click', () => {
@@ -1332,12 +2270,12 @@ function renderSchedule(){
   document.getElementById('ps-clear-order').addEventListener('click', () => {
     orderQty = {};
     saveOrder();
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     document.getElementById('ps-schedule-output').innerHTML = '';
     renderSchedule();
   });
 
-  if(theoreticalSchedule || liveSchedule) renderScheduleView();
+  if(liveSchedule) renderScheduleView();
 }
 
 function moveInPriority(id, dir){
@@ -1351,7 +2289,10 @@ function moveInPriority(id, dir){
 function regenerateIfActive(){
   if(document.getElementById('ps-tab-schedule')) renderSchedule();
   if(document.getElementById('ps-tab-filament')) renderFilament();
-  if(theoreticalSchedule || liveSchedule){
+  if(document.getElementById('ps-tab-estimate')) renderEstimate();
+  if(document.getElementById('ps-tab-jobs')) renderJobs();
+  if(document.getElementById('ps-tab-catalog')) renderCatalog();
+  if(liveSchedule){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
   }
@@ -1377,32 +2318,32 @@ function onGenerate(){
 
   if(missing.length>0){
     outputEl.innerHTML = `<div class="ps-warnbox">Set a print time for: ${missing.map(escapeHtml).join(', ')} before generating a schedule.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
   if(queue.length===0){
     outputEl.innerHTML = `<div class="ps-empty">Enter a quantity for at least one product to build a schedule.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
 
   if(settings.workDays.length===0){
     outputEl.innerHTML = `<div class="ps-warnbox">No work days are checked on the Settings tab, so there's never a valid window to print in. Turn at least one day on.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
   const [wsH,wsM] = settings.startTime.split(':').map(Number);
   const [weH,weM] = settings.endTime.split(':').map(Number);
   if(wsH*60+wsM >= weH*60+weM){
     outputEl.innerHTML = `<div class="ps-warnbox">On the Settings tab, the window closes (${settings.endTime}) at or before it opens (${settings.startTime}) — nothing can ever fit, so nothing gets scheduled. Fix the open/close times and generate again.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
 
   const activePrinters = printers.filter(p=>p.status==='active');
   if(activePrinters.length===0){
     outputEl.innerHTML = `<div class="ps-warnbox">No active printers. Mark at least one printer as Active on the Printers tab.</div>`;
-    theoreticalSchedule = null; liveSchedule = null;
+    liveSchedule = null;
     return;
   }
 
@@ -1413,9 +2354,7 @@ function onGenerate(){
     totalMin: queue.reduce((s,j)=>s+j.printTimeMin,0),
     totalWeight: queue.reduce((s,j)=>s+(j.weightG||0),0)
   });
-  theoreticalSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'theoretical'));
-  theoreticalSchedule.mode = 'theoretical';
-  liveSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'live'));
+liveSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, 'live'));
   liveSchedule.mode = 'live';
 
   renderScheduleView();
@@ -1424,25 +2363,12 @@ function onGenerate(){
 function renderScheduleView(){
   const outputEl = document.getElementById('ps-schedule-output');
   if(!outputEl) return;
-  if(!theoreticalSchedule && !liveSchedule){ outputEl.innerHTML = ''; return; }
+  if(!liveSchedule){ outputEl.innerHTML = ''; return; }
 
-  outputEl.innerHTML = `
-    <div class="ps-row ps-view-toggle" style="margin-bottom:14px;">
-      <button class="ps-btn ${scheduleView==='theoretical'?'primary':''}" data-view="theoretical">Theoretical Plan</button>
-      <button class="ps-btn ${scheduleView==='live'?'primary':''}" data-view="live">Live Schedule</button>
-    </div>
-    <div id="ps-schedule-body"></div>
-  `;
-  outputEl.querySelectorAll('[data-view]').forEach(btn => {
-    btn.addEventListener('click', () => { scheduleView = btn.getAttribute('data-view'); renderScheduleView(); });
-  });
-  const sched = scheduleView === 'live' ? liveSchedule : theoreticalSchedule;
+  outputEl.innerHTML = `<div id="ps-schedule-body"></div>`;
   const body = document.getElementById('ps-schedule-body');
-  const note = scheduleView === 'live'
-    ? '<div class="ps-hint" style="margin-bottom:12px;">Anchored to what\'s actually logged on the Log tab — printers with no log entries yet start from the top of the work window, same as the theoretical plan.</div>'
-    : '<div class="ps-hint" style="margin-bottom:12px;">Ideal plan assuming every printer starts fresh at the top of the work window — ignores anything logged on the Log tab.</div>';
-  body.innerHTML = note;
-  renderScheduleOutput(sched, body);
+  body.innerHTML = '<div class="ps-hint" style="margin-bottom:12px;">Anchored to what\'s actually logged on the Log tab — printers with no log entries yet start from the top of the work window.</div>';
+  renderScheduleOutput(liveSchedule, body);
 }
 
 function renderScheduleOutput(sched, container){
@@ -1456,6 +2382,7 @@ function renderScheduleOutput(sched, container){
   let overallLastEnd = null;
   sched.machines.forEach(m => {
     m.days.forEach(d => {
+      if(d.jobs.length===0) return;
       const lastJob = d.jobs[d.jobs.length-1];
       if(!overallLastEnd || lastJob.end > overallLastEnd) overallLastEnd = lastJob.end;
     });
@@ -1479,34 +2406,60 @@ function renderScheduleOutput(sched, container){
     m.spoolTotalUsed = used;
   });
 
+  const spoolsNeeded = sched.totalWeight>0 ? Math.ceil(sched.totalWeight / settings.estimateSpoolG) : 0;
   const summary = `
     ${sched.unassigned && sched.unassigned.length>0 ? `<div class="ps-warnbox">${sched.unassigned.length} of ${sched.queueLen} queued prints couldn't be placed — double-check your work window and downtime settings. Showing what did get scheduled below.</div>` : ''}
     <div class="ps-summary-grid">
       <div class="ps-summary-cell"><div class="ps-summary-num">${sched.queueLen}</div><div class="ps-summary-label">Prints queued</div></div>
       <div class="ps-summary-cell"><div class="ps-summary-num">${fmtDuration(sched.totalMin)}</div><div class="ps-summary-label">Total print time</div></div>
-      <div class="ps-summary-cell"><div class="ps-summary-num">${sched.totalWeight>0 ? sched.totalWeight+'g' : '—'}</div><div class="ps-summary-label">Filament</div></div>
+      <div class="ps-summary-cell"><div class="ps-summary-num">${sched.totalWeight>0 ? sched.totalWeight+'g' : '—'}</div><div class="ps-summary-label">Filament</div>${spoolsNeeded>0 ? `<div class="ps-hint mono" style="margin-top:4px;">≈${spoolsNeeded} spool${spoolsNeeded!==1?'s':''} at ${settings.estimateSpoolG}g</div>` : ''}</div>
       <div class="ps-summary-cell"><div class="ps-summary-num">${overallLastEnd? fmtDateHead(overallLastEnd) : '—'}</div><div class="ps-summary-label">${overallLastEnd? 'All done by '+fmtClock(overallLastEnd) : 'Completion'}</div></div>
     </div>
   `;
 
   const machinesHtml = sched.machines.map(m => {
+    let displayDays = m.days;
     if(sched.mode === 'live'){
+      const extraDays = [];
       const loggedDateKeys = [...new Set(productionLog.filter(e => e.printerId === m.id).map(e => new Date(e.actualStart).toDateString()))];
       loggedDateKeys.forEach(dateKey => {
         if(!m.days.some(d => d.dateKey === dateKey)){
           const sample = productionLog.find(e => e.printerId === m.id && new Date(e.actualStart).toDateString() === dateKey);
-          m.days.push({dateKey, date: new Date(sample.actualStart), jobs: []});
+          extraDays.push({dateKey, date: new Date(sample.actualStart), jobs: []});
         }
       });
-      m.days.sort((a,b) => a.date - b.date);
+      if(extraDays.length>0){
+        displayDays = m.days.concat(extraDays).sort((a,b) => a.date - b.date);
+      }
     }
-    if(m.days.length===0){
+    if(displayDays.length===0){
       return `<div class="ps-printer-block"><div class="ps-printer-block-head"><span class="dot"></span>${escapeHtml(m.name)}</div><div class="ps-hint">Nothing assigned.</div></div>`;
     }
     let anyActualShown = false;
     const todayKey = new Date().toDateString();
+    const todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0);
     let prevProductId = null;
-    const daysHtml = m.days.map(day => {
+
+    // Real spool swaps on this printer (from "Change Spool" on the Printers
+    // tab), chronological, so we can show exactly where in the timeline each
+    // one actually happened — not just where the projection warns one's due.
+    const spoolEvents = sched.mode === 'live'
+      ? spools.filter(s => s.loadedOnPrinterId === m.id && s.loadedAt)
+          .map(s => ({at: new Date(s.loadedAt), label: s.label}))
+          .sort((a,b) => a.at - b.at)
+      : [];
+    let spoolEventIdx = 0;
+
+    function weekKeyOf(date){
+      const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      d.setDate(d.getDate() - d.getDay()); // back up to the Sunday starting this week
+      return d.toDateString();
+    }
+
+    // Pass 1: render every day's block in chronological order (so change-of-
+    // model tracking and the "any actual shown" flag stay continuous), while
+    // recording enough about each to group past ones by week afterward.
+    const dayRenders = displayDays.map(day => {
       const {start,end} = windowBounds(day.date, settings);
       const winMs = end - start;
 
@@ -1532,7 +2485,8 @@ function renderScheduleOutput(sched, container){
 
         let color, statusLabel;
         if(sched.mode === 'live'){
-          if(j.actual && !j.inProgress){ color = 'var(--ok)'; statusLabel = 'completed'; }
+          if(j.actual && j.failed){ color = 'var(--danger)'; statusLabel = 'failed'; }
+          else if(j.actual && !j.inProgress){ color = 'var(--ok)'; statusLabel = 'completed'; }
           else if(j.actual && j.inProgress){ color = 'var(--heat)'; statusLabel = 'in progress'; }
           else { color = 'var(--cool)'; statusLabel = 'upcoming'; }
         } else {
@@ -1546,7 +2500,7 @@ function renderScheduleOutput(sched, container){
         const changeClass = changeFlags[i] ? 'model-change' : '';
         const stateTitle = statusLabel ? ` (${statusLabel})` : '';
         const changeTitle = changeFlags[i] ? ' — model change' : '';
-        const label = widthPct > 6 ? (j.actual && !j.inProgress ? '✓ ' : '') + escapeHtml(j.name) : '';
+        const label = widthPct > 6 ? (j.failed ? '✕ ' : (j.actual && !j.inProgress ? '✓ ' : '')) + escapeHtml(j.name) : '';
         return `<div class="ps-block ${j.spoolShort?'spool-short':''} ${pulseClass} ${changeClass}" style="left:${leftPct}%;width:${widthPct}%;background:${bg};${j.overnight?'opacity:0.9;':''}" title="${escapeHtml(j.name)}: ${fmtClock(j.start)} – ${fmtClock(j.end)}${j.overnight?' (runs past close)':''}${stateTitle}${changeTitle}${shortTitle}">${label}</div>`;
       }).join('');
 
@@ -1560,31 +2514,123 @@ function renderScheduleOutput(sched, container){
       }
 
       const jobLines = jobs.map((j,i) => {
-        const marker = j.actual ? (j.inProgress ? '<span style="color:var(--heat)">▶ printing now</span> — ' : '✓ ') : '';
+        const marker = j.failed ? '<span style="color:var(--danger)">✕ failed</span> — ' : (j.actual ? (j.inProgress ? '<span style="color:var(--heat)">▶ printing now</span> — ' : '✓ ') : '');
         const changeover = changeFlags[i] ? `<div class="ps-changeover">switch to ${escapeHtml(j.name)}</div>` : '';
+        let spoolChangeMarkers = '';
+        while(spoolEventIdx < spoolEvents.length && spoolEvents[spoolEventIdx].at <= j.start){
+          spoolChangeMarkers += `<div class="ps-changeover" style="color:var(--ok);">⟳ spool changed to "${escapeHtml(spoolEvents[spoolEventIdx].label)}" — ${fmtDateHead(spoolEvents[spoolEventIdx].at)} ${fmtClock(spoolEvents[spoolEventIdx].at)}</div>`;
+          spoolEventIdx++;
+        }
         return `
+        ${spoolChangeMarkers}
         ${changeover}
         <div>${marker}<b>${escapeHtml(j.name)}</b> — ${fmtClock(j.start)} → ${j.inProgress ? 'now' : fmtClock(j.end)}${j.overnight?' <span style="color:var(--heat)">(runs unattended past window close)</span>':''}${j.spoolShort?' <span class="ps-swap-tag">swap spool before this</span>':''}</div>
       `;
       }).join('');
 
-      return `
-        <div class="ps-day">
-          <div class="ps-day-head">
-            <div class="ps-day-date">${fmtDateHead(day.date)}</div>
-            <div class="ps-day-meta">${jobs.length} print${jobs.length!==1?'s':''}</div>
+      const dayMidnight = new Date(day.date.getFullYear(), day.date.getMonth(), day.date.getDate());
+      const isPast = sched.mode === 'live' && dayMidnight < todayMidnight;
+      const dayKey = m.id + '|' + day.dateKey;
+      const isExpanded = expandedPastDays.has(dayKey);
+
+      let html;
+      if(isPast && !isExpanded){
+        html = `
+          <div class="ps-day ps-day-collapsed" data-daykey="${dayKey}">
+            <div class="ps-day-head">
+              <div class="ps-day-date">${fmtDateHead(day.date)}</div>
+              <div class="ps-row" style="gap:10px;">
+                <div class="ps-day-meta">${jobs.length} print${jobs.length!==1?'s':''}</div>
+                <button class="ps-btn ghost small" data-action="expand-day" data-daykey="${dayKey}">Show</button>
+              </div>
+            </div>
           </div>
-          <div class="ps-gantt" style="overflow:visible;">${blocks}${nowMarker}</div>
-          <div class="ps-joblist">${jobLines}</div>
-        </div>
-      `;
-    }).join('');
+        `;
+      } else {
+        const collapseBtn = isPast ? `<button class="ps-btn ghost small" data-action="collapse-day" data-daykey="${dayKey}">Hide</button>` : '';
+        html = `
+          <div class="ps-day">
+            <div class="ps-day-head">
+              <div class="ps-day-date">${fmtDateHead(day.date)}</div>
+              <div class="ps-row" style="gap:10px;">
+                <div class="ps-day-meta">${jobs.length} print${jobs.length!==1?'s':''}</div>
+                ${collapseBtn}
+              </div>
+            </div>
+            <div class="ps-gantt" style="overflow:visible;">${blocks}${nowMarker}</div>
+            <div class="ps-joblist">${jobLines}</div>
+          </div>
+        `;
+      }
+
+      return { day, isPast, weekKey: isPast ? weekKeyOf(day.date) : null, html, jobCount: jobs.length };
+    });
+
+    // Pass 2: collapse consecutive past days sharing a week into one row,
+    // unless that week has been expanded — today/future days pass through
+    // untouched, always fully visible.
+    const dayPieces = [];
+    let di = 0;
+    while(di < dayRenders.length){
+      const d = dayRenders[di];
+      if(!d.isPast){
+        dayPieces.push(d.html);
+        di++;
+        continue;
+      }
+      const wk = d.weekKey;
+      const group = [];
+      while(di < dayRenders.length && dayRenders[di].isPast && dayRenders[di].weekKey === wk){
+        group.push(dayRenders[di]);
+        di++;
+      }
+      const weekKeyFull = m.id + '|' + wk;
+      const totalPrints = group.reduce((s,g) => s+g.jobCount, 0);
+
+      if(group.length === 1){
+        // Not worth a week wrapper for a single lonely past day — show it
+        // directly, same one-click show/hide as before.
+        dayPieces.push(group[0].html);
+        continue;
+      }
+
+      const label = fmtDateHead(group[0].day.date) + ' – ' + fmtDateHead(group[group.length-1].day.date);
+
+      if(expandedPastWeeks.has(weekKeyFull)){
+        dayPieces.push(`
+          <div class="ps-week-group-head">
+            <span>${label} · ${totalPrints} print${totalPrints!==1?'s':''} over ${group.length} day${group.length!==1?'s':''}</span>
+            <button class="ps-btn ghost small" data-action="collapse-week" data-weekkey="${weekKeyFull}">Hide week</button>
+          </div>
+        `);
+        group.forEach(g => dayPieces.push(g.html));
+      } else {
+        dayPieces.push(`
+          <div class="ps-day ps-week-collapsed" data-weekkey="${weekKeyFull}">
+            <div class="ps-day-head">
+              <div class="ps-day-date">${label}</div>
+              <div class="ps-row" style="gap:10px;">
+                <div class="ps-day-meta">${totalPrints} print${totalPrints!==1?'s':''} · ${group.length} day${group.length!==1?'s':''}</div>
+                <button class="ps-btn ghost small" data-action="expand-week" data-weekkey="${weekKeyFull}">Show week</button>
+              </div>
+            </div>
+          </div>
+        `);
+      }
+    }
+    let trailingSpoolEvents = '';
+    while(spoolEventIdx < spoolEvents.length){
+      trailingSpoolEvents += `<div class="ps-changeover" style="color:var(--ok);">⟳ spool changed to "${escapeHtml(spoolEvents[spoolEventIdx].label)}" — ${fmtDateHead(spoolEvents[spoolEventIdx].at)} ${fmtClock(spoolEvents[spoolEventIdx].at)} — nothing scheduled here since</div>`;
+      spoolEventIdx++;
+    }
+    const daysHtml = dayPieces.join('') + trailingSpoolEvents;
 
     const legend = (sched.mode === 'live' && anyActualShown) ? `
       <div class="ps-legend">
         <span><i class="ps-swatch sw-done">✓</i>Completed</span>
         <span><i class="ps-swatch sw-progress"></i>In progress</span>
         <span><i class="ps-swatch sw-planned"></i>Upcoming</span>
+        <span><i class="ps-swatch sw-failed">✕</i>Failed</span>
       </div>
     ` : '';
 
@@ -1615,6 +2661,45 @@ function renderScheduleOutput(sched, container){
       ${machinesHtml}
     </div>
   `;
+
+  outputEl.querySelectorAll('[data-action="expand-day"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      expandedPastDays.add(btn.getAttribute('data-daykey'));
+      renderScheduleView();
+    });
+  });
+  outputEl.querySelectorAll('[data-action="collapse-day"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      expandedPastDays.delete(btn.getAttribute('data-daykey'));
+      renderScheduleView();
+    });
+  });
+  outputEl.querySelectorAll('[data-action="expand-week"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      expandedPastWeeks.add(btn.getAttribute('data-weekkey'));
+      renderScheduleView();
+    });
+  });
+  outputEl.querySelectorAll('[data-action="collapse-week"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const wk = btn.getAttribute('data-weekkey');
+      expandedPastWeeks.delete(wk);
+      // Collapsing the week again should also re-collapse any individual
+      // days inside it that got expanded while the week was open, so it
+      // doesn't spring back open half-expanded next time.
+      const sepIdx = wk.indexOf('|');
+      const mid = wk.slice(0, sepIdx);
+      const weekStart = new Date(wk.slice(sepIdx+1));
+      const weekEnd = new Date(weekStart.getTime() + 7*24*3600000);
+      [...expandedPastDays].forEach(dk => {
+        const dSepIdx = dk.indexOf('|');
+        if(dk.slice(0, dSepIdx) !== mid) return;
+        const d = new Date(dk.slice(dSepIdx+1));
+        if(d >= weekStart && d < weekEnd) expandedPastDays.delete(dk);
+      });
+      renderScheduleView();
+    });
+  });
 }
 
 // ---------- tabs ----------
@@ -1624,12 +2709,30 @@ function setupTabs(){
       document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
       tab.classList.add('active');
       const target = tab.getAttribute('data-tab');
-      ['schedule','log','printers','filament','catalog','settings'].forEach(name => {
+      ['schedule','log','estimate','jobs','printers','filament','catalog','settings'].forEach(name => {
         document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
       });
     });
   });
 }
+
+// Number inputs always render with a literal value (often 0) already in
+// them. Selection APIs (.select(), setSelectionRange) don't work on
+// type="number" inputs in real browsers — they're spec-restricted to text/
+// search/url/tel/password — so clicking in just places the cursor next to
+// that digit and typing appends instead of replacing it (e.g. "0" + "45" ->
+// "045"). Clearing a bare 0 on focus, and restoring it if left blank, avoids
+// needing selection support at all.
+document.getElementById('ps-root').addEventListener('focusin', (e) => {
+  if(e.target.matches('input[type="number"]') && e.target.value === '0'){
+    e.target.value = '';
+  }
+});
+document.getElementById('ps-root').addEventListener('focusout', (e) => {
+  if(e.target.matches('input[type="number"]') && e.target.value === ''){
+    e.target.value = '0';
+  }
+});
 
 // ---------- init ----------
 async function startApp(){
@@ -1638,10 +2741,14 @@ async function startApp(){
   setupTabs();
   renderSchedule();
   renderLog();
+  renderEstimate();
+  renderJobs();
   renderPrinters();
   renderFilament();
   renderCatalog();
   renderSettings();
+  checkFinishNotifications();
+  setInterval(checkFinishNotifications, 20000);
 }
 // In the normal Claude-artifact context (and in a standalone build with no
 // auth configured), start immediately. A standalone build with auth enabled
