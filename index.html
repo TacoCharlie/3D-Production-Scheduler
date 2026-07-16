@@ -448,6 +448,7 @@ async function loadState(){
 
   try { const st = await window.storage.get('stock'); stock = st ? JSON.parse(st.value) : JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
   catch(e){ stock = JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
+  stock.forEach(st => { if(typeof st.qtyOnOrder !== 'number') st.qtyOnOrder = 0; });
 
   try {
     const o = await window.storage.get('lastOrder');
@@ -699,8 +700,12 @@ function getActualJobsForDay(printerId, dateKey){
     .map(e => {
       const product = catalog.find(p=>p.id===e.productId);
       const end = e.actualEnd ? new Date(e.actualEnd) : new Date(new Date(e.actualStart).getTime() + (e.plannedMin||0)*60000);
+      const testDesc = product && e.testLabel ? `${product.name} — ${e.testLabel}`
+        : product ? product.name
+        : e.testLabel ? e.testLabel
+        : 'untitled';
       return {
-        name: e.isTest ? ('Test: '+(e.testLabel||'untitled')) : (product ? product.name : '(deleted product)'),
+        name: e.isTest ? ('Test: '+testDesc) : (product ? product.name : '(deleted product)'),
         type: product ? product.type : null,
         productId: e.productId,
         start: new Date(e.actualStart),
@@ -1201,7 +1206,13 @@ function renderLog(){
     const statusLine = e.failed
       ? `<span style="color:var(--danger)">✕ failed</span> — ${durationText} before it was stopped`
       : (e.actualEnd ? '→ '+fmtLogTime(e.actualEnd)+' ('+durationText+')' : '— still printing');
-    const titleText = e.isTest ? `<span class="ps-hint" style="text-transform:uppercase;font-weight:700;letter-spacing:0.4px;">Test</span> ${escapeHtml(e.testLabel||'(untitled test)')}` : escapeHtml(product?product.name:'(deleted product)');
+    const testDesc = e.isTest
+      ? (product && e.testLabel ? `${escapeHtml(product.name)} — ${escapeHtml(e.testLabel)}`
+        : product ? escapeHtml(product.name)
+        : e.testLabel ? escapeHtml(e.testLabel)
+        : '(untitled test)')
+      : null;
+    const titleText = e.isTest ? `<span class="ps-hint" style="text-transform:uppercase;font-weight:700;letter-spacing:0.4px;">Test</span> ${testDesc}` : escapeHtml(product?product.name:'(deleted product)');
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
@@ -1253,9 +1264,16 @@ function renderLog(){
           <span class="ps-field-label">Product</span>
           <select class="ps-select" id="ps-log-product">${productOptions}</select>
         </div>
+        <div class="ps-field" id="ps-log-testproduct-field" style="flex:1;min-width:160px;margin-bottom:0;display:none;">
+          <span class="ps-field-label">Product (optional)</span>
+          <select class="ps-select" id="ps-log-testproduct">
+            <option value="">— not a specific product —</option>
+            ${productOptions}
+          </select>
+        </div>
         <div class="ps-field" id="ps-log-testlabel-field" style="flex:1;min-width:160px;margin-bottom:0;display:none;">
-          <span class="ps-field-label">What are you testing?</span>
-          <input class="ps-input" id="ps-log-testlabel" placeholder="e.g. PA calibration" />
+          <span class="ps-field-label">Note (optional if product picked)</span>
+          <input class="ps-input" id="ps-log-testlabel" placeholder="e.g. new retraction settings" />
         </div>
         <div class="ps-field" id="ps-log-testweight-field" style="flex:1;min-width:120px;margin-bottom:0;display:none;">
           <span class="ps-field-label">Filament used (g)</span>
@@ -1285,8 +1303,16 @@ function renderLog(){
   testCheckbox.addEventListener('change', () => {
     const isTest = testCheckbox.checked;
     document.getElementById('ps-log-product-field').style.display = isTest ? 'none' : '';
+    document.getElementById('ps-log-testproduct-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testlabel-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testweight-field').style.display = isTest ? '' : 'none';
+  });
+  const testProductSelect = document.getElementById('ps-log-testproduct');
+  testProductSelect.addEventListener('change', () => {
+    const p = catalog.find(x=>x.id===testProductSelect.value);
+    if(p && p.weightG>0){
+      document.getElementById('ps-log-testweight').value = p.weightG;
+    }
   });
 
   document.getElementById('ps-log-submit').addEventListener('click', () => {
@@ -1297,18 +1323,19 @@ function renderLog(){
     const printer = printers.find(p=>p.id===printerId);
 
     if(isTest){
+      const testProductId = document.getElementById('ps-log-testproduct').value || null;
       const testLabel = document.getElementById('ps-log-testlabel').value.trim();
       const testWeight = Math.max(0, parseFloat(document.getElementById('ps-log-testweight').value)||0);
-      if(!printerId || !testLabel || !startVal) return;
+      if(!printerId || (!testProductId && !testLabel) || !startVal) return;
       productionLog.push({
         id: uid('log'),
-        printerId, productId: null, isTest: true, testLabel,
+        printerId, productId: testProductId, isTest: true, testLabel,
         actualStart: new Date(startVal).toISOString(),
         actualEnd: endVal ? new Date(endVal).toISOString() : null,
         plannedMin: 0,
         weightGAtLogTime: testWeight,
         spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
-        consumed: true // no product involved — nothing to claim toward any order
+        consumed: true // no order impact regardless of whether a product is tied to it
       });
     } else {
       const productId = document.getElementById('ps-log-product').value;
@@ -1709,6 +1736,8 @@ function renderFilament(){
       <td><input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" /></td>
       <td><input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" /></td>
       <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" /></td>
+      <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" /></td>
+      <td>${st.qtyOnOrder>0 ? `<button class="ps-btn small" data-action="receive-stock">Receive</button>` : ''}</td>
       <td><button class="ps-btn ghost small" data-action="remove-stock">✕</button></td>
     </tr>
   `).join('');
@@ -1767,11 +1796,11 @@ function renderFilament(){
   root.innerHTML = `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Stock — Unopened Inventory</div>
-      <div class="ps-hint" style="margin-bottom:12px;">What you've got sitting in reserve, not loaded on anything yet. Add to this whenever a shipment comes in — just a running count per material/color, no per-spool tracking needed until one's actually opened.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">What you've got sitting in reserve, not loaded on anything yet — plus what's on its way. "In Stock" is available right now; "On Order" is tracked separately and doesn't count as available until you hit Receive.</div>
       ${stock.length===0 ? '<div class="ps-empty">Nothing in stock yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th></th><th>Label</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:70px">Qty</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Label</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:80px"></th><th></th></tr></thead>
         <tbody id="ps-stock-body">${stockRows}</tbody>
       </table>
       </div>
@@ -1807,22 +1836,31 @@ function renderFilament(){
       input.addEventListener('change', () => {
         const st = stock.find(x=>x.id===id);
         const field = input.getAttribute('data-field');
-        if(field==='weightPerSpoolG' || field==='qty'){
+        if(field==='weightPerSpoolG' || field==='qty' || field==='qtyOnOrder'){
           st[field] = Math.max(field==='weightPerSpoolG'?1:0, parseInt(input.value)||0);
         } else {
           st[field] = input.value;
         }
-        saveStock(); renderFilament();
+        saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
       });
     });
+    const receiveBtn = tr.querySelector('[data-action="receive-stock"]');
+    if(receiveBtn){
+      receiveBtn.addEventListener('click', () => {
+        const st = stock.find(x=>x.id===id);
+        st.qty += st.qtyOnOrder;
+        st.qtyOnOrder = 0;
+        saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+      });
+    }
     tr.querySelector('[data-action="remove-stock"]').addEventListener('click', () => {
       stock = stock.filter(x=>x.id!==id);
-      saveStock(); renderFilament();
+      saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
     });
   });
   document.getElementById('ps-add-stock').addEventListener('click', () => {
-    stock.push({id: uid('stock'), label:'New material', material:'PCTG', colorHex:'#cccccc', weightPerSpoolG:1000, qty:1});
-    saveStock(); renderFilament();
+    stock.push({id: uid('stock'), label:'New material', material:'PCTG', colorHex:'#cccccc', weightPerSpoolG:1000, qty:0, qtyOnOrder:0});
+    saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
   });
 
   // ---- Active/retired spool handlers ----
