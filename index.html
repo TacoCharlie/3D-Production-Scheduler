@@ -102,6 +102,10 @@
 
   .ps-printer-block { margin-bottom: 26px; }
   .ps-printer-block-head { font-family:'Archivo Expanded',sans-serif; font-weight:700; font-size:14px; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; }
+  .ps-status-current { display:flex; align-items:flex-start; gap:10px; }
+  .ps-status-dot { width:10px; height:10px; border-radius:50%; margin-top:4px; flex-shrink:0; }
+  .ps-status-dot.printing { background: var(--heat); animation: ps-pulse 1.6s ease-in-out infinite; }
+  .ps-status-dot.idle { background: var(--muted); }
   .ps-printer-block-head .dot { width:7px; height:7px; border-radius:50%; background: var(--ok); display:inline-block; }
 
   .ps-day { margin-bottom: 16px; }
@@ -193,6 +197,7 @@
     </div>
 
     <div class="ps-tabs">
+      <button class="ps-tab" data-tab="status">Status</button>
       <button class="ps-tab active" data-tab="schedule">Build Schedule</button>
       <button class="ps-tab" data-tab="log">Log</button>
       <button class="ps-tab" data-tab="estimate">Estimate</button>
@@ -203,6 +208,7 @@
       <button class="ps-tab" data-tab="settings">Settings</button>
     </div>
 
+    <div id="ps-tab-status" style="display:none;"></div>
     <div id="ps-tab-schedule"></div>
     <div id="ps-tab-log" style="display:none;"></div>
     <div id="ps-tab-estimate" style="display:none;"></div>
@@ -1088,6 +1094,84 @@ function renderJobs(){
 }
 
 let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
+
+// ---------- rendering: Status tab ----------
+function renderStatus(){
+  const root = document.getElementById('ps-tab-status');
+  if(!root) return;
+  const activePrinters = printers.filter(p => p.status === 'active');
+  const now = new Date();
+
+  if(activePrinters.length === 0){
+    root.innerHTML = `<div class="ps-panel"><div class="ps-empty">No active printers — check the Printers tab.</div></div>`;
+    return;
+  }
+
+  const liveMachines = liveSchedule ? liveSchedule.machines : [];
+
+  const cards = activePrinters.map(p => {
+    // Currently printing: the most recent logged entry for this printer that
+    // hasn't finished (or failed) yet.
+    const inProgress = productionLog
+      .filter(e => e.printerId === p.id && !e.actualEnd && !e.failed)
+      .sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart))[0];
+
+    let currentBlock;
+    if(inProgress){
+      const product = catalog.find(x=>x.id===inProgress.productId);
+      const name = inProgress.isTest
+        ? 'Test: ' + (product && inProgress.testLabel ? `${product.name} — ${inProgress.testLabel}` : product ? product.name : (inProgress.testLabel||'untitled'))
+        : (product ? product.name : '(deleted product)');
+      const estFinish = new Date(new Date(inProgress.actualStart).getTime() + (inProgress.plannedMin||0)*60000);
+      const elapsedMin = Math.max(0, (now - new Date(inProgress.actualStart))/60000);
+      const overdue = now > estFinish;
+      currentBlock = `
+        <div class="ps-status-current">
+          <div class="ps-status-dot printing"></div>
+          <div>
+            <div><b>${escapeHtml(name)}</b></div>
+            <div class="ps-hint mono">started ${fmtClock(new Date(inProgress.actualStart))} · running ${fmtDuration(elapsedMin)}${overdue ? ' <span style="color:var(--heat)">— past estimated finish</span>' : ' · est. done '+fmtClock(estFinish)}</div>
+          </div>
+        </div>
+      `;
+    } else {
+      currentBlock = `
+        <div class="ps-status-current">
+          <div class="ps-status-dot idle"></div>
+          <div><b class="ps-hint">Not currently printing</b></div>
+        </div>
+      `;
+    }
+
+    // Next queued: the earliest projected (not-yet-started) job for this
+    // printer from the last generated Live Schedule.
+    let nextBlock;
+    const machine = liveMachines.find(m => m.id === p.id);
+    if(machine){
+      const upcoming = machine.days
+        .flatMap(d => d.jobs)
+        .filter(j => j.start > now)
+        .sort((a,b) => a.start - b.start)[0];
+      if(upcoming){
+        nextBlock = `<div class="ps-hint">Next: <b style="color:var(--text);">${escapeHtml(upcoming.name)}</b> — starts ${fmtDateHead(upcoming.start)} ${fmtClock(upcoming.start)}</div>`;
+      } else {
+        nextBlock = `<div class="ps-hint">Nothing queued after this.</div>`;
+      }
+    } else {
+      nextBlock = `<div class="ps-hint">No schedule generated yet — check the Build Schedule tab.</div>`;
+    }
+
+    return `
+      <div class="ps-panel">
+        <div class="ps-printer-block-head" style="margin-bottom:12px;"><span class="dot"></span>${escapeHtml(p.name)}</div>
+        ${currentBlock}
+        <div style="margin-top:10px;">${nextBlock}</div>
+      </div>
+    `;
+  }).join('');
+
+  root.innerHTML = cards;
+}
 
 function renderPrinters(){
   const root = document.getElementById('ps-tab-printers');
@@ -2441,6 +2525,7 @@ function regenerateIfActive(){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
   }
+  if(document.getElementById('ps-tab-status')) renderStatus();
 }
 
 function onGenerate(){
@@ -2503,6 +2588,7 @@ liveSchedule = makeSummary(buildMultiSchedule(queue, activePrinters, settings, '
   liveSchedule.mode = 'live';
 
   renderScheduleView();
+  if(document.getElementById('ps-tab-status')) renderStatus();
 }
 
 function renderScheduleView(){
@@ -2854,7 +2940,7 @@ function setupTabs(){
       document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
       tab.classList.add('active');
       const target = tab.getAttribute('data-tab');
-      ['schedule','log','estimate','jobs','printers','filament','catalog','settings'].forEach(name => {
+      ['status','schedule','log','estimate','jobs','printers','filament','catalog','settings'].forEach(name => {
         document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
       });
     });
@@ -2884,6 +2970,7 @@ async function startApp(){
   await loadState();
   syncConsumption();
   setupTabs();
+  renderStatus();
   renderSchedule();
   renderLog();
   renderEstimate();
@@ -2893,7 +2980,7 @@ async function startApp(){
   renderCatalog();
   renderSettings();
   checkFinishNotifications();
-  setInterval(checkFinishNotifications, 20000);
+  setInterval(() => { checkFinishNotifications(); renderStatus(); }, 20000);
 }
 // In the normal Claude-artifact context (and in a standalone build with no
 // auth configured), start immediately. A standalone build with auth enabled
