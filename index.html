@@ -655,6 +655,62 @@ function fmtSpan(fromDate, toDate){
   if(hours>=24){ days += 1; hours = 0; }
   return hours>0 ? `${days}d ${hours}h` : `${days}d`;
 }
+
+// Turns a slicer-style duration string ("2h 15m 30s", "1d 2h", "45m") into
+// total whole minutes. Returns null if nothing duration-like is found.
+function parseDurationString(s){
+  const d = s.match(/(\d+)\s*d\b/i);
+  const h = s.match(/(\d+)\s*h\b/i);
+  const m = s.match(/(\d+)\s*m(?!s)\b/i); // "m" but not "ms"
+  const sec = s.match(/(\d+)\s*s\b/i);
+  if(!d && !h && !m && !sec) return null;
+  let totalMin = 0;
+  if(d) totalMin += parseInt(d[1])*24*60;
+  if(h) totalMin += parseInt(h[1])*60;
+  if(m) totalMin += parseInt(m[1]);
+  if(sec) totalMin += parseInt(sec[1])/60;
+  return Math.round(totalMin);
+}
+
+// Pulls estimated print time and filament weight out of sliced g-code
+// comments. Tries several patterns since OrcaSlicer, PrusaSlicer, Bambu
+// Studio, and Cura all phrase this slightly differently, and formats shift
+// between versions. Returns nulls for whatever it can't find rather than
+// guessing.
+function parseGcodeMetadata(text){
+  let timeMin = null, weightG = null;
+
+  const timePatterns = [
+    /estimated printing time \(normal mode\)\s*=\s*([^\n\r;]+)/i,
+    /model printing time:\s*[^\n\r;]*;\s*total estimated time:\s*([^\n\r;]+)/i,
+    /total estimated time\s*[:=]\s*([^\n\r;]+)/i,
+  ];
+  for(const re of timePatterns){
+    const m = text.match(re);
+    if(m && m[1]){
+      const parsed = parseDurationString(m[1]);
+      if(parsed != null){ timeMin = parsed; break; }
+    }
+  }
+  if(timeMin == null){
+    const m = text.match(/;\s*TIME\s*:\s*(\d+)/i); // Cura-style, seconds
+    if(m) timeMin = Math.round(parseInt(m[1])/60);
+  }
+
+  const weightPatterns = [
+    /total filament used\s*\[g\]\s*=\s*([\d.]+)/i,
+    /filament used\s*\[g\]\s*=\s*([\d.]+)/i,
+    /filament\s*weight\s*\[g\]\s*[:=]\s*([\d.]+)/i,
+    /total filament weight\s*[:=]\s*([\d.]+)\s*g/i,
+  ];
+  for(const re of weightPatterns){
+    const m = text.match(re);
+    if(m && m[1]){ weightG = parseFloat(m[1]); break; }
+  }
+
+  return {timeMin, weightG};
+}
+
 function windowBounds(date, settings){
   const [sh,sm] = settings.startTime.split(':').map(Number);
   const [eh,em] = settings.endTime.split(':').map(Number);
@@ -1963,6 +2019,13 @@ function renderCatalog(){
 
   root.innerHTML = `
     <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Import from G-code</div>
+      <div class="ps-hint" style="margin-bottom:10px;">Reads the estimated print time and filament weight straight out of a sliced .gcode file — no re-typing. Works with OrcaSlicer, PrusaSlicer, Bambu Studio, and Cura's comment formats.</div>
+      <input type="file" id="ps-gcode-file" accept=".gcode,.gco,.g" style="display:none;" />
+      <button class="ps-btn" id="ps-gcode-trigger">Choose G-code file…</button>
+      <div id="ps-gcode-result" style="margin-top:12px;"></div>
+    </div>
+    <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Product Types</div>
       <div id="ps-types-list">${typeRows}</div>
       <div style="margin-top:10px;">
@@ -2015,6 +2078,88 @@ function renderCatalog(){
     types.push({id: uid('type'), name:'New type', color:'#9a9184'});
     typeErrorMsg='';
     saveTypes(); renderCatalog();
+  });
+
+  document.getElementById('ps-gcode-trigger').addEventListener('click', () => {
+    document.getElementById('ps-gcode-file').click();
+  });
+  document.getElementById('ps-gcode-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    const resultEl = document.getElementById('ps-gcode-result');
+    if(!file) return;
+    resultEl.innerHTML = '<div class="ps-hint">Reading file…</div>';
+    let text;
+    try {
+      text = await file.text();
+    } catch(err){
+      resultEl.innerHTML = `<div class="ps-warnbox">Couldn't read that file.</div>`;
+      e.target.value = '';
+      return;
+    }
+
+    const {timeMin, weightG} = parseGcodeMetadata(text);
+    const foundNote = (timeMin!=null || weightG!=null)
+      ? `Found: ${timeMin!=null ? fmtDuration(timeMin) : 'no time found'}${weightG!=null ? ', '+Math.round(weightG)+'g' : ', no weight found'}`
+      : `Couldn't find a time or weight estimate in this file — it may not be sliced, or your slicer's comment format isn't one I recognize yet. Enter values manually below if you still want to use it.`;
+    const guessedName = file.name.replace(/\.(gcode|gco|g)$/i, '').replace(/[_-]+/g, ' ').trim();
+    const h = timeMin!=null ? Math.floor(timeMin/60) : 0;
+    const m = timeMin!=null ? timeMin%60 : 0;
+    const w = weightG!=null ? Math.round(weightG) : 0;
+    const existingOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+    resultEl.innerHTML = `
+      <div class="ps-hint" style="margin-bottom:8px;">${foundNote}</div>
+      <div class="ps-row" style="flex-wrap:wrap;align-items:flex-end;">
+        <div class="ps-field" style="flex:1;min-width:160px;margin-bottom:0;">
+          <span class="ps-field-label">Product name</span>
+          <input class="ps-input" id="ps-gcode-name" value="${escapeHtml(guessedName)}" />
+        </div>
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">Time</span>
+          <div class="ps-row" style="gap:4px;">
+            <input class="ps-input ps-narrow" type="number" min="0" id="ps-gcode-timeh" value="${h}" /><span class="ps-hint">h</span>
+            <input class="ps-input ps-narrow" type="number" min="0" max="59" id="ps-gcode-timem" value="${m}" /><span class="ps-hint">m</span>
+          </div>
+        </div>
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">Weight (g)</span>
+          <input class="ps-input ps-narrow" type="number" min="0" id="ps-gcode-weight" value="${w}" style="width:80px;" />
+        </div>
+      </div>
+      <div class="ps-row" style="margin-top:12px;flex-wrap:wrap;">
+        <button class="ps-btn primary small" id="ps-gcode-create">Add as new product</button>
+        <select class="ps-select" id="ps-gcode-existing-select" style="max-width:200px;">
+          <option value="">— or update existing —</option>
+          ${existingOptions}
+        </select>
+        <button class="ps-btn small" id="ps-gcode-update">Apply to selected</button>
+      </div>
+    `;
+
+    document.getElementById('ps-gcode-create').addEventListener('click', () => {
+      const name = document.getElementById('ps-gcode-name').value.trim() || 'New product';
+      const timeH = Math.max(0, parseInt(document.getElementById('ps-gcode-timeh').value)||0);
+      const timeM = Math.max(0, parseInt(document.getElementById('ps-gcode-timem').value)||0);
+      const weight = Math.max(0, parseInt(document.getElementById('ps-gcode-weight').value)||0);
+      const newId = uid('prod');
+      catalog.push({id:newId, name, type: types[0].id, timeH, timeM, weightG: weight});
+      priorityOrder.push(newId);
+      saveCatalog(); saveOrder();
+      renderCatalog(); renderSchedule(); regenerateIfActive();
+    });
+    document.getElementById('ps-gcode-update').addEventListener('click', () => {
+      const pid = document.getElementById('ps-gcode-existing-select').value;
+      if(!pid) return;
+      const p = catalog.find(x=>x.id===pid);
+      if(!p) return;
+      p.timeH = Math.max(0, parseInt(document.getElementById('ps-gcode-timeh').value)||0);
+      p.timeM = Math.max(0, parseInt(document.getElementById('ps-gcode-timem').value)||0);
+      p.weightG = Math.max(0, parseInt(document.getElementById('ps-gcode-weight').value)||0);
+      saveCatalog();
+      renderCatalog(); renderSchedule(); regenerateIfActive();
+    });
+
+    e.target.value = '';
   });
 
   root.querySelectorAll('#ps-catalog-body tr').forEach(tr => {
@@ -2618,7 +2763,12 @@ function renderScheduleOutput(sched, container){
         `);
       }
     }
-    const daysHtml = dayPieces.join('');
+    let trailingSpoolEvents = '';
+    while(spoolEventIdx < spoolEvents.length){
+      trailingSpoolEvents += `<div class="ps-changeover" style="color:var(--ok);">⟳ spool changed to "${escapeHtml(spoolEvents[spoolEventIdx].label)}" — ${fmtDateHead(spoolEvents[spoolEventIdx].at)} ${fmtClock(spoolEvents[spoolEventIdx].at)} — nothing scheduled here since</div>`;
+      spoolEventIdx++;
+    }
+    const daysHtml = dayPieces.join('') + trailingSpoolEvents;
 
     const legend = (sched.mode === 'live' && anyActualShown) ? `
       <div class="ps-legend">
