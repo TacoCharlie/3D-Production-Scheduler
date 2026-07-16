@@ -1123,7 +1123,8 @@ function renderPrinters(){
         st.qty -= 1;
         const newSpool = {
           id: uid('spool'), label: st.label, material: st.material, colorHex: st.colorHex,
-          totalG: st.weightPerSpoolG, remainingG: st.weightPerSpoolG, retired: false
+          totalG: st.weightPerSpoolG, remainingG: st.weightPerSpoolG, retired: false,
+          loadedAt: new Date().toISOString(), loadedOnPrinterId: id
         };
         spools.push(newSpool);
         p.spoolId = newSpool.id;
@@ -2422,6 +2423,16 @@ function renderScheduleOutput(sched, container){
     const todayMidnight = new Date(); todayMidnight.setHours(0,0,0,0);
     let prevProductId = null;
 
+    // Real spool swaps on this printer (from "Change Spool" on the Printers
+    // tab), chronological, so we can show exactly where in the timeline each
+    // one actually happened — not just where the projection warns one's due.
+    const spoolEvents = sched.mode === 'live'
+      ? spools.filter(s => s.loadedOnPrinterId === m.id && s.loadedAt)
+          .map(s => ({at: new Date(s.loadedAt), label: s.label}))
+          .sort((a,b) => a.at - b.at)
+      : [];
+    let spoolEventIdx = 0;
+
     function weekKeyOf(date){
       const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
       d.setDate(d.getDate() - d.getDay()); // back up to the Sunday starting this week
@@ -2488,7 +2499,13 @@ function renderScheduleOutput(sched, container){
       const jobLines = jobs.map((j,i) => {
         const marker = j.failed ? '<span style="color:var(--danger)">✕ failed</span> — ' : (j.actual ? (j.inProgress ? '<span style="color:var(--heat)">▶ printing now</span> — ' : '✓ ') : '');
         const changeover = changeFlags[i] ? `<div class="ps-changeover">switch to ${escapeHtml(j.name)}</div>` : '';
+        let spoolChangeMarkers = '';
+        while(spoolEventIdx < spoolEvents.length && spoolEvents[spoolEventIdx].at <= j.start){
+          spoolChangeMarkers += `<div class="ps-changeover" style="color:var(--ok);">⟳ spool changed to "${escapeHtml(spoolEvents[spoolEventIdx].label)}" — ${fmtDateHead(spoolEvents[spoolEventIdx].at)} ${fmtClock(spoolEvents[spoolEventIdx].at)}</div>`;
+          spoolEventIdx++;
+        }
         return `
+        ${spoolChangeMarkers}
         ${changeover}
         <div>${marker}<b>${escapeHtml(j.name)}</b> — ${fmtClock(j.start)} → ${j.inProgress ? 'now' : fmtClock(j.end)}${j.overnight?' <span style="color:var(--heat)">(runs unattended past window close)</span>':''}${j.spoolShort?' <span class="ps-swap-tag">swap spool before this</span>':''}</div>
       `;
