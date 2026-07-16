@@ -106,6 +106,9 @@
   .ps-status-dot { width:10px; height:10px; border-radius:50%; margin-top:4px; flex-shrink:0; }
   .ps-status-dot.printing { background: var(--heat); animation: ps-pulse 1.6s ease-in-out infinite; }
   .ps-status-dot.idle { background: var(--muted); }
+  .ps-vprogress-track { width:14px; height:52px; background:var(--panel-2); border:1px solid var(--line); border-radius:3px; position:relative; overflow:hidden; flex-shrink:0; }
+  .ps-vprogress-fill { position:absolute; bottom:0; left:0; right:0; background:var(--heat); transition:height 0.3s; }
+  .ps-vprogress-fill.overdue { background:var(--danger); }
   .ps-printer-block-head .dot { width:7px; height:7px; border-radius:50%; background: var(--ok); display:inline-block; }
 
   .ps-day { margin-bottom: 16px; }
@@ -1125,8 +1128,12 @@ function renderStatus(){
       const estFinish = new Date(new Date(inProgress.actualStart).getTime() + (inProgress.plannedMin||0)*60000);
       const elapsedMin = Math.max(0, (now - new Date(inProgress.actualStart))/60000);
       const overdue = now > estFinish;
+      const progressPct = inProgress.plannedMin>0 ? Math.min(100, (elapsedMin/inProgress.plannedMin)*100) : 0;
       currentBlock = `
         <div class="ps-status-current">
+          <div class="ps-vprogress-track" title="${Math.round(progressPct)}% of estimated time elapsed">
+            <div class="ps-vprogress-fill ${overdue?'overdue':''}" style="height:${progressPct}%;"></div>
+          </div>
           <div class="ps-status-dot printing"></div>
           <div>
             <div><b>${escapeHtml(name)}</b></div>
