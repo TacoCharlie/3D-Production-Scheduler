@@ -109,7 +109,7 @@
   .ps-vprogress-track { width:14px; height:52px; background:var(--panel-2); border:1px solid var(--line); border-radius:3px; position:relative; overflow:hidden; flex-shrink:0; }
   .ps-vprogress-fill { position:absolute; bottom:0; left:0; right:0; background:var(--heat); transition:height 0.3s; }
   .ps-vprogress-fill.overdue { background:var(--danger); }
-  .ps-status-overdue-banner { margin-top:10px; padding:9px 12px; background: color-mix(in srgb, var(--danger) 22%, transparent); border:1px solid var(--danger); border-radius:4px; color: var(--danger); font-weight:700; font-size:12.5px; }
+  .ps-status-overdue-banner { margin-top:10px; padding:10px 12px; background: color-mix(in srgb, var(--danger) 22%, transparent); border:1px solid var(--danger); border-radius:4px; color: var(--danger); font-weight:700; font-size:14.5px; }
   .ps-printer-block-head .dot { width:7px; height:7px; border-radius:50%; background: var(--ok); display:inline-block; }
 
   .ps-day { margin-bottom: 16px; }
@@ -1114,13 +1114,15 @@ function renderStatus(){
   const liveMachines = liveSchedule ? liveSchedule.machines : [];
 
   const cards = activePrinters.map(p => {
-    // Currently printing: the most recent logged entry for this printer that
-    // hasn't finished (or failed) yet.
     const inProgress = productionLog
       .filter(e => e.printerId === p.id && !e.actualEnd && !e.failed)
       .sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart))[0];
 
-    let currentBlock;
+    const spool = p.spoolId ? spools.find(s => s.id === p.spoolId && !s.retired) : null;
+    const spoolLow = spool && spool.remainingG <= LOW_STOCK_G;
+
+    let headline, progressBar = '', overdueBanner = '', timeCell, subLine;
+
     if(inProgress){
       const product = catalog.find(x=>x.id===inProgress.productId);
       const name = inProgress.isTest
@@ -1130,76 +1132,60 @@ function renderStatus(){
       const elapsedMin = Math.max(0, (now - new Date(inProgress.actualStart))/60000);
       const overdue = now > estFinish;
       const progressPct = inProgress.plannedMin>0 ? Math.min(100, (elapsedMin/inProgress.plannedMin)*100) : 0;
-      let timeLine, overdueBanner = '';
+
+      headline = `<div style="font-size:19px;font-weight:700;line-height:1.25;">${escapeHtml(name)}</div>`;
+
       if(inProgress.plannedMin>0 && overdue){
-        timeLine = `started ${fmtClock(new Date(inProgress.actualStart))} · running ${fmtDuration(elapsedMin)}`;
+        timeCell = `<div class="ps-summary-cell"><div class="ps-summary-num" style="color:var(--danger);">OVERDUE</div><div class="ps-summary-label">was due ${fmtClock(estFinish)}</div></div>`;
         overdueBanner = `<div class="ps-status-overdue-banner">⚠ Should be done by now — go check it</div>`;
       } else if(inProgress.plannedMin>0){
-        const remainingMin = inProgress.plannedMin - elapsedMin;
-        timeLine = `started ${fmtClock(new Date(inProgress.actualStart))} · check in ~${fmtDuration(remainingMin)} · est. done ${fmtClock(estFinish)}`;
+        const remainingMin = Math.max(0, inProgress.plannedMin - elapsedMin);
+        timeCell = `<div class="ps-summary-cell"><div class="ps-summary-num">${fmtDuration(remainingMin)}</div><div class="ps-summary-label">left · done ${fmtClock(estFinish)}</div></div>`;
       } else {
-        timeLine = `started ${fmtClock(new Date(inProgress.actualStart))} · running ${fmtDuration(elapsedMin)} · no time estimate`;
+        timeCell = `<div class="ps-summary-cell"><div class="ps-summary-num">${fmtDuration(elapsedMin)}</div><div class="ps-summary-label">elapsed · no estimate</div></div>`;
       }
-      currentBlock = `
-        <div class="ps-status-current">
+
+      progressBar = `
+        <div class="ps-row" style="gap:10px;align-items:center;margin-top:10px;">
           <div class="ps-vprogress-track" title="${Math.round(progressPct)}% of estimated time elapsed">
             <div class="ps-vprogress-fill ${overdue?'overdue':''}" style="height:${progressPct}%;"></div>
           </div>
-          <div class="ps-status-dot printing"></div>
-          <div>
-            <div><b>${escapeHtml(name)}</b></div>
-            <div class="ps-hint mono">${timeLine}</div>
-          </div>
+          <div class="ps-hint mono">started ${fmtClock(new Date(inProgress.actualStart))}</div>
         </div>
-        ${overdueBanner}
       `;
     } else {
-      currentBlock = `
-        <div class="ps-status-current">
-          <div class="ps-status-dot idle"></div>
-          <div><b class="ps-hint">Not currently printing</b></div>
-        </div>
-      `;
+      headline = `<div style="font-size:19px;font-weight:700;color:var(--muted);">Idle</div>`;
+      timeCell = `<div class="ps-summary-cell"><div class="ps-summary-num" style="color:var(--muted);">—</div><div class="ps-summary-label">not printing</div></div>`;
     }
 
-    // Next queued: the earliest projected (not-yet-started) job for this
-    // printer from the last generated Live Schedule.
-    let nextBlock;
+    const filamentCell = spool
+      ? `<div class="ps-summary-cell"><div class="ps-summary-num" style="${spoolLow?'color:var(--danger);':''}">${spool.remainingG}g</div><div class="ps-summary-label">${spoolLow?'low — ':''}${escapeHtml(spool.label)}</div></div>`
+      : `<div class="ps-summary-cell"><div class="ps-summary-num" style="color:var(--muted);">—</div><div class="ps-summary-label">no spool set</div></div>`;
+
     const machine = liveMachines.find(m => m.id === p.id);
     if(machine){
       const upcoming = machine.days
         .flatMap(d => d.jobs)
         .filter(j => j.start > now)
         .sort((a,b) => a.start - b.start)[0];
-      if(upcoming){
-        nextBlock = `<div class="ps-hint">Next: <b style="color:var(--text);">${escapeHtml(upcoming.name)}</b> — starts ${fmtDateHead(upcoming.start)} ${fmtClock(upcoming.start)}</div>`;
-      } else {
-        nextBlock = `<div class="ps-hint">Nothing queued after this.</div>`;
-      }
+      subLine = upcoming
+        ? `Next: <b style="color:var(--text);">${escapeHtml(upcoming.name)}</b> — ${fmtDateHead(upcoming.start)} ${fmtClock(upcoming.start)}`
+        : `Nothing queued after this.`;
     } else {
-      nextBlock = `<div class="ps-hint">No schedule generated yet — check the Build Schedule tab.</div>`;
-    }
-
-    // Filament status for whatever spool is actually loaded on this printer.
-    const spool = p.spoolId ? spools.find(s => s.id === p.spoolId && !s.retired) : null;
-    let filamentBlock;
-    if(spool){
-      const pct = spool.totalG>0 ? Math.max(0, Math.min(100, (spool.remainingG/spool.totalG)*100)) : 0;
-      const low = spool.remainingG <= LOW_STOCK_G;
-      filamentBlock = `
-        <div class="ps-hint">Filament: <b style="color:var(--text);">${escapeHtml(spool.label)}</b> — ${spool.remainingG}g left${low ? ' <span class="ps-badge-low">Low</span>' : ''}</div>
-        <div class="ps-spool-bar-track" style="margin-top:5px;max-width:220px;"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
-      `;
-    } else {
-      filamentBlock = `<div class="ps-hint">No spool assigned — set one on the Printers tab.</div>`;
+      subLine = `No schedule generated yet — check the Build Schedule tab.`;
     }
 
     return `
       <div class="ps-panel">
         <div class="ps-printer-block-head" style="margin-bottom:12px;"><span class="dot"></span>${escapeHtml(p.name)}</div>
-        ${currentBlock}
-        <div style="margin-top:10px;">${nextBlock}</div>
-        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">${filamentBlock}</div>
+        ${headline}
+        ${progressBar}
+        ${overdueBanner}
+        <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);margin-top:12px;">
+          ${timeCell}
+          ${filamentCell}
+        </div>
+        <div style="margin-top:12px;font-size:13.5px;">${subLine}</div>
       </div>
     `;
   }).join('');
