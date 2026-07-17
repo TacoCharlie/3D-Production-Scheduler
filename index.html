@@ -430,6 +430,7 @@ let settings = null;
 let printers = null;
 let spools = null;
 let stock = null; // unopened inventory: [{id, label, material, colorHex, weightPerSpoolG, qty}]
+let partDefs = null; // maintenance part types: [{id, name, lifespanHours, replacementLog:[{printerId,at,hoursElapsed}]}]
 let orderQty = {};
 let priorityOrder = [];
 let productionLog = [];
@@ -466,6 +467,18 @@ async function loadState(){
   try { const st = await window.storage.get('stock'); stock = st ? JSON.parse(st.value) : JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
   catch(e){ stock = JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
   stock.forEach(st => { if(typeof st.qtyOnOrder !== 'number') st.qtyOnOrder = 0; });
+
+  try { const pd = await window.storage.get('partDefs'); partDefs = pd ? JSON.parse(pd.value) : []; }
+  catch(e){ partDefs = []; }
+  partDefs.forEach(pd => { if(!Array.isArray(pd.replacementLog)) pd.replacementLog = []; });
+  // Every printer gets an install-time entry for every part definition so
+  // its hours-since-install clock has somewhere to start counting from.
+  printers.forEach(p => {
+    if(!p.partInstalls) p.partInstalls = {};
+    partDefs.forEach(pd => {
+      if(!p.partInstalls[pd.id]) p.partInstalls[pd.id] = {installedAt: new Date().toISOString(), notified: false};
+    });
+  });
 
   try {
     const o = await window.storage.get('lastOrder');
@@ -529,6 +542,7 @@ async function saveSettings(){ try { await window.storage.set('settings', JSON.s
 async function savePrinters(){ try { await window.storage.set('printers', JSON.stringify(printers)); flashSave(); } catch(e){ console.error(e); } }
 async function saveSpools(){ try { await window.storage.set('spools', JSON.stringify(spools)); flashSave(); } catch(e){ console.error(e); } }
 async function saveStock(){ try { await window.storage.set('stock', JSON.stringify(stock)); flashSave(); } catch(e){ console.error(e); } }
+async function savePartDefs(){ try { await window.storage.set('partDefs', JSON.stringify(partDefs)); flashSave(); } catch(e){ console.error(e); } }
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
 async function saveLog(){ try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); } }
 // Every log entry claims exactly one unit of its product's queued quantity,
@@ -650,6 +664,28 @@ function checkFinishNotifications(){
     }
   });
   if(changed) saveLog();
+}
+
+function checkMaintenanceNotifications(){
+  if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  let changed = false;
+  printers.forEach(p => {
+    partDefs.forEach(pd => {
+      const install = p.partInstalls[pd.id];
+      if(!install || install.notified) return;
+      const hoursOn = printerHours(p.id, new Date(install.installedAt));
+      if(pd.lifespanHours>0 && hoursOn >= pd.lifespanHours){
+        try {
+          new Notification('Maintenance due', {
+            body: `${pd.name} on ${p.name} has reached ${fmtHours(pd.lifespanHours)} — time to inspect or replace.`
+          });
+        } catch(err){ console.error('notification failed', err); }
+        install.notified = true;
+        changed = true;
+      }
+    });
+  });
+  if(changed) savePrinters();
 }
 
 let flashTimer = null;
@@ -973,6 +1009,27 @@ function fmtHours(h){
   if(h < 10) return h.toFixed(1)+'h';
   return Math.round(h)+'h';
 }
+
+// Logs a maintenance part replacement on a printer: records how many hours
+// that instance actually lasted, folds that into the part's running average
+// (so the lifespan estimate self-corrects toward reality — an early failure
+// pulls the estimate down, a part that outlasted expectations pulls it up),
+// and resets that printer's clock for the part to zero.
+function logPartReplacement(printerId, partDefId){
+  const partDef = partDefs.find(pd => pd.id === partDefId);
+  const printer = printers.find(p => p.id === printerId);
+  if(!partDef || !printer || !printer.partInstalls[partDefId]) return;
+  const installedAt = new Date(printer.partInstalls[partDefId].installedAt);
+  const hoursElapsed = printerHours(printerId, installedAt);
+  partDef.replacementLog.push({printerId, at: new Date().toISOString(), hoursElapsed});
+  const intervals = partDef.replacementLog.map(r => r.hoursElapsed).filter(h => h > 0);
+  if(intervals.length > 0){
+    partDef.lifespanHours = intervals.reduce((s,h) => s+h, 0) / intervals.length;
+  }
+  printer.partInstalls[partDefId] = {installedAt: new Date().toISOString(), notified: false};
+  savePartDefs(); savePrinters();
+}
+
 
 function renderJobItemRows(job, editable){
   return job.items.map((item, idx) => {
@@ -1346,11 +1403,55 @@ function renderPrinters(){
             <button class="ps-btn ghost small" data-action="reset-hours">Reset hours counter</button>
           </div>
         </div>
+        ${partDefs.length>0 ? `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
+          <div class="ps-status-label" style="margin-bottom:8px;">MAINTENANCE PARTS</div>
+          ${partDefs.map(pd => {
+            const install = p.partInstalls[pd.id];
+            const hoursOn = install ? printerHours(p.id, new Date(install.installedAt)) : 0;
+            const pct = pd.lifespanHours>0 ? Math.min(100, (hoursOn/pd.lifespanHours)*100) : 0;
+            const due = pd.lifespanHours>0 && hoursOn >= pd.lifespanHours;
+            return `
+              <div style="margin-bottom:10px;">
+                <div class="ps-row" style="justify-content:space-between;">
+                  <span class="ps-hint">${escapeHtml(pd.name)} — <b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b> / ${fmtHours(pd.lifespanHours)}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}</span>
+                  <button class="ps-btn ghost small" data-action="log-part-replacement" data-partid="${pd.id}">Log Replacement</button>
+                </div>
+                <div class="ps-hprogress-track" style="height:6px;margin:4px 0 0;"><div class="ps-hprogress-fill ${due?'overdue':''}" style="width:${pct}%;"></div></div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        ` : ''}
       </div>
     `;
   }).join('');
 
+  const partDefRows = partDefs.map(pd => `
+    <tr data-id="${pd.id}">
+      <td><input class="ps-input ps-name" data-field="name" value="${escapeHtml(pd.name)}" /></td>
+      <td><input class="ps-input ps-narrow" type="number" min="1" data-field="lifespanHours" value="${Math.round(pd.lifespanHours)}" style="width:90px;" /></td>
+      <td class="ps-hint">${pd.replacementLog.length} logged</td>
+      <td><button class="ps-btn ghost small" data-action="remove-part">✕</button></td>
+    </tr>
+  `).join('');
+
   root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Maintenance Parts</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Define a part type once — every printer tracks its own hours-since-install independently. Lifespan starts as your estimate and adjusts on its own as you log real replacements.</div>
+      ${partDefs.length===0 ? '<div class="ps-empty">No parts tracked yet — add one below, e.g. "Hotend" at 1000 hours.</div>' : `
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th>Part</th><th style="width:110px">Lifespan (h)</th><th style="width:100px">History</th><th></th></tr></thead>
+        <tbody id="ps-parts-body">${partDefRows}</tbody>
+      </table>
+      </div>
+      `}
+      <div style="margin-top:14px;">
+        <button class="ps-btn" id="ps-add-part">+ Add part</button>
+      </div>
+    </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Printers</div>
       <div id="ps-printers-list">${cards}</div>
@@ -1360,6 +1461,33 @@ function renderPrinters(){
       <div class="ps-hint" style="margin-top:12px;">Mark a printer "Down" to pull it out of the rotation entirely — its share of the queue gets redistributed to the active printers. To tell the Live Schedule what a printer's actually doing right now, log its prints on the Log tab. Use "Change Spool" when you actually swap the physical spool — it retires the old one and pulls a fresh one from Stock.</div>
     </div>
   `;
+
+  root.querySelectorAll('#ps-parts-body tr').forEach(tr => {
+    const pid = tr.getAttribute('data-id');
+    tr.querySelectorAll('[data-field]').forEach(input => {
+      input.addEventListener('change', () => {
+        const pd = partDefs.find(x=>x.id===pid);
+        const field = input.getAttribute('data-field');
+        if(field==='lifespanHours'){
+          pd.lifespanHours = Math.max(1, parseFloat(input.value)||1);
+        } else {
+          pd[field] = input.value;
+        }
+        savePartDefs(); renderPrinters(); regenerateIfActive();
+      });
+    });
+    tr.querySelector('[data-action="remove-part"]').addEventListener('click', () => {
+      partDefs = partDefs.filter(x=>x.id!==pid);
+      printers.forEach(p => { delete p.partInstalls[pid]; });
+      savePartDefs(); savePrinters(); renderPrinters();
+    });
+  });
+  document.getElementById('ps-add-part').addEventListener('click', () => {
+    const newId = uid('part');
+    partDefs.push({id:newId, name:'New part', lifespanHours:1000, replacementLog:[]});
+    printers.forEach(p => { p.partInstalls[newId] = {installedAt: new Date().toISOString(), notified:false}; });
+    savePartDefs(); savePrinters(); renderPrinters();
+  });
 
   root.querySelectorAll('.ps-printer-card').forEach(card => {
     const id = card.getAttribute('data-id');
@@ -1391,6 +1519,13 @@ function renderPrinters(){
       const p = printers.find(x=>x.id===id);
       p.hoursResetAt = new Date().toISOString();
       savePrinters(); renderPrinters();
+    });
+    card.querySelectorAll('[data-action="log-part-replacement"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const partId = btn.getAttribute('data-partid');
+        logPartReplacement(id, partId);
+        renderPrinters();
+      });
     });
     const cancelBtn = card.querySelector('[data-action="cancel-change-spool"]');
     if(cancelBtn){
@@ -1429,7 +1564,9 @@ function renderPrinters(){
   });
 
   document.getElementById('ps-add-printer').addEventListener('click', () => {
-    printers.push({id: uid('printer'), name: 'New printer', status:'active', spoolId:null});
+    const newPartInstalls = {};
+    partDefs.forEach(pd => { newPartInstalls[pd.id] = {installedAt: new Date().toISOString(), notified:false}; });
+    printers.push({id: uid('printer'), name: 'New printer', status:'active', spoolId:null, partInstalls: newPartInstalls});
     savePrinters(); renderPrinters(); regenerateIfActive();
   });
 }
@@ -2465,7 +2602,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs
+    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs, partDefs
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -2494,18 +2631,28 @@ async function importAllData(jsonText){
   if(Array.isArray(data.estimateItems)) estimateItems = data.estimateItems;
   if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
   if(Array.isArray(data.jobs)) jobs = data.jobs;
+  if(Array.isArray(data.partDefs)){
+    partDefs = data.partDefs;
+    partDefs.forEach(pd => { if(!Array.isArray(pd.replacementLog)) pd.replacementLog = []; });
+  }
 
   // Keep priorityOrder consistent with whatever catalog came in.
   priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
   catalog.forEach(p => { if(!priorityOrder.includes(p.id)) priorityOrder.push(p.id); });
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
+  printers.forEach(p => {
+    if(!p.partInstalls) p.partInstalls = {};
+    partDefs.forEach(pd => {
+      if(!p.partInstalls[pd.id]) p.partInstalls[pd.id] = {installedAt: new Date().toISOString(), notified:false};
+    });
+  });
   Object.keys(orderQty).forEach(id => {
     if(typeof orderQty[id] === 'number'){ orderQty[id] = {qty: orderQty[id], pin: null}; }
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs(), savePartDefs()
   ]);
   syncConsumption();
 
@@ -2546,7 +2693,7 @@ function renderSettings(){
       <div class="ps-panel-title"><span class="dot"></span>Notifications</div>
       <div id="ps-notif-status" class="ps-hint" style="margin-bottom:10px;"></div>
       <button class="ps-btn" id="ps-notif-enable">Enable browser notifications</button>
-      <div class="ps-hint" style="margin-top:10px;">When something's actually printing (logged with a start but no finish yet), you'll get a notification about 5 minutes before its estimated finish — names the product and which printer. Needs this tab to stay open somewhere (doesn't need to be focused, just not closed), and works best on the deployed site — Claude's chat window may block notification permissions entirely.</div>
+      <div class="ps-hint" style="margin-top:10px;">When something's actually printing (logged with a start but no finish yet), you'll get a notification about 5 minutes before its estimated finish — names the product and which printer. You'll also get one when a maintenance part (tracked on the Printers tab) reaches its lifespan. Needs this tab to stay open somewhere (doesn't need to be focused, just not closed), and works best on the deployed site — Claude's chat window may block notification permissions entirely.</div>
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Data</div>
@@ -3162,7 +3309,8 @@ async function startApp(){
   renderCatalog();
   renderSettings();
   checkFinishNotifications();
-  setInterval(() => { checkFinishNotifications(); renderStatus(); }, 20000);
+  checkMaintenanceNotifications();
+  setInterval(() => { checkFinishNotifications(); checkMaintenanceNotifications(); renderStatus(); }, 20000);
 }
 // In the normal Claude-artifact context (and in a standalone build with no
 // auth configured), start immediately. A standalone build with auth enabled
