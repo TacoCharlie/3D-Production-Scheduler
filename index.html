@@ -503,6 +503,16 @@ async function loadState(){
 
   try { const lg = await window.storage.get('productionLog'); productionLog = lg ? JSON.parse(lg.value) : []; }
   catch(e){ productionLog = []; }
+  // Test prints used to always get plannedMin:0 even when tied to a real
+  // product — backfill the estimate for anything logged before that fix.
+  let backfilledTestTime = false;
+  productionLog.forEach(e => {
+    if(e.isTest && e.productId && !e.plannedMin){
+      const product = catalog.find(p=>p.id===e.productId);
+      if(product){ e.plannedMin = product.timeH*60 + product.timeM; backfilledTestTime = true; }
+    }
+  });
+  if(backfilledTestTime) saveLog();
 
   try { const ei = await window.storage.get('estimateItems'); estimateItems = ei ? JSON.parse(ei.value) : []; }
   catch(e){ estimateItems = []; }
@@ -1781,12 +1791,14 @@ function renderLog(){
       const testLabel = document.getElementById('ps-log-testlabel').value.trim();
       const testWeight = Math.max(0, parseFloat(document.getElementById('ps-log-testweight').value)||0);
       if(!printerId || (!testProductId && !testLabel) || !startVal) return;
+      const testProduct = testProductId ? catalog.find(p=>p.id===testProductId) : null;
+      const testPlannedMin = testProduct ? (testProduct.timeH*60+testProduct.timeM) : 0;
       productionLog.push({
         id: uid('log'),
         printerId, productId: testProductId, isTest: true, testLabel,
         actualStart: new Date(startVal).toISOString(),
         actualEnd: endVal ? new Date(endVal).toISOString() : null,
-        plannedMin: 0,
+        plannedMin: testPlannedMin,
         weightGAtLogTime: testWeight,
         spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
         consumed: true // no order impact regardless of whether a product is tied to it
