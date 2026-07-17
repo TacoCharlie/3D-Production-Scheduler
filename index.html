@@ -1037,14 +1037,8 @@ function findActiveJobForProduct(productId){
 }
 function jobProgress(job){
   const {totalUnits} = jobTotals(job);
-  const productIds = job.items.map(it=>it.id);
-  let since = job.activatedAt ? new Date(job.activatedAt) : new Date(job.createdAt);
-  // Logged start times only have minute precision (no seconds), but
-  // activatedAt has full precision — floor it to the minute so a print
-  // logged in the same minute as activation isn't wrongly excluded.
-  since = new Date(since.getFullYear(), since.getMonth(), since.getDate(), since.getHours(), since.getMinutes(), 0, 0);
   const done = productionLog
-    .filter(e => productIds.includes(e.productId) && !e.failed && e.actualEnd && new Date(e.actualStart) >= since)
+    .filter(e => e.jobId === job.id && !e.failed && e.actualEnd)
     .reduce((sum,e) => sum + (e.unitsCompleted||1), 0);
   return {done: Math.min(done, totalUnits), totalUnits};
 }
@@ -1155,6 +1149,8 @@ function renderJobs(){
 
   const activeCards = active.map(job => {
     const t = jobTotals(job);
+    const {done, totalUnits} = jobProgress(job);
+    const pct = totalUnits>0 ? Math.min(100, (done/totalUnits)*100) : 0;
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
@@ -1163,6 +1159,8 @@ function renderJobs(){
           <button class="ps-btn small" data-action="job-done">Mark Done</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
+        <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${pct}%;"></div></div>
+        <div class="ps-hint" style="margin-bottom:8px;">${done} of ${totalUnits} unit${totalUnits!==1?'s':''} done</div>
         <div class="ps-joblist">${renderJobItemRows(job, false)}</div>
       </div>
     `;
@@ -1884,6 +1882,7 @@ function renderLog(){
       const plannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (product ? (product.timeH*60+product.timeM) : 0);
       const weightAtLog = batchConfig ? (batchConfig.weightG||0) : (product ? (product.weightG||0) : 0);
       const unitsCompleted = batchConfig ? batchConfig.unitsPerBatch : 1;
+      const matchedJob = findActiveJobForProduct(productId);
       productionLog.push({
         id: uid('log'),
         printerId, productId,
@@ -1892,7 +1891,8 @@ function renderLog(){
         plannedMin,
         weightGAtLogTime: weightAtLog,
         spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
-        unitsCompleted
+        unitsCompleted,
+        jobId: matchedJob ? matchedJob.id : null
       });
     }
     // Logging a print permanently claims one unit from the queue — it doesn't
@@ -1950,6 +1950,10 @@ function renderLog(){
         e.actualStart = new Date(startVal).toISOString();
         e.notifiedFinishSoon = false;
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
+        if(e.actualEnd && !e.jobId){
+          const matchedJob = findActiveJobForProduct(e.productId);
+          if(matchedJob) e.jobId = matchedJob.id;
+        }
         editingLogId = null;
         syncConsumption();
         renderLog(); regenerateIfActive();
@@ -1966,6 +1970,13 @@ function renderLog(){
       finishBtn.addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
         e.actualEnd = new Date().toISOString();
+        // This print may have started before any matching job existed (e.g.
+        // it was already running when a job got activated) — check again
+        // now that it's actually finishing, not just at the original log time.
+        if(!e.jobId){
+          const matchedJob = findActiveJobForProduct(e.productId);
+          if(matchedJob) e.jobId = matchedJob.id;
+        }
         saveLog(); renderLog(); regenerateIfActive();
       });
     }
