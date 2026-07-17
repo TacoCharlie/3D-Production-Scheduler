@@ -119,7 +119,8 @@
   .ps-status-right .ps-summary-cell { flex:1; display:flex; flex-direction:column; justify-content:center; }
   .ps-printer-block-head .dot { width:7px; height:7px; border-radius:50%; background: var(--ok); display:inline-block; }
 
-  .ps-day { margin-bottom: 16px; }
+  .ps-day { margin-bottom: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .ps-day:first-child { padding-top: 0; border-top: none; }
   .ps-day-head { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
   .ps-day-date { font-family:'Archivo Expanded',sans-serif; font-weight:700; font-size:13px; text-transform:uppercase; letter-spacing:0.3px; }
   .ps-day-meta { color: var(--muted); font-size:11px; font-family:'JetBrains Mono',monospace; }
