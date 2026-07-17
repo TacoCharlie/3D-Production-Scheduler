@@ -1121,7 +1121,7 @@ function renderStatus(){
     const spool = p.spoolId ? spools.find(s => s.id === p.spoolId && !s.retired) : null;
     const spoolLow = spool && spool.remainingG <= LOW_STOCK_G;
 
-    let headline, progressBar = '', overdueBanner = '', timeCell, subLine;
+    let leftSide, overdueBanner = '', timeCell, subLine;
 
     if(inProgress){
       const product = catalog.find(x=>x.id===inProgress.productId);
@@ -1133,8 +1133,6 @@ function renderStatus(){
       const overdue = now > estFinish;
       const progressPct = inProgress.plannedMin>0 ? Math.min(100, (elapsedMin/inProgress.plannedMin)*100) : 0;
 
-      headline = `<div style="font-size:19px;font-weight:700;line-height:1.25;">${escapeHtml(name)}</div>`;
-
       if(inProgress.plannedMin>0 && overdue){
         timeCell = `<div class="ps-summary-cell"><div class="ps-summary-num" style="color:var(--danger);">OVERDUE</div><div class="ps-summary-label">was due ${fmtClock(estFinish)}</div></div>`;
         overdueBanner = `<div class="ps-status-overdue-banner">⚠ Should be done by now — go check it</div>`;
@@ -1145,17 +1143,21 @@ function renderStatus(){
         timeCell = `<div class="ps-summary-cell"><div class="ps-summary-num">${fmtDuration(elapsedMin)}</div><div class="ps-summary-label">elapsed · no estimate</div></div>`;
       }
 
-      progressBar = `
-        <div class="ps-row" style="gap:10px;align-items:center;margin-top:10px;">
-          <div class="ps-vprogress-track" title="${Math.round(progressPct)}% of estimated time elapsed">
-            <div class="ps-vprogress-fill ${overdue?'overdue':''}" style="height:${progressPct}%;"></div>
-          </div>
-          <div class="ps-hint mono">started ${fmtClock(new Date(inProgress.actualStart))}</div>
+      leftSide = `
+        <div class="ps-vprogress-track" style="height:auto;align-self:stretch;min-height:60px;" title="${Math.round(progressPct)}% of estimated time elapsed">
+          <div class="ps-vprogress-fill ${overdue?'overdue':''}" style="height:${progressPct}%;"></div>
+        </div>
+        <div>
+          <div style="font-size:19px;font-weight:700;line-height:1.25;">${escapeHtml(name)}</div>
+          <div class="ps-hint mono" style="margin-top:4px;">started ${fmtClock(new Date(inProgress.actualStart))}</div>
         </div>
       `;
     } else {
-      headline = `<div style="font-size:19px;font-weight:700;color:var(--muted);">Idle</div>`;
       timeCell = `<div class="ps-summary-cell"><div class="ps-summary-num" style="color:var(--muted);">—</div><div class="ps-summary-label">not printing</div></div>`;
+      leftSide = `
+        <div class="ps-vprogress-track" style="height:auto;align-self:stretch;min-height:60px;opacity:0.4;"></div>
+        <div style="font-size:19px;font-weight:700;color:var(--muted);align-self:center;">Idle</div>
+      `;
     }
 
     const filamentCell = spool
@@ -1178,13 +1180,16 @@ function renderStatus(){
     return `
       <div class="ps-panel">
         <div class="ps-printer-block-head" style="margin-bottom:12px;"><span class="dot"></span>${escapeHtml(p.name)}</div>
-        ${headline}
-        ${progressBar}
-        ${overdueBanner}
-        <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);margin-top:12px;">
-          ${timeCell}
-          ${filamentCell}
+        <div class="ps-row" style="align-items:stretch;gap:16px;flex-wrap:wrap;">
+          <div class="ps-row" style="gap:12px;align-items:flex-start;flex:1;min-width:180px;">
+            ${leftSide}
+          </div>
+          <div style="display:flex;flex-direction:column;gap:1px;min-width:170px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
+            ${timeCell}
+            ${filamentCell}
+          </div>
         </div>
+        ${overdueBanner}
         <div style="margin-top:12px;font-size:13.5px;">${subLine}</div>
       </div>
     `;
