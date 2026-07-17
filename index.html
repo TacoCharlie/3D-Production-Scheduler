@@ -457,6 +457,7 @@ async function loadState(){
   try { const pr = await window.storage.get('printers'); printers = pr ? JSON.parse(pr.value) : JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
   catch(e){ printers = JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
+  printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
 
   try { const sp = await window.storage.get('spools'); spools = sp ? JSON.parse(sp.value) : JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
   catch(e){ spools = JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
@@ -949,6 +950,30 @@ function jobProgress(job){
   return {done: Math.min(done, totalUnits), totalUnits};
 }
 
+// Total time a printer has actually spent running, in hours. Counts failed
+// and test prints too — the motors and hotend were on regardless of whether
+// the print succeeded or was ever meant to ship, so this is closer to a real
+// wear/maintenance odometer than a "successful prints only" figure. Only
+// counts entries that have actually finished (or failed and were closed
+// out) — an entry still mid-print isn't counted until it wraps up.
+function printerHours(printerId, sinceDate){
+  const entries = productionLog.filter(e => e.printerId === printerId && e.actualEnd);
+  let since = sinceDate;
+  if(since){
+    // Logged start times only have minute precision — floor the reset point
+    // to the minute too, or a print logged in the same minute as the reset
+    // gets wrongly excluded.
+    since = new Date(since.getFullYear(), since.getMonth(), since.getDate(), since.getHours(), since.getMinutes(), 0, 0);
+  }
+  const filtered = since ? entries.filter(e => new Date(e.actualStart) >= since) : entries;
+  const totalMs = filtered.reduce((sum,e) => sum + (new Date(e.actualEnd) - new Date(e.actualStart)), 0);
+  return totalMs / 3600000;
+}
+function fmtHours(h){
+  if(h < 10) return h.toFixed(1)+'h';
+  return Math.round(h)+'h';
+}
+
 function renderJobItemRows(job, editable){
   return job.items.map((item, idx) => {
     const p = catalog.find(x=>x.id===item.id);
@@ -1315,6 +1340,12 @@ function renderPrinters(){
           <div class="ps-hint">Used to flag when the schedule will run this machine out of filament.</div>
           ${changePicker}
         </div>
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
+          <div class="ps-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
+            <div class="ps-hint">Lifetime: <b style="color:var(--text);">${fmtHours(printerHours(p.id))}</b>${p.hoursResetAt ? ` · since reset: <b style="color:var(--text);">${fmtHours(printerHours(p.id, new Date(p.hoursResetAt)))}</b> (${fmtDateHead(new Date(p.hoursResetAt))})` : ''}</div>
+            <button class="ps-btn ghost small" data-action="reset-hours">Reset hours counter</button>
+          </div>
+        </div>
       </div>
     `;
   }).join('');
@@ -1355,6 +1386,11 @@ function renderPrinters(){
       if(changeSpoolOpenFor.has(id)) changeSpoolOpenFor.delete(id);
       else changeSpoolOpenFor.add(id);
       renderPrinters();
+    });
+    card.querySelector('[data-action="reset-hours"]').addEventListener('click', () => {
+      const p = printers.find(x=>x.id===id);
+      p.hoursResetAt = new Date().toISOString();
+      savePrinters(); renderPrinters();
     });
     const cancelBtn = card.querySelector('[data-action="cancel-change-spool"]');
     if(cancelBtn){
@@ -2463,6 +2499,7 @@ async function importAllData(jsonText){
   priorityOrder = priorityOrder.filter(id => catalog.some(p=>p.id===id));
   catalog.forEach(p => { if(!priorityOrder.includes(p.id)) priorityOrder.push(p.id); });
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
+  printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
   Object.keys(orderQty).forEach(id => {
     if(typeof orderQty[id] === 'number'){ orderQty[id] = {qty: orderQty[id], pin: null}; }
   });
@@ -2665,6 +2702,7 @@ function regenerateIfActive(){
   if(document.getElementById('ps-tab-estimate')) renderEstimate();
   if(document.getElementById('ps-tab-jobs')) renderJobs();
   if(document.getElementById('ps-tab-catalog')) renderCatalog();
+  if(document.getElementById('ps-tab-printers')) renderPrinters();
   if(liveSchedule){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
