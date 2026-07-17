@@ -248,6 +248,24 @@ if(supabaseConfigured && typeof window.supabase !== 'undefined'){
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
+// ---- Project file storage (for "Open in OrcaSlicer") ----
+// Requires a public Supabase Storage bucket named 'project-files' — see
+// SUPABASE_SETUP.sql. Public read is required because OrcaSlicer's
+// orcaslicer://open?file= handler downloads the file itself, with no way
+// to attach an auth header.
+if(sb){
+  window.uploadProjectFile = async function(file, path){
+    const {error} = await sb.storage.from('project-files').upload(path, file, {upsert:true});
+    if(error) throw error;
+    const {data} = sb.storage.from('project-files').getPublicUrl(path);
+    return data.publicUrl;
+  };
+  window.deleteProjectFile = async function(path){
+    const {error} = await sb.storage.from('project-files').remove([path]);
+    if(error) throw error;
+  };
+}
+
 if(typeof window.storage === 'undefined'){
   if(sb){
     window.storage = {
@@ -399,6 +417,15 @@ if(typeof window.storage === 'undefined'){
       return {keys, prefix, shared:false};
     }
   };
+}
+
+// File uploads (for the "Open project in OrcaSlicer" feature) need real
+// hosting — Supabase Storage in the deployed build. There's no equivalent
+// inside a Claude artifact, so this stays null there and the Catalog tab
+// shows an explanatory message instead of a broken upload button.
+if(typeof window.uploadProjectFile === 'undefined'){
+  window.uploadProjectFile = null;
+  window.deleteProjectFile = null;
 }
 
 const DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -2417,6 +2444,19 @@ function renderCatalog(){
         ${avg ? `<div class="ps-hint">Logged avg: ${fmtDuration(avg.avgMin)} over ${avg.count} print${avg.count!==1?'s':''}</div>` : ''}
       </td>
       <td><input class="ps-input ps-narrow" style="width:80px" type="number" min="0" data-field="weightG" value="${p.weightG}" /></td>
+      <td>
+        ${p.projectFileUrl ? `
+          <div class="ps-row" style="gap:4px;flex-wrap:wrap;">
+            <a class="ps-btn small" href="orcaslicer://open?file=${encodeURIComponent(p.projectFileUrl)}" title="Opens OrcaSlicer with this project file">Open in Orca</a>
+            <button class="ps-btn ghost small" data-action="remove-project-file" title="Remove file">✕</button>
+          </div>
+        ` : window.uploadProjectFile ? `
+          <input type="file" data-action="upload-project-file" style="display:none;" accept=".3mf,.stl,.step,.stp" />
+          <button class="ps-btn small" data-action="trigger-upload">Upload…</button>
+        ` : `
+          <span class="ps-hint" title="File uploads need Supabase Storage, which only exists on the deployed site — not available here in chat.">Deployed site only</span>
+        `}
+      </td>
       <td><button class="ps-btn ghost" data-action="remove" title="Remove product">✕</button></td>
     </tr>
   `;
@@ -2451,7 +2491,7 @@ function renderCatalog(){
       <div class="ps-panel-title"><span class="dot"></span>Product Catalog</div>
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th style="width:32%">Product</th><th style="width:16%">Type</th><th style="width:24%">Print time</th><th style="width:16%">Weight (g)</th><th style="width:8%"></th></tr></thead>
+        <thead><tr><th style="width:26%">Product</th><th style="width:13%">Type</th><th style="width:20%">Print time</th><th style="width:12%">Weight (g)</th><th style="width:20%">Project file</th><th style="width:9%"></th></tr></thead>
         <tbody id="ps-catalog-body">${rows}</tbody>
       </table>
       </div>
@@ -2596,6 +2636,47 @@ function renderCatalog(){
       saveCatalog(); saveOrder();
       renderCatalog(); renderSchedule(); regenerateIfActive();
     });
+    const triggerBtn = tr.querySelector('[data-action="trigger-upload"]');
+    if(triggerBtn){
+      triggerBtn.addEventListener('click', () => {
+        tr.querySelector('[data-action="upload-project-file"]').click();
+      });
+    }
+    const uploadInput = tr.querySelector('[data-action="upload-project-file"]');
+    if(uploadInput){
+      uploadInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        const p = catalog.find(x=>x.id===id);
+        triggerBtn.disabled = true;
+        triggerBtn.textContent = 'Uploading…';
+        try {
+          const path = `${id}-${Date.now()}-${file.name}`;
+          const url = await window.uploadProjectFile(file, path);
+          p.projectFileUrl = url;
+          p.projectFilePath = path;
+          saveCatalog();
+          renderCatalog();
+        } catch(err){
+          triggerBtn.disabled = false;
+          triggerBtn.textContent = 'Upload…';
+          alert('Upload failed: ' + (err.message||err));
+        }
+      });
+    }
+    const removeFileBtn = tr.querySelector('[data-action="remove-project-file"]');
+    if(removeFileBtn){
+      removeFileBtn.addEventListener('click', async () => {
+        const p = catalog.find(x=>x.id===id);
+        try {
+          if(window.deleteProjectFile && p.projectFilePath) await window.deleteProjectFile(p.projectFilePath);
+        } catch(err){ console.error(err); }
+        delete p.projectFileUrl;
+        delete p.projectFilePath;
+        saveCatalog();
+        renderCatalog();
+      });
+    }
   });
 
   document.getElementById('ps-add-product').addEventListener('click', () => {
