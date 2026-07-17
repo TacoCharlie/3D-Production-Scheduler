@@ -111,6 +111,7 @@
   .ps-hprogress-fill.overdue { background:var(--danger); }
   .ps-status-overdue-banner { margin-top:10px; padding:10px 12px; background: color-mix(in srgb, var(--danger) 22%, transparent); border:1px solid var(--danger); border-radius:4px; color: var(--danger); font-weight:700; font-size:14.5px; }
   .ps-status-label { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color: var(--muted); font-weight:600; margin-bottom:4px; }
+  .ps-status-job { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
   .ps-status-grid { display:grid; grid-template-columns: 1fr 170px; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
   .ps-status-left { background:var(--panel); padding:14px 16px; display:flex; flex-direction:column; justify-content:center; }
   .ps-status-right { background:var(--line); display:flex; flex-direction:column; gap:1px; }
@@ -919,6 +920,35 @@ function jobTotals(job){
   return {totalMin, totalWeight, totalUnits};
 }
 
+// There's no direct link stored between a logged print and the Job it came
+// from — once a job's items get merged into the real order they're
+// indistinguishable from anything else queued for that product. This
+// approximates the link instead: given what a printer is currently printing
+// (or about to print next), find the active job that contains that product,
+// preferring whichever was activated most recently. Progress is estimated by
+// counting non-failed logged prints of that job's products, across every
+// printer, logged since the job went active.
+function findActiveJobForProduct(productId){
+  if(!productId) return null;
+  const candidates = jobs.filter(j => j.status==='active' && j.items.some(it=>it.id===productId));
+  if(candidates.length===0) return null;
+  candidates.sort((a,b) => new Date(b.activatedAt||b.createdAt) - new Date(a.activatedAt||a.createdAt));
+  return candidates[0];
+}
+function jobProgress(job){
+  const {totalUnits} = jobTotals(job);
+  const productIds = job.items.map(it=>it.id);
+  let since = job.activatedAt ? new Date(job.activatedAt) : new Date(job.createdAt);
+  // Logged start times only have minute precision (no seconds), but
+  // activatedAt has full precision — floor it to the minute so a print
+  // logged in the same minute as activation isn't wrongly excluded.
+  since = new Date(since.getFullYear(), since.getMonth(), since.getDate(), since.getHours(), since.getMinutes(), 0, 0);
+  const done = productionLog.filter(e =>
+    productIds.includes(e.productId) && !e.failed && e.actualEnd && new Date(e.actualStart) >= since
+  ).length;
+  return {done: Math.min(done, totalUnits), totalUnits};
+}
+
 function renderJobItemRows(job, editable){
   return job.items.map((item, idx) => {
     const p = catalog.find(x=>x.id===item.id);
@@ -1048,6 +1078,8 @@ function renderJobs(){
           entry.qty += item.qty;
         });
         job.status = 'active';
+        job.activatedAt = new Date().toISOString();
+        job.activatedAt = new Date().toISOString();
         saveOrder(); saveJobs();
         renderJobs(); regenerateIfActive();
       });
@@ -1139,11 +1171,13 @@ function renderStatus(){
 
     const spool = p.spoolId ? spools.find(s => s.id === p.spoolId && !s.retired) : null;
     const spoolLow = spool && spool.remainingG <= LOW_STOCK_G;
+    const spoolPct = spool && spool.totalG>0 ? Math.max(0, Math.min(100, (spool.remainingG/spool.totalG)*100)) : 0;
 
-    let leftSide, overdueBanner = '', timeCell, subLine;
+    let leftSide, overdueBanner = '', timeCell, subLine, relevantProductId = null;
 
     if(inProgress){
       const product = catalog.find(x=>x.id===inProgress.productId);
+      relevantProductId = inProgress.productId;
       const name = inProgress.isTest
         ? 'Test: ' + (product && inProgress.testLabel ? `${product.name} — ${inProgress.testLabel}` : product ? product.name : (inProgress.testLabel||'untitled'))
         : (product ? product.name : '(deleted product)');
@@ -1181,12 +1215,13 @@ function renderStatus(){
     }
 
     const filamentCell = spool
-      ? `<div class="ps-summary-cell"><div class="ps-summary-label" style="margin:0 0 4px;">FILAMENT LEFT</div><div class="ps-summary-num" style="${spoolLow?'color:var(--danger);':''}">${spool.remainingG}g</div><div class="ps-summary-label">${spoolLow?'low — ':''}${escapeHtml(spool.label)}</div></div>`
+      ? `<div class="ps-summary-cell"><div class="ps-summary-label" style="margin:0 0 4px;">FILAMENT LEFT</div><div class="ps-summary-num" style="${spoolLow?'color:var(--danger);':''}">${spool.remainingG}g</div><div class="ps-spool-bar-track" style="margin:6px 0 4px;"><div class="ps-spool-bar-fill ${spoolLow?'low':''}" style="width:${spoolPct}%"></div></div><div class="ps-summary-label" style="text-transform:none;letter-spacing:0;">${spoolLow?'low — ':''}${escapeHtml(spool.label)}</div></div>`
       : `<div class="ps-summary-cell"><div class="ps-summary-label" style="margin:0 0 4px;">FILAMENT LEFT</div><div class="ps-summary-num" style="color:var(--muted);">—</div><div class="ps-summary-label">no spool set</div></div>`;
 
     const machine = liveMachines.find(m => m.id === p.id);
+    let upcoming = null;
     if(machine){
-      const upcoming = machine.days
+      upcoming = machine.days
         .flatMap(d => d.jobs)
         .filter(j => j.start > now)
         .sort((a,b) => a.start - b.start)[0];
@@ -1195,6 +1230,25 @@ function renderStatus(){
         : `Nothing queued after this.`;
     } else {
       subLine = `No schedule generated yet — check the Build Schedule tab.`;
+    }
+
+    // Job status: which active Job (from the Jobs tab) this printer's
+    // current-or-next product belongs to, if any, and how far along that
+    // job is overall (not just on this printer).
+    if(!relevantProductId && upcoming) relevantProductId = upcoming.productId;
+    const job = findActiveJobForProduct(relevantProductId);
+    let jobSection = '';
+    if(job){
+      const {done, totalUnits} = jobProgress(job);
+      const pct = totalUnits>0 ? Math.min(100, (done/totalUnits)*100) : 0;
+      jobSection = `
+        <div class="ps-status-job">
+          <div class="ps-status-label">JOB</div>
+          <div style="font-weight:700;">${escapeHtml(job.name)}</div>
+          <div class="ps-hprogress-track"><div class="ps-hprogress-fill" style="width:${pct}%;background:var(--ok);"></div></div>
+          <div class="ps-hint">${done} of ${totalUnits} units done</div>
+        </div>
+      `;
     }
 
     return `
@@ -1210,6 +1264,7 @@ function renderStatus(){
           </div>
         </div>
         ${overdueBanner}
+        ${jobSection}
         <div style="margin-top:12px;font-size:13.5px;">${subLine}</div>
       </div>
     `;
