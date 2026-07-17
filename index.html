@@ -560,11 +560,25 @@ function syncConsumption(){
 // the queue the way a real completion does — but the filament it used is
 // genuinely gone, so that stays consumed. Locks the entry (consumed=true)
 // so syncConsumption never tries to touch it again.
-function markFailed(entryId){
+function markFailed(entryId, actualWeightG){
   const e = productionLog.find(x=>x.id===entryId);
   if(!e || e.failed) return;
   if(e.consumed){
     getOrderEntry(e.productId).qty += 1;
+  }
+  // Correct the spool deduction to reflect what actually got used, not the
+  // full model weight — a print that failed early shouldn't be charged as
+  // if it printed all the way through.
+  if(typeof actualWeightG === 'number'){
+    if(e.spoolConsumed && e.spoolIdAtLogTime){
+      const spool = spools.find(s=>s.id===e.spoolIdAtLogTime);
+      if(spool){
+        spool.remainingG += (e.weightGAtLogTime||0); // give back what was originally deducted
+        spool.remainingG = Math.max(0, spool.remainingG - actualWeightG); // deduct the corrected amount
+      }
+    }
+    e.weightGAtLogTime = actualWeightG;
+    saveSpools();
   }
   e.failed = true;
   if(!e.actualEnd) e.actualEnd = new Date().toISOString();
@@ -1331,6 +1345,7 @@ function renderPrinters(){
 
 // ---------- rendering: Log tab ----------
 let editingLogId = null;
+let failingLogId = null; // which entry is showing the "confirm failed — how much filament?" prompt
 // Which past days/weeks a person has manually expanded, keyed by
 // "machineId|dateKey" or "machineId|weekStartDateKey". Session-only — not
 // persisted, and not relevant for Theoretical view (no "past" there since
@@ -1356,6 +1371,29 @@ function renderLog(){
   const rows = entries.map(e => {
     const printer = printers.find(p=>p.id===e.printerId);
     const product = catalog.find(p=>p.id===e.productId);
+
+    if(e.id === failingLogId){
+      const elapsedMin = Math.max(0, ((e.actualEnd ? new Date(e.actualEnd) : new Date()) - new Date(e.actualStart))/60000);
+      const fullWeight = e.weightGAtLogTime || 0;
+      const estimate = (e.plannedMin>0 && fullWeight>0)
+        ? Math.round(Math.min(1, elapsedMin/e.plannedMin) * fullWeight)
+        : fullWeight;
+      return `
+        <div class="ps-log-entry" data-id="${e.id}">
+          <div style="width:100%;">
+            <div class="ps-hint" style="margin-bottom:8px;">Marking <b style="color:var(--text);">${escapeHtml(product?product.name:'(deleted product)')}</b> failed — how much filament actually got used before it died? Full model weight is ${fullWeight}g; a rough time-based guess is prefilled below.</div>
+            <div class="ps-row" style="align-items:flex-end;">
+              <div class="ps-field" style="margin-bottom:0;">
+                <span class="ps-field-label">Filament actually used (g)</span>
+                <input class="ps-input ps-narrow" style="width:90px;" type="number" min="0" id="ps-fail-weight-${e.id}" value="${estimate}" />
+              </div>
+              <button class="ps-btn primary small" data-action="confirm-fail">Confirm Failed</button>
+              <button class="ps-btn ghost small" data-action="cancel-fail">Cancel</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
 
     if(e.id === editingLogId){
       const pOpts = printers.map(p => `<option value="${p.id}" ${p.id===e.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
@@ -1617,8 +1655,25 @@ function renderLog(){
     const failBtn = row.querySelector('[data-action="fail"]');
     if(failBtn){
       failBtn.addEventListener('click', () => {
-        markFailed(id);
+        failingLogId = id;
+        renderLog();
+      });
+    }
+    const confirmFailBtn = row.querySelector('[data-action="confirm-fail"]');
+    if(confirmFailBtn){
+      confirmFailBtn.addEventListener('click', () => {
+        const weightInput = document.getElementById('ps-fail-weight-'+id);
+        const actualWeightG = Math.max(0, parseFloat(weightInput.value)||0);
+        markFailed(id, actualWeightG);
+        failingLogId = null;
         renderLog(); regenerateIfActive();
+      });
+    }
+    const cancelFailBtn = row.querySelector('[data-action="cancel-fail"]');
+    if(cancelFailBtn){
+      cancelFailBtn.addEventListener('click', () => {
+        failingLogId = null;
+        renderLog();
       });
     }
     const unfailBtn = row.querySelector('[data-action="unfail"]');
@@ -1635,20 +1690,23 @@ function renderLog(){
         renderLog();
       });
     }
-    row.querySelector('[data-action="delete"]').addEventListener('click', () => {
-      const removed = productionLog.find(x=>x.id===id);
-      productionLog = productionLog.filter(x=>x.id!==id);
-      if(removed && removed.consumed && !removed.failed && removed.productId){
-        const orderEntry = getOrderEntry(removed.productId);
-        orderEntry.qty += 1;
-        saveOrder();
-      }
-      if(removed && removed.spoolConsumed && removed.spoolIdAtLogTime){
-        const spool = spools.find(s=>s.id===removed.spoolIdAtLogTime);
-        if(spool){ spool.remainingG += (removed.weightGAtLogTime||0); saveSpools(); }
-      }
-      saveLog(); renderLog(); regenerateIfActive();
-    });
+    const deleteBtn = row.querySelector('[data-action="delete"]');
+    if(deleteBtn){
+      deleteBtn.addEventListener('click', () => {
+        const removed = productionLog.find(x=>x.id===id);
+        productionLog = productionLog.filter(x=>x.id!==id);
+        if(removed && removed.consumed && !removed.failed && removed.productId){
+          const orderEntry = getOrderEntry(removed.productId);
+          orderEntry.qty += 1;
+          saveOrder();
+        }
+        if(removed && removed.spoolConsumed && removed.spoolIdAtLogTime){
+          const spool = spools.find(s=>s.id===removed.spoolIdAtLogTime);
+          if(spool){ spool.remainingG += (removed.weightGAtLogTime||0); saveSpools(); }
+        }
+        saveLog(); renderLog(); regenerateIfActive();
+      });
+    }
   });
 }
 
