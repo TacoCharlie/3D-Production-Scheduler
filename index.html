@@ -112,6 +112,7 @@
   .ps-status-overdue-banner { margin-top:10px; padding:10px 12px; background: color-mix(in srgb, var(--danger) 22%, transparent); border:1px solid var(--danger); border-radius:4px; color: var(--danger); font-weight:700; font-size:14.5px; }
   .ps-status-label { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color: var(--muted); font-weight:600; margin-bottom:4px; }
   .ps-status-job { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+  .ps-files-panel { margin-top:8px; padding:10px; background:var(--panel-2); border:1px solid var(--line); border-radius:4px; min-width:260px; }
   .ps-status-grid { display:grid; grid-template-columns: 1fr 170px; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
   .ps-status-left { background:var(--panel); padding:14px 16px; display:flex; flex-direction:column; justify-content:center; }
   .ps-status-right { background:var(--line); display:flex; flex-direction:column; gap:1px; }
@@ -472,6 +473,20 @@ function todayISO(){ const d = new Date(); return d.getFullYear()+'-'+String(d.g
 async function loadState(){
   try { const c = await window.storage.get('catalog'); catalog = c ? JSON.parse(c.value) : JSON.parse(JSON.stringify(DEFAULT_CATALOG)); }
   catch(e){ catalog = JSON.parse(JSON.stringify(DEFAULT_CATALOG)); }
+  // Different printers (brands especially) often need their own slicer
+  // profile/plate setup for the "same" product — one project file per
+  // product isn't enough. Move to one file per (product, printer) pair,
+  // keyed by printer id, plus a printer-agnostic '_any' slot for a shared
+  // default. Anything already uploaded under the old single-file model
+  // becomes that default rather than being lost.
+  catalog.forEach(p => {
+    if(!p.projectFiles) p.projectFiles = {};
+    if(p.projectFileUrl){
+      p.projectFiles['_any'] = {url: p.projectFileUrl, path: p.projectFilePath || null};
+      delete p.projectFileUrl;
+      delete p.projectFilePath;
+    }
+  });
 
   try { const t = await window.storage.get('types'); types = t ? JSON.parse(t.value) : JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
   catch(e){ types = JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
@@ -2423,6 +2438,46 @@ function renderFilament(){
 
 // ---------- rendering: Catalog tab ----------
 let typeErrorMsg = '';
+let filesOpenFor = new Set(); // session-only: which products have the per-printer files panel expanded
+
+function renderFilesCell(p){
+  const fileCount = Object.keys(p.projectFiles||{}).length;
+  const isOpen = filesOpenFor.has(p.id);
+  const targets = [{id:'_any', name:'Default (any printer)'}, ...printers.map(pr => ({id: pr.id, name: pr.name}))];
+
+  const rowsHtml = targets.map(target => {
+    const entry = p.projectFiles && p.projectFiles[target.id];
+    let action;
+    if(entry){
+      action = `
+        <a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}" title="Opens OrcaSlicer with this file">Open</a>
+        <button class="ps-btn ghost small" data-action="remove-printer-file" data-target="${target.id}">✕</button>
+      `;
+    } else if(window.uploadProjectFile){
+      action = `
+        <input type="file" data-action="upload-printer-file" data-target="${target.id}" style="display:none;" accept=".3mf,.stl,.step,.stp" />
+        <button class="ps-btn ghost small" data-action="trigger-printer-upload" data-target="${target.id}">Upload…</button>
+      `;
+    } else {
+      action = `<span class="ps-hint" title="File uploads need Supabase Storage, which only exists on the deployed site.">—</span>`;
+    }
+    return `
+      <div class="ps-row" style="justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);">
+        <span class="ps-hint">${escapeHtml(target.name)}</span>
+        <div class="ps-row" style="gap:4px;">${action}</div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <button class="ps-btn small" data-action="toggle-files-panel">${fileCount>0 ? `Files (${fileCount})` : 'Files…'}</button>
+    ${isOpen ? `<div class="ps-files-panel">
+      <div class="ps-hint" style="margin-bottom:6px;">A file here overrides Default for that specific printer — useful when a printer (like a different brand) needs its own profile for the same product.</div>
+      ${rowsHtml}
+    </div>` : ''}
+  `;
+}
+
 
 function renderCatalog(){
   const root = document.getElementById('ps-tab-catalog');
@@ -2444,19 +2499,7 @@ function renderCatalog(){
         ${avg ? `<div class="ps-hint">Logged avg: ${fmtDuration(avg.avgMin)} over ${avg.count} print${avg.count!==1?'s':''}</div>` : ''}
       </td>
       <td><input class="ps-input ps-narrow" style="width:80px" type="number" min="0" data-field="weightG" value="${p.weightG}" /></td>
-      <td>
-        ${p.projectFileUrl ? `
-          <div class="ps-row" style="gap:4px;flex-wrap:wrap;">
-            <a class="ps-btn small" href="orcaslicer://open?file=${encodeURIComponent(p.projectFileUrl)}" title="Opens OrcaSlicer with this project file">Open in Orca</a>
-            <button class="ps-btn ghost small" data-action="remove-project-file" title="Remove file">✕</button>
-          </div>
-        ` : window.uploadProjectFile ? `
-          <input type="file" data-action="upload-project-file" style="display:none;" accept=".3mf,.stl,.step,.stp" />
-          <button class="ps-btn small" data-action="trigger-upload">Upload…</button>
-        ` : `
-          <span class="ps-hint" title="File uploads need Supabase Storage, which only exists on the deployed site — not available here in chat.">Deployed site only</span>
-        `}
-      </td>
+      <td>${renderFilesCell(p)}</td>
       <td><button class="ps-btn ghost" data-action="remove" title="Remove product">✕</button></td>
     </tr>
   `;
@@ -2595,7 +2638,7 @@ function renderCatalog(){
       const timeM = Math.max(0, parseInt(document.getElementById('ps-gcode-timem').value)||0);
       const weight = Math.max(0, parseInt(document.getElementById('ps-gcode-weight').value)||0);
       const newId = uid('prod');
-      catalog.push({id:newId, name, type: types[0].id, timeH, timeM, weightG: weight});
+      catalog.push({id:newId, name, type: types[0].id, timeH, timeM, weightG: weight, projectFiles:{}});
       priorityOrder.push(newId);
       saveCatalog(); saveOrder();
       renderCatalog(); renderSchedule(); regenerateIfActive();
@@ -2636,52 +2679,61 @@ function renderCatalog(){
       saveCatalog(); saveOrder();
       renderCatalog(); renderSchedule(); regenerateIfActive();
     });
-    const triggerBtn = tr.querySelector('[data-action="trigger-upload"]');
-    if(triggerBtn){
-      triggerBtn.addEventListener('click', () => {
-        tr.querySelector('[data-action="upload-project-file"]').click();
-      });
-    }
-    const uploadInput = tr.querySelector('[data-action="upload-project-file"]');
-    if(uploadInput){
-      uploadInput.addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if(!file) return;
-        const p = catalog.find(x=>x.id===id);
-        triggerBtn.disabled = true;
-        triggerBtn.textContent = 'Uploading…';
-        try {
-          const path = `${id}-${Date.now()}-${file.name}`;
-          const url = await window.uploadProjectFile(file, path);
-          p.projectFileUrl = url;
-          p.projectFilePath = path;
-          saveCatalog();
-          renderCatalog();
-        } catch(err){
-          triggerBtn.disabled = false;
-          triggerBtn.textContent = 'Upload…';
-          alert('Upload failed: ' + (err.message||err));
-        }
-      });
-    }
-    const removeFileBtn = tr.querySelector('[data-action="remove-project-file"]');
-    if(removeFileBtn){
-      removeFileBtn.addEventListener('click', async () => {
-        const p = catalog.find(x=>x.id===id);
-        try {
-          if(window.deleteProjectFile && p.projectFilePath) await window.deleteProjectFile(p.projectFilePath);
-        } catch(err){ console.error(err); }
-        delete p.projectFileUrl;
-        delete p.projectFilePath;
-        saveCatalog();
+    const toggleFilesBtn = tr.querySelector('[data-action="toggle-files-panel"]');
+    if(toggleFilesBtn){
+      toggleFilesBtn.addEventListener('click', () => {
+        if(filesOpenFor.has(id)) filesOpenFor.delete(id);
+        else filesOpenFor.add(id);
         renderCatalog();
       });
     }
+    tr.querySelectorAll('[data-action="trigger-printer-upload"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-target');
+        tr.querySelector(`[data-action="upload-printer-file"][data-target="${target}"]`).click();
+      });
+    });
+    tr.querySelectorAll('[data-action="upload-printer-file"]').forEach(input => {
+      input.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        const target = input.getAttribute('data-target');
+        const p = catalog.find(x=>x.id===id);
+        const btn = tr.querySelector(`[data-action="trigger-printer-upload"][data-target="${target}"]`);
+        btn.disabled = true;
+        btn.textContent = 'Uploading…';
+        try {
+          const path = `${id}-${target}-${Date.now()}-${file.name}`;
+          const url = await window.uploadProjectFile(file, path);
+          if(!p.projectFiles) p.projectFiles = {};
+          p.projectFiles[target] = {url, path};
+          saveCatalog();
+          renderCatalog();
+        } catch(err){
+          btn.disabled = false;
+          btn.textContent = 'Upload…';
+          alert('Upload failed: ' + (err.message||err));
+        }
+      });
+    });
+    tr.querySelectorAll('[data-action="remove-printer-file"]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const target = btn.getAttribute('data-target');
+        const p = catalog.find(x=>x.id===id);
+        const entry = p.projectFiles && p.projectFiles[target];
+        try {
+          if(window.deleteProjectFile && entry && entry.path) await window.deleteProjectFile(entry.path);
+        } catch(err){ console.error(err); }
+        if(p.projectFiles) delete p.projectFiles[target];
+        saveCatalog();
+        renderCatalog();
+      });
+    });
   });
 
   document.getElementById('ps-add-product').addEventListener('click', () => {
     const id = uid('prod');
-    catalog.push({id, name:'New product', type: types[0].id, timeH:0, timeM:0, weightG:0});
+    catalog.push({id, name:'New product', type: types[0].id, timeH:0, timeM:0, weightG:0, projectFiles:{}});
     priorityOrder.push(id);
     saveCatalog(); saveOrder();
     renderCatalog(); renderSchedule();
