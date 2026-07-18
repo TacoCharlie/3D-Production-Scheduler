@@ -587,30 +587,7 @@ async function loadState(){
 
   try { const jb = await window.storage.get('jobs'); jobs = jb ? JSON.parse(jb.value) : []; }
   catch(e){ jobs = []; }
-
-  // Reconciles every completed entry's jobId against a time-bounded rule:
-  // valid if it started after the job's activation, OR started up to 24h
-  // before activation (the "it was already running when I activated the
-  // job" case). Anything outside that window gets cleared — this also
-  // repairs an earlier version of this migration that had no time bound at
-  // all and wrongly swept in a product's entire unrelated print history.
-  const JOB_TAG_LOOKBACK_HOURS = 24;
-  let jobTagsChanged = false;
-  productionLog.forEach(e => {
-    if(e.failed || !e.actualEnd || !e.productId) return;
-    const matchedJob = findActiveJobForProduct(e.productId);
-    let correctJobId = null;
-    if(matchedJob){
-      const activatedAt = matchedJob.activatedAt ? new Date(matchedJob.activatedAt) : new Date(matchedJob.createdAt);
-      const start = new Date(e.actualStart);
-      const hoursBeforeActivation = (activatedAt - start) / 3600000;
-      if(start >= activatedAt || (hoursBeforeActivation > 0 && hoursBeforeActivation <= JOB_TAG_LOOKBACK_HOURS)){
-        correctJobId = matchedJob.id;
-      }
-    }
-    if((e.jobId||null) !== correctJobId){ e.jobId = correctJobId; jobTagsChanged = true; }
-  });
-  if(jobTagsChanged) saveLog();
+  jobs.forEach(j => { if(typeof j.manualDone !== 'number') j.manualDone = 0; });
 }
 
 async function saveJobs(){ try { await window.storage.set('jobs', JSON.stringify(jobs)); flashSave(); } catch(e){ console.error(e); } }
@@ -1059,11 +1036,14 @@ function findActiveJobForProduct(productId){
   candidates.sort((a,b) => new Date(b.activatedAt||b.createdAt) - new Date(a.activatedAt||a.createdAt));
   return candidates[0];
 }
+// Job progress is a plain number you set yourself — job.manualDone. No
+// inference from log timing. The previous approach tried to guess which
+// logged prints belonged to which job based on when they happened, and that
+// guess kept being wrong against real, messy production timelines. This
+// can't be wrong because nothing is being inferred.
 function jobProgress(job){
   const {totalUnits} = jobTotals(job);
-  const done = productionLog
-    .filter(e => e.jobId === job.id && !e.failed && e.actualEnd)
-    .reduce((sum,e) => sum + (e.unitsCompleted||1), 0);
+  const done = Math.max(0, job.manualDone||0);
   return {done: Math.min(done, totalUnits), totalUnits};
 }
 
@@ -1184,7 +1164,10 @@ function renderJobs(){
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
         <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${pct}%;"></div></div>
-        <div class="ps-hint" style="margin-bottom:8px;">${done} of ${totalUnits} unit${totalUnits!==1?'s':''} done</div>
+        <div class="ps-row" style="margin-bottom:8px;gap:6px;">
+          <input class="ps-input ps-narrow" type="number" min="0" max="${totalUnits}" data-action="job-manual-done" value="${done}" style="width:70px;" />
+          <span class="ps-hint">of ${totalUnits} unit${totalUnits!==1?'s':''} done — set this yourself, whenever you know the real count</span>
+        </div>
         <div class="ps-joblist">${renderJobItemRows(job, false)}</div>
       </div>
     `;
@@ -1258,6 +1241,14 @@ function renderJobs(){
         saveJobs(); renderJobs();
       });
     }
+    const manualDoneInput = card.querySelector('[data-action="job-manual-done"]');
+    if(manualDoneInput){
+      manualDoneInput.addEventListener('change', () => {
+        const {totalUnits} = jobTotals(job);
+        job.manualDone = Math.max(0, Math.min(totalUnits, parseInt(manualDoneInput.value)||0));
+        saveJobs(); renderJobs();
+      });
+    }
     const deleteBtn = card.querySelector('[data-action="job-delete"]');
     if(deleteBtn){
       deleteBtn.addEventListener('click', () => {
@@ -1309,7 +1300,7 @@ function renderJobs(){
   const newJobBtn = document.getElementById('ps-job-new');
   if(newJobBtn){
     newJobBtn.addEventListener('click', () => {
-      jobs.push({id: uid('job'), name: 'New job', items: [], status:'queued', createdAt: new Date().toISOString()});
+      jobs.push({id: uid('job'), name: 'New job', items: [], status:'queued', createdAt: new Date().toISOString(), manualDone: 0});
       saveJobs(); renderJobs();
     });
   }
@@ -2214,7 +2205,8 @@ function renderEstimate(){
         name,
         items: estimateItems.filter(it=>it.qty>0).map(it => ({id: it.id, qty: it.qty})),
         status: 'queued',
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        manualDone: 0
       });
       saveJobs();
       nameInput.value = '';
