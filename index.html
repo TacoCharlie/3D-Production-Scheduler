@@ -1753,16 +1753,34 @@ function renderLog(){
     if(e.id === editingLogId){
       const pOpts = printers.map(p => `<option value="${p.id}" ${p.id===e.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
       const dOpts = catalog.map(p => `<option value="${p.id}" ${p.id===e.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+      const testDOpts = `<option value="">— not a specific product —</option>` + catalog.map(p => `<option value="${p.id}" ${e.productId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+      const isTestEdit = !!e.isTest;
       return `
-        <div class="ps-log-entry" data-id="${e.id}" data-editing="1">
+        <div class="ps-log-entry" data-id="${e.id}" data-editing="1" style="flex-direction:column;align-items:stretch;">
+          <label class="ps-row" style="gap:6px;margin-bottom:10px;cursor:pointer;">
+            <input type="checkbox" data-edit-field="isTest" ${isTestEdit?'checked':''} />
+            <span class="ps-hint">Test / R&D print — not for an order, doesn't touch quantities or failure stats</span>
+          </label>
           <div class="ps-row" style="flex-wrap:wrap; width:100%; align-items:flex-end;">
             <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
               <span class="ps-field-label">Printer</span>
               <select class="ps-select" data-edit-field="printerId">${pOpts}</select>
             </div>
-            <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
+            <div class="ps-field" id="ps-edit-product-field" style="flex:1;min-width:150px;margin-bottom:0;${isTestEdit?'display:none;':''}">
               <span class="ps-field-label">Product</span>
               <select class="ps-select" data-edit-field="productId">${dOpts}</select>
+            </div>
+            <div class="ps-field" id="ps-edit-testproduct-field" style="flex:1;min-width:150px;margin-bottom:0;${isTestEdit?'':'display:none;'}">
+              <span class="ps-field-label">Product (optional)</span>
+              <select class="ps-select" data-edit-field="testProductId">${testDOpts}</select>
+            </div>
+            <div class="ps-field" id="ps-edit-testlabel-field" style="flex:1;min-width:150px;margin-bottom:0;${isTestEdit?'':'display:none;'}">
+              <span class="ps-field-label">Note</span>
+              <input class="ps-input" data-edit-field="testLabel" value="${escapeHtml(e.testLabel||'')}" />
+            </div>
+            <div class="ps-field" id="ps-edit-testweight-field" style="flex:1;min-width:100px;margin-bottom:0;${isTestEdit?'':'display:none;'}">
+              <span class="ps-field-label">Filament (g)</span>
+              <input class="ps-input" type="number" min="0" data-edit-field="testWeight" value="${e.isTest ? (e.weightGAtLogTime||0) : 0}" />
             </div>
             <div class="ps-field" style="flex:1;min-width:170px;margin-bottom:0;">
               <span class="ps-field-label">Actual start</span>
@@ -1777,6 +1795,7 @@ function renderLog(){
               <button class="ps-btn ghost small" data-action="cancel">Cancel</button>
             </div>
           </div>
+          <div class="ps-hint" style="margin-top:6px;">Converting between normal and test here correctly gives back (or claims) quantity, filament, and job credit — nothing gets double-counted or lost.</div>
         </div>
       `;
     }
@@ -1803,7 +1822,7 @@ function renderLog(){
         <div class="ps-row" style="gap:6px;">
           ${!e.actualEnd && !e.failed ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
           ${!e.isTest ? (!e.failed ? '<button class="ps-btn ghost small" style="color:var(--danger)" data-action="fail">Mark failed</button>' : '<button class="ps-btn ghost small" data-action="unfail">Undo failure</button>') : ''}
-          ${!e.isTest ? '<button class="ps-btn ghost small" data-action="edit">Edit</button>' : ''}
+          <button class="ps-btn ghost small" data-action="edit">Edit</button>
           <button class="ps-btn ghost small" data-action="delete">✕</button>
         </div>
       </div>
@@ -1996,50 +2015,75 @@ function renderLog(){
     const id = row.getAttribute('data-id');
 
     if(row.getAttribute('data-editing')){
+      const editTestCheckbox = row.querySelector('[data-edit-field="isTest"]');
+      editTestCheckbox.addEventListener('change', () => {
+        const checked = editTestCheckbox.checked;
+        row.querySelector('#ps-edit-product-field').style.display = checked ? 'none' : '';
+        row.querySelector('#ps-edit-testproduct-field').style.display = checked ? '' : 'none';
+        row.querySelector('#ps-edit-testlabel-field').style.display = checked ? '' : 'none';
+        row.querySelector('#ps-edit-testweight-field').style.display = checked ? '' : 'none';
+      });
       row.querySelector('[data-action="save"]').addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
         const printerId = row.querySelector('[data-edit-field="printerId"]').value;
-        const productId = row.querySelector('[data-edit-field="productId"]').value;
         const startVal = row.querySelector('[data-edit-field="actualStart"]').value;
         const endVal = row.querySelector('[data-edit-field="actualEnd"]').value;
-        if(!printerId || !productId || !startVal) return;
+        const newIsTest = editTestCheckbox.checked;
+        if(!printerId || !startVal) return;
 
-        const productChanged = e.productId !== productId;
-        const printerChanged = e.printerId !== printerId;
+        const printer = printers.find(p=>p.id===printerId);
 
-        if(productChanged && !e.failed){
-          const product = catalog.find(p=>p.id===productId);
-          e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
-          // This entry no longer claims a unit of the old product — give it
-          // back if it had actually been claimed — then let syncConsumption
-          // claim one of the new product below.
-          if(e.consumed){ getOrderEntry(e.productId).qty += (e.unitsCompleted||1); }
-          e.consumed = false;
-        } else if(productChanged && e.failed){
-          const product = catalog.find(p=>p.id===productId);
-          e.plannedMin = product ? (product.timeH*60+product.timeM) : 0;
+        // Unwind everything this entry currently claims — qty, spool
+        // weight, job credit — using its state as it was *before* this
+        // edit. Then re-derive all of it fresh from the new field values.
+        // Converting between normal and test (or changing product/printer)
+        // is much safer as "undo everything, recompute everything" than as
+        // a set of special-cased branches — that's exactly the kind of
+        // thing that kept breaking when patched piecemeal.
+        if(e.consumed && !e.failed && !e.isTest && e.productId){
+          getOrderEntry(e.productId).qty += (e.unitsCompleted||1);
         }
-        if(printerChanged || productChanged){
-          // Weight and/or which spool it should draw from may have changed —
-          // give back whatever was claimed under the old printer/product,
-          // then let syncConsumption claim against the new one.
-          if(e.spoolConsumed && e.spoolIdAtLogTime){
-            const oldSpool = spools.find(s=>s.id===e.spoolIdAtLogTime);
-            if(oldSpool){ oldSpool.remainingG += (e.weightGAtLogTime||0); }
-          }
-          e.spoolConsumed = false;
-          const newProduct = catalog.find(p=>p.id===productId);
-          const newPrinter = printers.find(p=>p.id===printerId);
-          e.weightGAtLogTime = newProduct ? (newProduct.weightG||0) : 0;
-          e.spoolIdAtLogTime = newPrinter ? (newPrinter.spoolId||null) : null;
+        if(e.spoolConsumed && e.spoolIdAtLogTime){
+          const oldSpool = spools.find(s=>s.id===e.spoolIdAtLogTime);
+          if(oldSpool){ oldSpool.remainingG += (e.weightGAtLogTime||0); }
+        }
+        if(e.jobCounted){
+          applyJobCredit(e, -(e.unitsCompleted||1));
         }
 
+        let newProductId, newPlannedMin, newWeight, newTestLabel;
+        if(newIsTest){
+          newProductId = row.querySelector('[data-edit-field="testProductId"]').value || null;
+          newTestLabel = row.querySelector('[data-edit-field="testLabel"]').value.trim();
+          if(!newProductId && !newTestLabel) return;
+          const testProduct = newProductId ? catalog.find(p=>p.id===newProductId) : null;
+          newPlannedMin = testProduct ? (testProduct.timeH*60+testProduct.timeM) : 0;
+          newWeight = Math.max(0, parseFloat(row.querySelector('[data-edit-field="testWeight"]').value)||0);
+        } else {
+          newProductId = row.querySelector('[data-edit-field="productId"]').value;
+          if(!newProductId) return;
+          const product = catalog.find(p=>p.id===newProductId);
+          newPlannedMin = product ? (product.timeH*60+product.timeM) : 0;
+          newWeight = product ? (product.weightG||0) : 0;
+          newTestLabel = '';
+        }
+
+        e.isTest = newIsTest;
+        e.testLabel = newTestLabel;
         e.printerId = printerId;
-        e.productId = productId;
+        e.productId = newProductId;
+        e.plannedMin = newPlannedMin;
+        e.weightGAtLogTime = newWeight;
+        e.unitsCompleted = 1; // batch selection isn't editable yet — resets to single unit on any edit
+        e.spoolIdAtLogTime = printer ? (printer.spoolId||null) : null;
         e.actualStart = new Date(startVal).toISOString();
         e.notifiedFinishSoon = false;
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
-        creditJobIfDue(e);
+        e.jobId = null; // no job re-selection in the edit form yet — safest default, no guessing which job it belongs to now
+        e.jobCounted = false;
+        e.spoolConsumed = false; // let syncConsumption redo the weight deduction fresh
+        e.consumed = (newIsTest || e.failed) ? true : false; // tests and failed entries stay locked; normal ones get (re)claimed by syncConsumption below
+
         editingLogId = null;
         syncConsumption();
         renderLog(); regenerateIfActive();
