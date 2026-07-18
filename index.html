@@ -1179,6 +1179,7 @@ function renderJobs(){
     const t = jobTotals(job);
     const {done, totalUnits} = jobProgress(job);
     const pct = totalUnits>0 ? Math.min(100, (done/totalUnits)*100) : 0;
+    const isEditing = editingJobId === job.id;
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
@@ -1188,10 +1189,19 @@ function renderJobs(){
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
         <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${pct}%;"></div></div>
+        ${isEditing ? `
         <div class="ps-row" style="margin-bottom:8px;gap:6px;">
-          <input class="ps-input ps-narrow" type="number" min="0" max="${totalUnits}" data-action="job-manual-done" value="${done}" style="width:70px;" />
-          <span class="ps-hint">of ${totalUnits} unit${totalUnits!==1?'s':''} done — set this yourself, whenever you know the real count</span>
+          <input class="ps-input ps-narrow" type="number" min="0" max="${totalUnits}" id="ps-job-edit-input" value="${done}" style="width:70px;" />
+          <span class="ps-hint">of ${totalUnits} unit${totalUnits!==1?'s':''} done</span>
+          <button class="ps-btn primary small" data-action="job-edit-save">Save</button>
+          <button class="ps-btn ghost small" data-action="job-edit-cancel">Cancel</button>
         </div>
+        ` : `
+        <div class="ps-row" style="margin-bottom:8px;gap:6px;">
+          <span class="ps-hint">${done} of ${totalUnits} unit${totalUnits!==1?'s':''} done</span>
+          <button class="ps-btn ghost small" data-action="job-edit-start">Edit</button>
+        </div>
+        `}
         <div class="ps-joblist">${renderJobItemRows(job, false)}</div>
       </div>
     `;
@@ -1265,12 +1275,28 @@ function renderJobs(){
         saveJobs(); renderJobs();
       });
     }
-    const manualDoneInput = card.querySelector('[data-action="job-manual-done"]');
-    if(manualDoneInput){
-      manualDoneInput.addEventListener('change', () => {
+    const editStartBtn = card.querySelector('[data-action="job-edit-start"]');
+    if(editStartBtn){
+      editStartBtn.addEventListener('click', () => {
+        editingJobId = job.id;
+        renderJobs();
+      });
+    }
+    const editSaveBtn = card.querySelector('[data-action="job-edit-save"]');
+    if(editSaveBtn){
+      editSaveBtn.addEventListener('click', () => {
         const {totalUnits} = jobTotals(job);
-        job.manualDone = Math.max(0, Math.min(totalUnits, parseInt(manualDoneInput.value)||0));
+        const input = document.getElementById('ps-job-edit-input');
+        job.manualDone = Math.max(0, Math.min(totalUnits, parseInt(input.value)||0));
+        editingJobId = null;
         saveJobs(); renderJobs();
+      });
+    }
+    const editCancelBtn = card.querySelector('[data-action="job-edit-cancel"]');
+    if(editCancelBtn){
+      editCancelBtn.addEventListener('click', () => {
+        editingJobId = null;
+        renderJobs();
       });
     }
     const deleteBtn = card.querySelector('[data-action="job-delete"]');
@@ -1673,6 +1699,7 @@ function renderPrinters(){
 
 // ---------- rendering: Log tab ----------
 let editingLogId = null;
+let editingJobId = null; // which active job's "units done" is showing the edit form
 let failingLogId = null; // which entry is showing the "confirm failed — how much filament?" prompt
 // Which past days/weeks a person has manually expanded, keyed by
 // "machineId|dateKey" or "machineId|weekStartDateKey". Session-only — not
