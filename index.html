@@ -2926,6 +2926,17 @@ function renderCatalog(){
           const url = await window.uploadProjectFile(file, path);
           if(!p.projectFiles) p.projectFiles = {};
           p.projectFiles[target] = {url, path};
+          // A .gcode file (unlike .3mf/.stl) actually carries real sliced
+          // time/weight data — read it too and fill in the product's numbers
+          // automatically, not just host the file.
+          if(/\.gcode$/i.test(file.name)){
+            try {
+              const text = await file.text();
+              const {timeMin, weightG} = parseGcodeMetadata(text);
+              if(timeMin!=null){ p.timeH = Math.floor(timeMin/60); p.timeM = timeMin%60; }
+              if(weightG!=null){ p.weightG = Math.round(weightG); }
+            } catch(parseErr){ console.error('gcode parse failed', parseErr); }
+          }
           saveCatalog();
           renderCatalog();
         } catch(err){
@@ -3024,6 +3035,14 @@ function renderCatalog(){
           const url = await window.uploadProjectFile(file, path);
           if(!cfg.projectFiles) cfg.projectFiles = {};
           cfg.projectFiles[target] = {url, path};
+          if(/\.gcode$/i.test(file.name)){
+            try {
+              const text = await file.text();
+              const {timeMin, weightG} = parseGcodeMetadata(text);
+              if(timeMin!=null){ cfg.timeH = Math.floor(timeMin/60); cfg.timeM = timeMin%60; }
+              if(weightG!=null){ cfg.weightG = Math.round(weightG); }
+            } catch(parseErr){ console.error('gcode parse failed', parseErr); }
+          }
           saveCatalog();
           renderCatalog();
         } catch(err){
