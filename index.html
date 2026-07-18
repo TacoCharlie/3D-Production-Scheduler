@@ -588,17 +588,29 @@ async function loadState(){
   try { const jb = await window.storage.get('jobs'); jobs = jb ? JSON.parse(jb.value) : []; }
   catch(e){ jobs = []; }
 
-  // Prints that were already marked complete before job-tagging existed
-  // never got a chance to be tagged — back-tag anything still untagged
-  // against whatever active job matches its product, one time.
-  let backfilledJobTag = false;
+  // Reconciles every completed entry's jobId against a time-bounded rule:
+  // valid if it started after the job's activation, OR started up to 24h
+  // before activation (the "it was already running when I activated the
+  // job" case). Anything outside that window gets cleared — this also
+  // repairs an earlier version of this migration that had no time bound at
+  // all and wrongly swept in a product's entire unrelated print history.
+  const JOB_TAG_LOOKBACK_HOURS = 24;
+  let jobTagsChanged = false;
   productionLog.forEach(e => {
-    if(!e.jobId && e.actualEnd && !e.failed && e.productId){
-      const matchedJob = findActiveJobForProduct(e.productId);
-      if(matchedJob){ e.jobId = matchedJob.id; backfilledJobTag = true; }
+    if(e.failed || !e.actualEnd || !e.productId) return;
+    const matchedJob = findActiveJobForProduct(e.productId);
+    let correctJobId = null;
+    if(matchedJob){
+      const activatedAt = matchedJob.activatedAt ? new Date(matchedJob.activatedAt) : new Date(matchedJob.createdAt);
+      const start = new Date(e.actualStart);
+      const hoursBeforeActivation = (activatedAt - start) / 3600000;
+      if(start >= activatedAt || (hoursBeforeActivation > 0 && hoursBeforeActivation <= JOB_TAG_LOOKBACK_HOURS)){
+        correctJobId = matchedJob.id;
+      }
     }
+    if((e.jobId||null) !== correctJobId){ e.jobId = correctJobId; jobTagsChanged = true; }
   });
-  if(backfilledJobTag) saveLog();
+  if(jobTagsChanged) saveLog();
 }
 
 async function saveJobs(){ try { await window.storage.set('jobs', JSON.stringify(jobs)); flashSave(); } catch(e){ console.error(e); } }
