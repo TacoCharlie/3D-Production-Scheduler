@@ -2648,7 +2648,7 @@ function renderFilesCell(p){
       `;
     } else if(window.uploadProjectFile){
       action = `
-        <input type="file" data-action="upload-printer-file" data-target="${target.id}" style="display:none;" accept=".3mf,.stl,.step,.stp" />
+        <input type="file" data-action="upload-printer-file" data-target="${target.id}" style="display:none;" accept=".3mf,.stl,.step,.stp,.gcode" />
         <button class="ps-btn ghost small" data-action="trigger-printer-upload" data-target="${target.id}">Upload…</button>
       `;
     } else {
