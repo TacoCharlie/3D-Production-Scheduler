@@ -1379,7 +1379,7 @@ function renderStatus(){
 
     const spool = p.spoolId ? spools.find(s => s.id === p.spoolId && !s.retired) : null;
     const spoolLow = spool && spool.remainingG <= LOW_STOCK_G;
-    const spoolPct = spool && spool.totalG>0 ? Math.max(0, Math.min(100, (spool.remainingG/spool.totalG)*100)) : 0;
+    const spoolPct = spool && spool.totalG>0 ? Math.max(0, Math.min(100, ((spool.totalG-spool.remainingG)/spool.totalG)*100)) : 0;
 
     let leftSide, overdueBanner = '', timeCell, subLine, relevantProductId = null;
 
@@ -2405,7 +2405,7 @@ function renderFilament(){
   const retiredSpools = spools.filter(s => s.retired);
 
   function spoolCard(s, retired){
-    const pct = s.totalG>0 ? Math.max(0,Math.min(100, (s.remainingG/s.totalG)*100)) : 0;
+    const pct = s.totalG>0 ? Math.max(0,Math.min(100, ((s.totalG-s.remainingG)/s.totalG)*100)) : 0;
     const low = !retired && s.remainingG <= LOW_STOCK_G;
     const logEntries = productionLog.filter(e => e.spoolIdAtLogTime === s.id);
     const loggedWeight = logEntries.reduce((sum,e) => sum + (e.weightGAtLogTime||0), 0);
