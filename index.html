@@ -587,6 +587,18 @@ async function loadState(){
 
   try { const jb = await window.storage.get('jobs'); jobs = jb ? JSON.parse(jb.value) : []; }
   catch(e){ jobs = []; }
+
+  // Prints that were already marked complete before job-tagging existed
+  // never got a chance to be tagged — back-tag anything still untagged
+  // against whatever active job matches its product, one time.
+  let backfilledJobTag = false;
+  productionLog.forEach(e => {
+    if(!e.jobId && e.actualEnd && !e.failed && e.productId){
+      const matchedJob = findActiveJobForProduct(e.productId);
+      if(matchedJob){ e.jobId = matchedJob.id; backfilledJobTag = true; }
+    }
+  });
+  if(backfilledJobTag) saveLog();
 }
 
 async function saveJobs(){ try { await window.storage.set('jobs', JSON.stringify(jobs)); flashSave(); } catch(e){ console.error(e); } }
