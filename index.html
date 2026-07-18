@@ -646,6 +646,10 @@ function markFailed(entryId, actualWeightG){
   if(e.consumed){
     getOrderEntry(e.productId).qty += (e.unitsCompleted||1);
   }
+  if(e.jobCounted){
+    applyJobCredit(e, -(e.unitsCompleted||1));
+    e.jobCounted = false;
+  }
   // Correct the spool deduction to reflect what actually got used, not the
   // full model weight — a print that failed early shouldn't be charged as
   // if it printed all the way through.
@@ -1076,6 +1080,26 @@ function fmtHours(h){
 // (so the lifespan estimate self-corrects toward reality — an early failure
 // pulls the estimate down, a part that outlasted expectations pulls it up),
 // and resets that printer's clock for the part to zero.
+// Applies (or reverses, with a negative delta) job credit for a log entry
+// that has an explicit jobId — never inferred, always whatever the user
+// actually picked when logging. entry.jobCounted tracks whether this
+// specific entry's credit is currently applied, so it can't be double-
+// counted across the several places a print can transition to "done".
+function applyJobCredit(entry, delta){
+  if(!entry.jobId) return;
+  const job = jobs.find(j=>j.id===entry.jobId);
+  if(!job) return;
+  const {totalUnits} = jobTotals(job);
+  job.manualDone = Math.max(0, Math.min(totalUnits, (job.manualDone||0) + delta));
+  saveJobs();
+}
+function creditJobIfDue(entry){
+  if(entry.jobId && !entry.jobCounted && entry.actualEnd && !entry.failed){
+    applyJobCredit(entry, entry.unitsCompleted||1);
+    entry.jobCounted = true;
+  }
+}
+
 function logPartReplacement(printerId, partDefId){
   const partDef = partDefs.find(pd => pd.id === partDefId);
   const printer = printers.find(p => p.id === printerId);
@@ -1798,6 +1822,10 @@ function renderLog(){
           <span class="ps-field-label">Batch</span>
           <select class="ps-select" id="ps-log-batch"></select>
         </div>
+        <div class="ps-field" id="ps-log-job-field" style="flex:1;min-width:160px;margin-bottom:0;">
+          <span class="ps-field-label">Job</span>
+          <select class="ps-select" id="ps-log-job"></select>
+        </div>
         <div class="ps-field" id="ps-log-testproduct-field" style="flex:1;min-width:160px;margin-bottom:0;display:none;">
           <span class="ps-field-label">Product (optional)</span>
           <select class="ps-select" id="ps-log-testproduct">
@@ -1838,6 +1866,7 @@ function renderLog(){
     const isTest = testCheckbox.checked;
     document.getElementById('ps-log-product-field').style.display = isTest ? 'none' : '';
     document.getElementById('ps-log-batch-field').style.display = isTest ? 'none' : '';
+    document.getElementById('ps-log-job-field').style.display = isTest ? 'none' : '';
     document.getElementById('ps-log-testproduct-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testlabel-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testweight-field').style.display = isTest ? '' : 'none';
@@ -1855,6 +1884,21 @@ function renderLog(){
   }
   refreshBatchOptions();
   document.getElementById('ps-log-product').addEventListener('change', refreshBatchOptions);
+
+  function refreshJobOptions(){
+    const productId = document.getElementById('ps-log-product').value;
+    const jobSelect = document.getElementById('ps-log-job');
+    const candidates = jobs.filter(j => j.status==='active' && j.items.some(it=>it.id===productId));
+    const options = [`<option value="">— no job —</option>`];
+    candidates.forEach(j => { options.push(`<option value="${j.id}">${escapeHtml(j.name)}</option>`); });
+    jobSelect.innerHTML = options.join('');
+    // Zero extra clicks in the common case — if exactly one active job wants
+    // this product, pre-select it. Still fully visible and changeable, never
+    // hidden or silently applied.
+    if(candidates.length===1) jobSelect.value = candidates[0].id;
+  }
+  refreshJobOptions();
+  document.getElementById('ps-log-product').addEventListener('change', refreshJobOptions);
 
   const testProductSelect = document.getElementById('ps-log-testproduct');
   testProductSelect.addEventListener('change', () => {
@@ -1897,8 +1941,8 @@ function renderLog(){
       const plannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (product ? (product.timeH*60+product.timeM) : 0);
       const weightAtLog = batchConfig ? (batchConfig.weightG||0) : (product ? (product.weightG||0) : 0);
       const unitsCompleted = batchConfig ? batchConfig.unitsPerBatch : 1;
-      const matchedJob = findActiveJobForProduct(productId);
-      productionLog.push({
+      const selectedJobId = document.getElementById('ps-log-job').value || null;
+      const newEntry = {
         id: uid('log'),
         printerId, productId,
         actualStart: new Date(startVal).toISOString(),
@@ -1907,8 +1951,11 @@ function renderLog(){
         weightGAtLogTime: weightAtLog,
         spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
         unitsCompleted,
-        jobId: matchedJob ? matchedJob.id : null
-      });
+        jobId: selectedJobId,
+        jobCounted: false
+      };
+      creditJobIfDue(newEntry);
+      productionLog.push(newEntry);
     }
     // Logging a print permanently claims one unit from the queue — it doesn't
     // come back on its own the next day. Deleting or re-pointing this entry
@@ -1965,10 +2012,7 @@ function renderLog(){
         e.actualStart = new Date(startVal).toISOString();
         e.notifiedFinishSoon = false;
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
-        if(e.actualEnd && !e.jobId){
-          const matchedJob = findActiveJobForProduct(e.productId);
-          if(matchedJob) e.jobId = matchedJob.id;
-        }
+        creditJobIfDue(e);
         editingLogId = null;
         syncConsumption();
         renderLog(); regenerateIfActive();
@@ -1985,13 +2029,7 @@ function renderLog(){
       finishBtn.addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
         e.actualEnd = new Date().toISOString();
-        // This print may have started before any matching job existed (e.g.
-        // it was already running when a job got activated) — check again
-        // now that it's actually finishing, not just at the original log time.
-        if(!e.jobId){
-          const matchedJob = findActiveJobForProduct(e.productId);
-          if(matchedJob) e.jobId = matchedJob.id;
-        }
+        creditJobIfDue(e);
         saveLog(); renderLog(); regenerateIfActive();
       });
     }
@@ -2046,6 +2084,9 @@ function renderLog(){
         if(removed && removed.spoolConsumed && removed.spoolIdAtLogTime){
           const spool = spools.find(s=>s.id===removed.spoolIdAtLogTime);
           if(spool){ spool.remainingG += (removed.weightGAtLogTime||0); saveSpools(); }
+        }
+        if(removed && removed.jobCounted){
+          applyJobCredit(removed, -(removed.unitsCompleted||1));
         }
         saveLog(); renderLog(); regenerateIfActive();
       });
