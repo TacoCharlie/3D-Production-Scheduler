@@ -217,6 +217,7 @@
       <button class="ps-tab" data-tab="printers">Printers</button>
       <button class="ps-tab" data-tab="filament">Filament</button>
       <button class="ps-tab" data-tab="catalog">Catalog</button>
+      <button class="ps-tab" data-tab="shipping">Shipping</button>
       <button class="ps-tab" data-tab="settings">Settings</button>
     </div>
 
@@ -228,6 +229,7 @@
     <div id="ps-tab-printers" style="display:none;"></div>
     <div id="ps-tab-filament" style="display:none;"></div>
     <div id="ps-tab-catalog" style="display:none;"></div>
+    <div id="ps-tab-shipping" style="display:none;"></div>
     <div id="ps-tab-settings" style="display:none;"></div>
   </div>
 </div>
@@ -2644,6 +2646,87 @@ let editingProductId = null; // null = browsing list; '_new' = add-product form;
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 
+// ---------- rendering: Shipping tab ----------
+// Session-only — nothing here is saved. Resets on reload, on purpose.
+let shippingItems = [{id: uid('ship'), productId: '', qty: 1}];
+
+function renderShipping(){
+  const root = document.getElementById('ps-tab-shipping');
+  const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+
+  const rows = shippingItems.map(item => {
+    const p = catalog.find(x=>x.id===item.productId);
+    const noWeight = p && !(p.weightG>0);
+    return `
+      <div class="ps-row" style="gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+        <select class="ps-select" style="flex:2;min-width:180px;" data-action="shipping-product" data-id="${item.id}">
+          <option value="">— pick a product —</option>
+          ${productOptions.replace(`value="${item.productId}"`, `value="${item.productId}" selected`)}
+        </select>
+        <input class="ps-input ps-narrow" type="number" min="1" style="width:70px;" value="${item.qty}" data-action="shipping-qty" data-id="${item.id}" />
+        ${noWeight ? `<span class="ps-hint" style="color:var(--danger);">no weight set for this product</span>` : ''}
+        <button class="ps-btn ghost small" data-action="shipping-remove" data-id="${item.id}">✕</button>
+      </div>
+    `;
+  }).join('');
+
+  let totalG = 0;
+  let hasIncomplete = false;
+  shippingItems.forEach(item => {
+    const p = catalog.find(x=>x.id===item.productId);
+    if(p){
+      totalG += (p.weightG||0) * item.qty;
+      if(!(p.weightG>0)) hasIncomplete = true;
+    }
+  });
+  const totalLbsExact = totalG / 453.592;
+  const wholeLbs = Math.floor(totalLbsExact);
+  const remainderOz = (totalLbsExact - wholeLbs) * 16;
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Shipping Weight Calculator</div>
+      <div class="ps-hint" style="margin-bottom:16px;">Pick products and quantities to get a total shipping weight. Nothing here is saved — it resets whenever you leave this tab or reload.</div>
+      <div id="ps-shipping-rows">${rows}</div>
+      <button class="ps-btn" style="margin-top:6px;" id="ps-shipping-add">+ Add product</button>
+
+      <div class="ps-summary-grid" style="margin-top:22px;grid-template-columns:1fr;">
+        <div class="ps-summary-cell">
+          <div class="ps-summary-num">${wholeLbs} lb ${remainderOz.toFixed(1)} oz</div>
+          <div class="ps-summary-label">Total shipping weight</div>
+          <div class="ps-hint mono" style="margin-top:4px;">${totalG.toFixed(0)}g of product only — doesn't include box or packaging${hasIncomplete?' — incomplete, one or more products above have no weight set':''}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('ps-shipping-add').addEventListener('click', () => {
+    shippingItems.push({id: uid('ship'), productId: '', qty: 1});
+    renderShipping();
+  });
+  root.querySelectorAll('[data-action="shipping-product"]').forEach(sel => {
+    sel.addEventListener('change', e => {
+      const item = shippingItems.find(x=>x.id===sel.getAttribute('data-id'));
+      if(item) item.productId = e.target.value;
+      renderShipping();
+    });
+  });
+  root.querySelectorAll('[data-action="shipping-qty"]').forEach(inp => {
+    inp.addEventListener('change', e => {
+      const item = shippingItems.find(x=>x.id===inp.getAttribute('data-id'));
+      if(item) item.qty = Math.max(1, parseInt(e.target.value)||1);
+      renderShipping();
+    });
+  });
+  root.querySelectorAll('[data-action="shipping-remove"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      shippingItems = shippingItems.filter(x=>x.id!==btn.getAttribute('data-id'));
+      if(shippingItems.length===0) shippingItems.push({id: uid('ship'), productId: '', qty: 1});
+      renderShipping();
+    });
+  });
+}
+
 function renderCatalog(){
   const root = document.getElementById('ps-tab-catalog');
   if(editingProductId !== null){
@@ -3549,6 +3632,7 @@ function regenerateIfActive(){
   if(document.getElementById('ps-tab-estimate')) renderEstimate();
   if(document.getElementById('ps-tab-jobs')) renderJobs();
   if(document.getElementById('ps-tab-catalog')) renderCatalog();
+  if(document.getElementById('ps-tab-shipping')) renderShipping();
   if(document.getElementById('ps-tab-printers')) renderPrinters();
   if(document.getElementById('ps-tab-log') && editingLogId===null) renderLog();
   if(liveSchedule){
@@ -3984,7 +4068,7 @@ function setupTabs(){
       document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
       tab.classList.add('active');
       const target = tab.getAttribute('data-tab');
-      ['status','schedule','log','estimate','jobs','printers','filament','catalog','settings'].forEach(name => {
+      ['status','schedule','log','estimate','jobs','printers','filament','catalog','shipping','settings'].forEach(name => {
         document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
       });
     });
@@ -4022,6 +4106,7 @@ async function startApp(){
   renderPrinters();
   renderFilament();
   renderCatalog();
+  renderShipping();
   renderSettings();
   checkFinishNotifications();
   checkMaintenanceNotifications();
