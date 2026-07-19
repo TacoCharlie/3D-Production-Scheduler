@@ -2613,6 +2613,7 @@ function renderFilament(){
 // ---------- rendering: Catalog tab ----------
 let typeErrorMsg = '';
 let editingProductId = null; // null = browsing list; '_new' = add-product form; a real id = editing that product
+let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 
 function renderCatalog(){
@@ -2639,15 +2640,30 @@ function renderCatalogList(root){
     const incomplete = printMin<=0;
     const fileCount = Object.keys(p.projectFiles||{}).length;
     const batchCount = (p.batchConfigs||[]).length;
+    const isExpanded = expandedBatchPreview.has(p.id);
+    const badge = batchCount>0
+      ? ` <button class="ps-tag" data-action="toggle-batch-preview" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool); border:none; cursor:pointer;" title="${isExpanded?'Hide':'Show'} batch details">${isExpanded?'▾':'▸'} ${batchCount}× batch${batchCount!==1?'es':''}</button>`
+      : '';
+    const subRows = (isExpanded && batchCount>0) ? p.batchConfigs.map(cfg => `
+      <tr class="ps-batch-preview-row" style="opacity:0.75;">
+        <td style="padding-left:28px;" class="ps-hint">↳ ${cfg.unitsPerBatch}× batch</td>
+        <td class="mono ps-hint">${fmtDuration(cfg.timeH*60+cfg.timeM)}</td>
+        <td class="mono ps-hint">${cfg.weightG>0?cfg.weightG+'g':'—'}</td>
+        <td class="ps-hint">${Object.keys(cfg.projectFiles||{}).length>0?Object.keys(cfg.projectFiles||{}).length+' file'+(Object.keys(cfg.projectFiles||{}).length!==1?'s':''):'—'}</td>
+        <td></td>
+        <td></td>
+      </tr>
+    `).join('') : '';
     return `
       <tr data-id="${p.id}">
-        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${batchCount>0?` <span class="ps-tag" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool);" title="${batchCount} batch config${batchCount!==1?'s':''} — other ways to print this product">${batchCount}× batch${batchCount!==1?'es':''}</span>`:''}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
+        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${badge}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
         <td class="mono ps-hint">${incomplete?'—':fmtDuration(printMin)}</td>
         <td class="mono ps-hint">${p.weightG>0?p.weightG+'g':'—'}</td>
         <td class="ps-hint">${fileCount>0?fileCount+' file'+(fileCount!==1?'s':''):'—'}</td>
         <td class="ps-hint">${batchCount>0?batchCount+' batch'+(batchCount!==1?'es':''):'—'}</td>
         <td><button class="ps-btn small" data-action="edit-product">Edit</button></td>
       </tr>
+      ${subRows}
     `;
   }).join('');
 
@@ -2686,6 +2702,15 @@ function renderCatalogList(root){
   document.getElementById('ps-add-product-btn').addEventListener('click', () => {
     editingProductId = '_new';
     renderCatalog();
+  });
+  root.querySelectorAll('[data-action="toggle-batch-preview"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const productId = btn.closest('tr').getAttribute('data-id');
+      if(expandedBatchPreview.has(productId)) expandedBatchPreview.delete(productId);
+      else expandedBatchPreview.add(productId);
+      renderCatalog();
+    });
   });
   root.querySelectorAll('[data-action="edit-product"]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3457,6 +3482,7 @@ function regenerateIfActive(){
   if(document.getElementById('ps-tab-jobs')) renderJobs();
   if(document.getElementById('ps-tab-catalog')) renderCatalog();
   if(document.getElementById('ps-tab-printers')) renderPrinters();
+  if(document.getElementById('ps-tab-log') && editingLogId===null) renderLog();
   if(liveSchedule){
     const out = document.getElementById('ps-schedule-output');
     if(out) onGenerate();
