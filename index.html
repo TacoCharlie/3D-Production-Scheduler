@@ -2798,7 +2798,8 @@ function renderCatalogList(root){
       name: guessedName,
       timeH: timeMin!=null ? Math.floor(timeMin/60) : 0,
       timeM: timeMin!=null ? timeMin%60 : 0,
-      weightG: weightG!=null ? Math.round(weightG) : 0
+      weightG: weightG!=null ? Math.round(weightG) : 0,
+      pendingFile: file
     };
     resultEl.innerHTML = `<div class="ps-hint">Found: ${timeMin!=null?fmtDuration(timeMin):'no time'}${weightG!=null?', '+Math.round(weightG)+'g':', no weight'} — opening the new product form…</div>`;
     e.target.value = '';
@@ -2851,6 +2852,18 @@ function renderProductEditor(root){
       <div class="ps-hint" style="margin:12px 0 8px;">Have a sliced .gcode for this? Import it and these fields fill in automatically — or just type the numbers in.</div>
       <input type="file" id="ps-editor-gcode-file" accept=".gcode,.gco,.g" style="display:none;" />
       <button class="ps-btn" id="ps-editor-gcode-trigger">Import from G-code…</button>
+      <div id="ps-editor-pending-file" style="margin-top:10px; ${p.pendingFile ? '' : 'display:none;'}">
+        <div class="ps-hint" style="margin-bottom:6px;">G-code is usually printer-specific — file ready to attach: <b id="ps-editor-pending-filename">${p.pendingFile ? escapeHtml(p.pendingFile.name) : ''}</b></div>
+        ${window.uploadProjectFile ? `
+        <div class="ps-field" style="max-width:260px;margin-bottom:0;">
+          <span class="ps-field-label">Attach it to</span>
+          <select class="ps-select" id="ps-editor-pending-target">
+            <option value="_any">Default (any printer)</option>
+            ${printers.map(pr=>`<option value="${pr.id}">${escapeHtml(pr.name)}</option>`).join('')}
+          </select>
+        </div>
+        ` : `<div class="ps-hint">File attachment needs the deployed site — the numbers above are filled in now, but you'll need to attach the file itself once this is live.</div>`}
+      </div>
 
       <div class="ps-row" style="flex-wrap:wrap;gap:12px;margin-top:12px;">
         <div class="ps-field" style="min-width:90px;margin-bottom:0;">
@@ -2985,6 +2998,7 @@ function renderBatchEditor(p){
 }
 
 function wireProductEditor(root, p, isNew){
+  let pendingFileToAttach = isNew ? (p.pendingFile || null) : null;
   document.getElementById('ps-editor-back').addEventListener('click', () => {
     editingProductId = null; editingBatchId = null;
     renderCatalog();
@@ -3009,6 +3023,11 @@ function wireProductEditor(root, p, isNew){
       if(isNew && !document.getElementById('ps-editor-name').value.trim()){
         document.getElementById('ps-editor-name').value = file.name.replace(/\.(gcode|gco|g)$/i,'').replace(/[_-]+/g,' ').trim();
       }
+      if(isNew){
+        pendingFileToAttach = file;
+        document.getElementById('ps-editor-pending-filename').textContent = file.name;
+        document.getElementById('ps-editor-pending-file').style.display = '';
+      }
       if(!isNew){
         // Editing an existing product — these fields auto-save, so commit immediately.
         saveProductFieldsFromForm(p);
@@ -3028,12 +3047,23 @@ function wireProductEditor(root, p, isNew){
   }
 
   if(isNew){
-    document.getElementById('ps-editor-create').addEventListener('click', () => {
+    document.getElementById('ps-editor-create').addEventListener('click', async () => {
       const f = readFormFields();
       if(!f.name){ alert('Give the product a name first.'); return; }
       const newId = uid('prod');
-      catalog.push({id:newId, name:f.name, type:f.type, timeH:f.timeH, timeM:f.timeM, weightG:f.weightG, projectFiles:{}, batchConfigs:[]});
+      const newProduct = {id:newId, name:f.name, type:f.type, timeH:f.timeH, timeM:f.timeM, weightG:f.weightG, projectFiles:{}, batchConfigs:[]};
+      catalog.push(newProduct);
       priorityOrder.push(newId);
+      if(pendingFileToAttach && window.uploadProjectFile){
+        const target = document.getElementById('ps-editor-pending-target').value;
+        try {
+          const path = `${newId}-${target}-${Date.now()}-${pendingFileToAttach.name}`;
+          const url = await window.uploadProjectFile(pendingFileToAttach, path);
+          newProduct.projectFiles[target] = {url, path};
+        } catch(err){
+          alert('Product created, but the file failed to attach: ' + (err.message||err));
+        }
+      }
       saveCatalog(); saveOrder();
       editingProductId = null;
       renderCatalog(); renderSchedule(); regenerateIfActive();
