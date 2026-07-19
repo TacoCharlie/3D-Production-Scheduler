@@ -1770,6 +1770,10 @@ function renderLog(){
               <span class="ps-field-label">Product</span>
               <select class="ps-select" data-edit-field="productId">${dOpts}</select>
             </div>
+            <div class="ps-field" id="ps-edit-batch-field" style="flex:1;min-width:150px;margin-bottom:0;${isTestEdit?'display:none;':''}">
+              <span class="ps-field-label">Batch</span>
+              <select class="ps-select" data-edit-field="batchConfigId"></select>
+            </div>
             <div class="ps-field" id="ps-edit-testproduct-field" style="flex:1;min-width:150px;margin-bottom:0;${isTestEdit?'':'display:none;'}">
               <span class="ps-field-label">Product (optional)</span>
               <select class="ps-select" data-edit-field="testProductId">${testDOpts}</select>
@@ -2019,10 +2023,30 @@ function renderLog(){
       editTestCheckbox.addEventListener('change', () => {
         const checked = editTestCheckbox.checked;
         row.querySelector('#ps-edit-product-field').style.display = checked ? 'none' : '';
+        row.querySelector('#ps-edit-batch-field').style.display = checked ? 'none' : '';
         row.querySelector('#ps-edit-testproduct-field').style.display = checked ? '' : 'none';
         row.querySelector('#ps-edit-testlabel-field').style.display = checked ? '' : 'none';
         row.querySelector('#ps-edit-testweight-field').style.display = checked ? '' : 'none';
       });
+      function refreshEditBatchOptions(){
+        const e = productionLog.find(x=>x.id===id);
+        const productId = row.querySelector('[data-edit-field="productId"]').value;
+        const product = catalog.find(p=>p.id===productId);
+        const batchSelect = row.querySelector('[data-edit-field="batchConfigId"]');
+        if(!product){ batchSelect.innerHTML = ''; return; }
+        const options = [`<option value="">Single unit — ${fmtDuration(product.timeH*60+product.timeM)}${product.weightG>0?', '+product.weightG+'g':''}</option>`];
+        (product.batchConfigs||[]).forEach(cfg => {
+          options.push(`<option value="${cfg.id}">${cfg.unitsPerBatch}× batch — ${fmtDuration(cfg.timeH*60+cfg.timeM)}${cfg.weightG>0?', '+cfg.weightG+'g':''}</option>`);
+        });
+        batchSelect.innerHTML = options.join('');
+        // There's no stored reference to which specific batch an existing
+        // entry used (only the resulting time/weight/units), so this can't
+        // reliably pre-select the original batch — it starts on Single
+        // unit and the person picks the right one if they're fixing a
+        // mis-logged entry.
+      }
+      refreshEditBatchOptions();
+      row.querySelector('[data-edit-field="productId"]').addEventListener('change', refreshEditBatchOptions);
       row.querySelector('[data-action="save"]').addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
         const printerId = row.querySelector('[data-edit-field="printerId"]').value;
@@ -2051,7 +2075,7 @@ function renderLog(){
           applyJobCredit(e, -(e.unitsCompleted||1));
         }
 
-        let newProductId, newPlannedMin, newWeight, newTestLabel;
+        let newProductId, newPlannedMin, newWeight, newTestLabel, newUnitsCompleted;
         if(newIsTest){
           newProductId = row.querySelector('[data-edit-field="testProductId"]').value || null;
           newTestLabel = row.querySelector('[data-edit-field="testLabel"]').value.trim();
@@ -2059,12 +2083,16 @@ function renderLog(){
           const testProduct = newProductId ? catalog.find(p=>p.id===newProductId) : null;
           newPlannedMin = testProduct ? (testProduct.timeH*60+testProduct.timeM) : 0;
           newWeight = Math.max(0, parseFloat(row.querySelector('[data-edit-field="testWeight"]').value)||0);
+          newUnitsCompleted = 1;
         } else {
           newProductId = row.querySelector('[data-edit-field="productId"]').value;
           if(!newProductId) return;
           const product = catalog.find(p=>p.id===newProductId);
-          newPlannedMin = product ? (product.timeH*60+product.timeM) : 0;
-          newWeight = product ? (product.weightG||0) : 0;
+          const batchConfigId = row.querySelector('[data-edit-field="batchConfigId"]').value || null;
+          const batchConfig = batchConfigId && product ? (product.batchConfigs||[]).find(c=>c.id===batchConfigId) : null;
+          newPlannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (product ? (product.timeH*60+product.timeM) : 0);
+          newWeight = batchConfig ? (batchConfig.weightG||0) : (product ? (product.weightG||0) : 0);
+          newUnitsCompleted = batchConfig ? batchConfig.unitsPerBatch : 1;
           newTestLabel = '';
         }
 
@@ -2074,7 +2102,7 @@ function renderLog(){
         e.productId = newProductId;
         e.plannedMin = newPlannedMin;
         e.weightGAtLogTime = newWeight;
-        e.unitsCompleted = 1; // batch selection isn't editable yet — resets to single unit on any edit
+        e.unitsCompleted = newUnitsCompleted;
         e.spoolIdAtLogTime = printer ? (printer.spoolId||null) : null;
         e.actualStart = new Date(startVal).toISOString();
         e.notifiedFinishSoon = false;
