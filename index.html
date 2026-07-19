@@ -2641,7 +2641,7 @@ function renderCatalogList(root){
     const batchCount = (p.batchConfigs||[]).length;
     return `
       <tr data-id="${p.id}">
-        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
+        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${batchCount>0?` <span class="ps-tag" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool);" title="${batchCount} batch config${batchCount!==1?'s':''} — other ways to print this product">${batchCount}× batch${batchCount!==1?'es':''}</span>`:''}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
         <td class="mono ps-hint">${incomplete?'—':fmtDuration(printMin)}</td>
         <td class="mono ps-hint">${p.weightG>0?p.weightG+'g':'—'}</td>
         <td class="ps-hint">${fileCount>0?fileCount+' file'+(fileCount!==1?'s':''):'—'}</td>
