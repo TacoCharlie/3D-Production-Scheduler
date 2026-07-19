@@ -1427,7 +1427,7 @@ function renderStatus(){
         <div class="ps-hprogress-track" title="${Math.round(progressPct)}% of estimated time elapsed">
           <div class="ps-hprogress-fill ${overdue?'overdue':''}" style="width:${progressPct}%;"></div>
         </div>
-        <div class="ps-hint mono">started ${fmtClock(new Date(inProgress.actualStart))} · ${Math.round(progressPct)}% of estimated time</div>
+        <div class="ps-hint mono">started ${fmtClock(new Date(inProgress.actualStart))}${inProgress.plannedMin>0 ? ` · ${fmtDuration(elapsedMin)} elapsed · ${Math.round(progressPct)}% of estimated time` : ''}</div>
       `;
     } else {
       timeCell = `<div class="ps-summary-cell"><div class="ps-summary-label" style="margin:0 0 4px;">TIME REMAINING</div><div class="ps-summary-num" style="color:var(--muted);">—</div><div class="ps-summary-label">not printing</div></div>`;
