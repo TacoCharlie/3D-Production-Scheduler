@@ -2853,16 +2853,15 @@ function renderProductEditor(root){
       <input type="file" id="ps-editor-gcode-file" accept=".gcode,.gco,.g" style="display:none;" />
       <button class="ps-btn" id="ps-editor-gcode-trigger">Import from G-code…</button>
       <div id="ps-editor-pending-file" style="margin-top:10px; ${p.pendingFile ? '' : 'display:none;'}">
-        <div class="ps-hint" style="margin-bottom:6px;">G-code is usually printer-specific — file ready to attach: <b id="ps-editor-pending-filename">${p.pendingFile ? escapeHtml(p.pendingFile.name) : ''}</b></div>
-        ${window.uploadProjectFile ? `
+        <div class="ps-hint" style="margin-bottom:6px;">G-code is sliced for one specific printer — file ready to attach: <b id="ps-editor-pending-filename">${p.pendingFile ? escapeHtml(p.pendingFile.name) : ''}</b></div>
+        ${window.uploadProjectFile ? (printers.length>0 ? `
         <div class="ps-field" style="max-width:260px;margin-bottom:0;">
-          <span class="ps-field-label">Attach it to</span>
+          <span class="ps-field-label">Which printer is this for?</span>
           <select class="ps-select" id="ps-editor-pending-target">
-            <option value="_any">Default (any printer)</option>
             ${printers.map(pr=>`<option value="${pr.id}">${escapeHtml(pr.name)}</option>`).join('')}
           </select>
         </div>
-        ` : `<div class="ps-hint">File attachment needs the deployed site — the numbers above are filled in now, but you'll need to attach the file itself once this is live.</div>`}
+        ` : `<div class="ps-hint">Add a printer on the Printers tab first, then come back to attach this file to it.</div>`) : `<div class="ps-hint">File attachment needs the deployed site — the numbers above are filled in now, but you'll need to attach the file itself once this is live.</div>`}
       </div>
 
       <div class="ps-row" style="flex-wrap:wrap;gap:12px;margin-top:12px;">
@@ -3054,8 +3053,9 @@ function wireProductEditor(root, p, isNew){
       const newProduct = {id:newId, name:f.name, type:f.type, timeH:f.timeH, timeM:f.timeM, weightG:f.weightG, projectFiles:{}, batchConfigs:[]};
       catalog.push(newProduct);
       priorityOrder.push(newId);
-      if(pendingFileToAttach && window.uploadProjectFile){
-        const target = document.getElementById('ps-editor-pending-target').value;
+      const targetSelectEl = document.getElementById('ps-editor-pending-target');
+      if(pendingFileToAttach && window.uploadProjectFile && targetSelectEl){
+        const target = targetSelectEl.value;
         try {
           const path = `${newId}-${target}-${Date.now()}-${pendingFileToAttach.name}`;
           const url = await window.uploadProjectFile(pendingFileToAttach, path);
@@ -3113,6 +3113,11 @@ function wireProductEditor(root, p, isNew){
       uploadInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if(!file) return;
+        if(target.id==='_any' && /\.gcode$/i.test(file.name)){
+          alert("G-code is sliced for one specific printer — pick that printer's row instead of Default.");
+          e.target.value = '';
+          return;
+        }
         triggerBtn.disabled = true; triggerBtn.textContent = 'Uploading…';
         try {
           const path = `${p.id}-${target.id}-${Date.now()}-${file.name}`;
@@ -3218,6 +3223,11 @@ function wireProductEditor(root, p, isNew){
           uploadInput.addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if(!file) return;
+            if(target.id==='_any' && /\.gcode$/i.test(file.name)){
+              alert("G-code is sliced for one specific printer — pick that printer's row instead of Default.");
+              e.target.value = '';
+              return;
+            }
             triggerBtn.disabled = true; triggerBtn.textContent = 'Uploading…';
             try {
               const path = `${p.id}-batch-${cfg.id}-${target.id}-${Date.now()}-${file.name}`;
