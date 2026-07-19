@@ -643,7 +643,7 @@ function syncConsumption(){
 function markFailed(entryId, actualWeightG){
   const e = productionLog.find(x=>x.id===entryId);
   if(!e || e.failed) return;
-  if(e.consumed){
+  if(e.consumed && !e.isTest){
     getOrderEntry(e.productId).qty += (e.unitsCompleted||1);
   }
   if(e.jobCounted){
@@ -2175,7 +2175,7 @@ function renderLog(){
       deleteBtn.addEventListener('click', () => {
         const removed = productionLog.find(x=>x.id===id);
         productionLog = productionLog.filter(x=>x.id!==id);
-        if(removed && removed.consumed && !removed.failed && removed.productId){
+        if(removed && removed.consumed && !removed.failed && !removed.isTest && removed.productId){
           const orderEntry = getOrderEntry(removed.productId);
           orderEntry.qty += (removed.unitsCompleted||1);
           saveOrder();
