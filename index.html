@@ -628,7 +628,7 @@ function syncConsumption(){
   productionLog.forEach(e => {
     if(!e.consumed){
       const entry = getOrderEntry(e.productId);
-      entry.qty = Math.max(0, entry.qty - (e.unitsCompleted||1));
+      entry.qty = entry.qty - (e.unitsCompleted||1);
       e.consumed = true;
       changed = true;
     }
@@ -1320,7 +1320,8 @@ function renderJobs(){
     if(doneBtn){
       doneBtn.addEventListener('click', () => {
         job.status = 'done';
-        saveJobs(); renderJobs();
+        job.doneAt = new Date().toISOString();
+        saveJobs(); regenerateIfActive();
       });
     }
     const editStartBtn = card.querySelector('[data-action="job-edit-start"]');
@@ -1351,7 +1352,7 @@ function renderJobs(){
     if(deleteBtn){
       deleteBtn.addEventListener('click', () => {
         jobs = jobs.filter(j=>j.id!==jobId);
-        saveJobs(); renderJobs();
+        saveJobs(); regenerateIfActive();
       });
     }
     const addSelect = card.querySelector('[data-action="job-add-select"]');
@@ -2766,6 +2767,7 @@ function renderAnalytics(){
       <div class="ps-row" style="gap:6px;flex-wrap:wrap;">${rangeButtons}</div>
     </div>
     ${renderQuantityByProductWidget(sinceDate)}
+    ${renderFinishedJobsWidget(sinceDate)}
   `;
 
   root.querySelectorAll('[data-action="analytics-range"]').forEach(btn => {
@@ -2801,6 +2803,54 @@ function renderQuantityByProductWidget(sinceDate){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Quantity Printed by Product</div>
       <div class="ps-hint" style="margin-bottom:14px;">${total} unit${total!==1?'s':''} across ${data.length} product${data.length!==1?'s':''} — completed, non-test prints only.</div>
+      ${rows}
+    </div>
+  `;
+}
+
+// Jobs marked done before this feature existed have no completion
+// timestamp — included under "All time" since we know they finished, but
+// excluded from narrower ranges since we genuinely don't know when.
+function computeFinishedJobs(sinceDate){
+  return jobs
+    .filter(j => j.status === 'done')
+    .filter(j => {
+      if(!sinceDate) return true;
+      if(!j.doneAt) return false;
+      return new Date(j.doneAt) >= sinceDate;
+    })
+    .map(j => ({job: j, totals: jobTotals(j)}))
+    .sort((a,b) => {
+      const at = a.job.doneAt ? new Date(a.job.doneAt).getTime() : 0;
+      const bt = b.job.doneAt ? new Date(b.job.doneAt).getTime() : 0;
+      return bt - at;
+    });
+}
+
+function renderFinishedJobsWidget(sinceDate){
+  const data = computeFinishedJobs(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Finished Jobs</div>
+        <div class="ps-empty">No jobs completed in this range yet.</div>
+      </div>
+    `;
+  }
+  const rows = data.map(({job, totals}) => `
+    <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
+      <div>
+        <div>${escapeHtml(job.name)}</div>
+        <div class="ps-hint mono">${job.doneAt ? fmtDateHead(new Date(job.doneAt)) : 'completion date unknown'}</div>
+      </div>
+      <span class="mono ps-hint">${totals.totalUnits} unit${totals.totalUnits!==1?'s':''}</span>
+    </div>
+  `).join('');
+  const totalUnitsAll = data.reduce((s,{totals})=>s+totals.totalUnits, 0);
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Finished Jobs</div>
+      <div class="ps-hint" style="margin-bottom:14px;">${data.length} job${data.length!==1?'s':''} completed · ${totalUnitsAll} unit${totalUnitsAll!==1?'s':''} total</div>
       ${rows}
     </div>
   `;
@@ -3816,7 +3866,7 @@ function renderSchedule(){
         </td>
         <td class="mono ps-hint">${incomplete? '—' : fmtDuration(printMin)}</td>
         <td>
-          <input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${entry.qty}" />
+          <input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${Math.max(0, entry.qty)}" />
           ${logged>0 ? `<div class="ps-hint mono">${logged} logged today</div>` : ''}
         </td>
         <td>
