@@ -1829,6 +1829,10 @@ function renderLog(){
               <span class="ps-field-label">Batch</span>
               <select class="ps-select" data-edit-field="batchConfigId"></select>
             </div>
+            <div class="ps-field" id="ps-edit-job-field" style="flex:1;min-width:150px;margin-bottom:0;${isTestEdit?'display:none;':''}">
+              <span class="ps-field-label">Job</span>
+              <select class="ps-select" data-edit-field="jobId"></select>
+            </div>
             <div class="ps-field" id="ps-edit-testproduct-field" style="flex:1;min-width:150px;margin-bottom:0;${isTestEdit?'':'display:none;'}">
               <span class="ps-field-label">Product (optional)</span>
               <select class="ps-select" data-edit-field="testProductId">${testDOpts}</select>
@@ -1872,11 +1876,14 @@ function renderLog(){
         : '(untitled test)')
       : null;
     const titleText = e.isTest ? `<span class="ps-hint" style="text-transform:uppercase;font-weight:700;letter-spacing:0.4px;">Test</span> ${testDesc}` : `${e.unitsCompleted>1?e.unitsCompleted+'× ':''}${escapeHtml(product?product.name:'(deleted product)')}`;
+    const jobForEntry = (!e.isTest && e.jobId) ? jobs.find(j=>j.id===e.jobId) : null;
+    const jobLine = (!e.isTest && e.jobId) ? `<div class="ps-hint mono">Job: ${jobForEntry ? escapeHtml(jobForEntry.name) : '(deleted job)'}</div>` : '';
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
           <b>${titleText}</b> on ${escapeHtml(printer?printer.name:'(deleted printer)')}${e.isTest && e.weightGAtLogTime>0 ? ' — '+e.weightGAtLogTime+'g' : ''}
           <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
+          ${jobLine}
         </div>
         <div class="ps-row" style="gap:6px;">
           ${!e.actualEnd && !e.failed ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
@@ -2086,6 +2093,7 @@ function renderLog(){
         const checked = editTestCheckbox.checked;
         row.querySelector('#ps-edit-product-field').style.display = checked ? 'none' : '';
         row.querySelector('#ps-edit-batch-field').style.display = checked ? 'none' : '';
+        row.querySelector('#ps-edit-job-field').style.display = checked ? 'none' : '';
         row.querySelector('#ps-edit-testproduct-field').style.display = checked ? '' : 'none';
         row.querySelector('#ps-edit-testlabel-field').style.display = checked ? '' : 'none';
         row.querySelector('#ps-edit-testweight-field').style.display = checked ? '' : 'none';
@@ -2112,6 +2120,29 @@ function renderLog(){
       refreshEditBatchOptions();
       row.querySelector('[data-edit-field="productId"]').addEventListener('change', refreshEditBatchOptions);
       row.querySelector('[data-edit-field="printerId"]').addEventListener('change', refreshEditBatchOptions);
+
+      function refreshEditJobOptions(preserveCurrent){
+        const e = productionLog.find(x=>x.id===id);
+        const productId = row.querySelector('[data-edit-field="productId"]').value;
+        const jobSelect = row.querySelector('[data-edit-field="jobId"]');
+        const candidates = jobs.filter(j => j.status==='active' && j.items.some(it=>it.id===productId));
+        const currentJob = e.jobId ? jobs.find(j=>j.id===e.jobId) : null;
+        const options = [`<option value="">— no job —</option>`];
+        const seen = new Set();
+        candidates.forEach(j => { options.push(`<option value="${j.id}">${escapeHtml(j.name)}</option>`); seen.add(j.id); });
+        if(preserveCurrent && currentJob && !seen.has(currentJob.id)){
+          options.push(`<option value="${currentJob.id}">${escapeHtml(currentJob.name)} (current)</option>`);
+        }
+        jobSelect.innerHTML = options.join('');
+        // Only pre-fill with what's already there on the very first render —
+        // changing product or printer afterward resets to "no job" instead
+        // of silently carrying over a selection that may no longer be
+        // right, forcing a deliberate re-pick.
+        jobSelect.value = preserveCurrent ? (e.jobId || '') : '';
+      }
+      refreshEditJobOptions(true);
+      row.querySelector('[data-edit-field="productId"]').addEventListener('change', () => refreshEditJobOptions(false));
+      row.querySelector('[data-edit-field="printerId"]').addEventListener('change', () => refreshEditJobOptions(false));
       row.querySelector('[data-action="save"]').addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
         const printerId = row.querySelector('[data-edit-field="printerId"]').value;
@@ -2173,11 +2204,12 @@ function renderLog(){
         e.actualStart = new Date(startVal).toISOString();
         e.notifiedFinishSoon = false;
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
-        e.jobId = null; // no job re-selection in the edit form yet — safest default, no guessing which job it belongs to now
+        e.jobId = newIsTest ? null : (row.querySelector('[data-edit-field="jobId"]').value || null);
         e.jobCounted = false;
         e.spoolConsumed = false; // let syncConsumption redo the weight deduction fresh
         e.consumed = (newIsTest || e.failed) ? true : false; // tests and failed entries stay locked; normal ones get (re)claimed by syncConsumption below
 
+        creditJobIfDue(e);
         editingLogId = null;
         syncConsumption();
         renderLog(); regenerateIfActive();
