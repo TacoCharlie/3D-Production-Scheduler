@@ -218,6 +218,7 @@
       <button class="ps-tab" data-tab="filament">Filament</button>
       <button class="ps-tab" data-tab="catalog">Catalog</button>
       <button class="ps-tab" data-tab="shipping">Shipping</button>
+      <button class="ps-tab" data-tab="analytics">Analytics</button>
       <button class="ps-tab" data-tab="settings">Settings</button>
     </div>
 
@@ -230,6 +231,7 @@
     <div id="ps-tab-filament" style="display:none;"></div>
     <div id="ps-tab-catalog" style="display:none;"></div>
     <div id="ps-tab-shipping" style="display:none;"></div>
+    <div id="ps-tab-analytics" style="display:none;"></div>
     <div id="ps-tab-settings" style="display:none;"></div>
   </div>
 </div>
@@ -2719,6 +2721,91 @@ let editingOverrideId = null; // within a product's editor: null = not editing a
 // Session-only — nothing here is saved. Resets on reload, on purpose.
 let shippingItems = [{id: uid('ship'), productId: '', qty: 1}];
 
+// ---------- rendering: Analytics tab ----------
+// Meant to grow over time — analyticsRange is a shared control every widget
+// below reads from, so new metrics just plug in without re-building a date
+// picker each time. Session-only, like Shipping — nothing here is saved.
+let analyticsRange = 'all'; // 'all' | '7' | '30' | '90'
+
+function analyticsSinceDate(){
+  if(analyticsRange === 'all') return null;
+  const days = parseInt(analyticsRange);
+  return new Date(Date.now() - days*24*3600000);
+}
+
+// Real, completed production only — same filter Failure Stats uses (no
+// tests, no failed attempts), summed by actual units (batches count fully).
+function computeProductQuantities(sinceDate){
+  const counts = {};
+  productionLog.forEach(e => {
+    if(e.isTest || e.failed || !e.actualEnd || !e.productId) return;
+    if(sinceDate && new Date(e.actualStart) < sinceDate) return;
+    counts[e.productId] = (counts[e.productId]||0) + (e.unitsCompleted||1);
+  });
+  return catalog
+    .map(p => ({product: p, qty: counts[p.id]||0}))
+    .filter(x => x.qty>0)
+    .sort((a,b) => b.qty - a.qty);
+}
+
+function renderAnalytics(){
+  const root = document.getElementById('ps-tab-analytics');
+  const sinceDate = analyticsSinceDate();
+
+  const rangeButtons = [
+    {key:'7', label:'Last 7 days'},
+    {key:'30', label:'Last 30 days'},
+    {key:'90', label:'Last 90 days'},
+    {key:'all', label:'All time'}
+  ].map(r => `<button class="ps-btn ${analyticsRange===r.key?'primary':'ghost'} small" data-action="analytics-range" data-range="${r.key}">${r.label}</button>`).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Analytics</div>
+      <div class="ps-hint" style="margin-bottom:12px;">More metrics can get added here over time — this is the first one.</div>
+      <div class="ps-row" style="gap:6px;flex-wrap:wrap;">${rangeButtons}</div>
+    </div>
+    ${renderQuantityByProductWidget(sinceDate)}
+  `;
+
+  root.querySelectorAll('[data-action="analytics-range"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      analyticsRange = btn.getAttribute('data-range');
+      renderAnalytics();
+    });
+  });
+}
+
+function renderQuantityByProductWidget(sinceDate){
+  const data = computeProductQuantities(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Quantity Printed by Product</div>
+        <div class="ps-empty">Nothing completed in this range yet.</div>
+      </div>
+    `;
+  }
+  const maxQty = Math.max(...data.map(d=>d.qty));
+  const rows = data.map(d => `
+    <div style="margin-bottom:12px;">
+      <div class="ps-row" style="justify-content:space-between;margin-bottom:4px;">
+        <span>${escapeHtml(d.product.name)}</span>
+        <span class="mono ps-hint">${d.qty}</span>
+      </div>
+      <div class="ps-hprogress-track"><div class="ps-hprogress-fill" style="width:${(d.qty/maxQty*100)}%;"></div></div>
+    </div>
+  `).join('');
+  const total = data.reduce((s,d)=>s+d.qty,0);
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Quantity Printed by Product</div>
+      <div class="ps-hint" style="margin-bottom:14px;">${total} unit${total!==1?'s':''} across ${data.length} product${data.length!==1?'s':''} — completed, non-test prints only.</div>
+      ${rows}
+    </div>
+  `;
+}
+
 function renderShipping(){
   const root = document.getElementById('ps-tab-shipping');
   const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
@@ -3811,6 +3898,7 @@ function regenerateIfActive(){
   if(document.getElementById('ps-tab-jobs')) renderJobs();
   if(document.getElementById('ps-tab-catalog')) renderCatalog();
   if(document.getElementById('ps-tab-shipping')) renderShipping();
+  if(document.getElementById('ps-tab-analytics')) renderAnalytics();
   if(document.getElementById('ps-tab-printers')) renderPrinters();
   if(document.getElementById('ps-tab-log') && editingLogId===null) renderLog();
   if(liveSchedule){
@@ -4247,7 +4335,7 @@ function setupTabs(){
       document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
       tab.classList.add('active');
       const target = tab.getAttribute('data-tab');
-      ['status','schedule','log','estimate','jobs','printers','filament','catalog','shipping','settings'].forEach(name => {
+      ['status','schedule','log','estimate','jobs','printers','filament','catalog','shipping','analytics','settings'].forEach(name => {
         document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
       });
     });
@@ -4286,6 +4374,7 @@ async function startApp(){
   renderFilament();
   renderCatalog();
   renderShipping();
+  renderAnalytics();
   renderSettings();
   checkFinishNotifications();
   checkMaintenanceNotifications();
