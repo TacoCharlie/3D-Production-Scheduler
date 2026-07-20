@@ -500,6 +500,11 @@ async function loadState(){
   catalog.forEach(p => {
     p.batchConfigs.forEach(cfg => { if(!cfg.projectFiles) cfg.projectFiles = {}; });
   });
+  // Different printers can genuinely take different amounts of time for the
+  // same product (e.g. a faster machine) — printerOverrides lets a specific
+  // printer have its own time/weight instead of the product's default.
+  // Purely additive, same spirit as batchConfigs.
+  catalog.forEach(p => { if(!p.printerOverrides || typeof p.printerOverrides !== 'object') p.printerOverrides = {}; });
 
   try { const t = await window.storage.get('types'); types = t ? JSON.parse(t.value) : JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
   catch(e){ types = JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
@@ -901,11 +906,41 @@ function fmtLogTime(iso){
   const d = new Date(iso);
   return fmtDateHead(d) + ' ' + fmtClock(d);
 }
-function productAvgActual(productId){
+// Resolves the actual time/weight to use for a product on a specific
+// printer — that printer's override if it has one, otherwise the product's
+// own default numbers. This is the one place that decision gets made, so
+// every feature (logging, scheduling, the avg-time flag) stays consistent.
+function getProductTimeWeight(product, printerId){
+  const override = printerId && product.printerOverrides && product.printerOverrides[printerId];
+  if(override) return {timeH: override.timeH, timeM: override.timeM, weightG: override.weightG};
+  return {timeH: product.timeH, timeM: product.timeM, weightG: product.weightG};
+}
+// Broken out per printer — blending a fast machine's times in with a slower
+// one's produces an average that doesn't represent either, and can't be
+// meaningfully compared against a single target. Returns one entry per
+// printer that has logged this product, each compared against that
+// printer's own relevant target (its override if set, else the default).
+function productAvgActualByPrinter(productId){
+  const product = catalog.find(p=>p.id===productId);
+  if(!product) return [];
   const entries = productionLog.filter(e => e.productId === productId && e.actualEnd && !e.failed && !(e.unitsCompleted>1));
-  if(entries.length === 0) return null;
-  const totalMin = entries.reduce((s,e) => s + (new Date(e.actualEnd) - new Date(e.actualStart))/60000, 0);
-  return {avgMin: totalMin/entries.length, count: entries.length};
+  const byPrinter = {};
+  entries.forEach(e => {
+    if(!byPrinter[e.printerId]) byPrinter[e.printerId] = [];
+    byPrinter[e.printerId].push(e);
+  });
+  return Object.keys(byPrinter).map(printerId => {
+    const printer = printers.find(p=>p.id===printerId);
+    const list = byPrinter[printerId];
+    const avgMin = list.reduce((s,e) => s + (new Date(e.actualEnd) - new Date(e.actualStart))/60000, 0) / list.length;
+    const target = getProductTimeWeight(product, printerId);
+    const targetMin = target.timeH*60 + target.timeM;
+    const hasOverride = !!(product.printerOverrides && product.printerOverrides[printerId]);
+    return {
+      printerId, printerName: printer ? printer.name : '(deleted printer)',
+      avgMin, count: list.length, targetMin, hasOverride
+    };
+  }).sort((a,b) => a.printerName.localeCompare(b.printerName));
 }
 function loggedTodayCount(productId){
   const key = new Date().toDateString();
@@ -1945,7 +1980,10 @@ function renderLog(){
     const product = catalog.find(x=>x.id===document.getElementById('ps-log-product').value);
     const batchSelect = document.getElementById('ps-log-batch');
     if(!product){ batchSelect.innerHTML = ''; return; }
-    const options = [`<option value="">Single unit — ${fmtDuration(product.timeH*60+product.timeM)}${product.weightG>0?', '+product.weightG+'g':''}</option>`];
+    const printerId = document.getElementById('ps-log-printer').value;
+    const resolved = getProductTimeWeight(product, printerId);
+    const hasOverride = !!(printerId && product.printerOverrides && product.printerOverrides[printerId]);
+    const options = [`<option value="">Single unit — ${fmtDuration(resolved.timeH*60+resolved.timeM)}${resolved.weightG>0?', '+resolved.weightG+'g':''}${hasOverride?' (this printer)':''}</option>`];
     product.batchConfigs.forEach(cfg => {
       options.push(`<option value="${cfg.id}">${cfg.unitsPerBatch}× batch — ${fmtDuration(cfg.timeH*60+cfg.timeM)}${cfg.weightG>0?', '+cfg.weightG+'g':''}</option>`);
     });
@@ -1953,6 +1991,7 @@ function renderLog(){
   }
   refreshBatchOptions();
   document.getElementById('ps-log-product').addEventListener('change', refreshBatchOptions);
+  document.getElementById('ps-log-printer').addEventListener('change', refreshBatchOptions);
 
   function refreshJobOptions(){
     const productId = document.getElementById('ps-log-product').value;
@@ -2007,8 +2046,9 @@ function renderLog(){
       const product = catalog.find(p=>p.id===productId);
       const batchConfigId = document.getElementById('ps-log-batch').value || null;
       const batchConfig = batchConfigId && product ? product.batchConfigs.find(c=>c.id===batchConfigId) : null;
-      const plannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (product ? (product.timeH*60+product.timeM) : 0);
-      const weightAtLog = batchConfig ? (batchConfig.weightG||0) : (product ? (product.weightG||0) : 0);
+      const resolved = product ? getProductTimeWeight(product, printerId) : {timeH:0, timeM:0, weightG:0};
+      const plannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (resolved.timeH*60+resolved.timeM);
+      const weightAtLog = batchConfig ? (batchConfig.weightG||0) : (resolved.weightG||0);
       const unitsCompleted = batchConfig ? batchConfig.unitsPerBatch : 1;
       const selectedJobId = document.getElementById('ps-log-job').value || null;
       const newEntry = {
@@ -2053,7 +2093,9 @@ function renderLog(){
         const product = catalog.find(p=>p.id===productId);
         const batchSelect = row.querySelector('[data-edit-field="batchConfigId"]');
         if(!product){ batchSelect.innerHTML = ''; return; }
-        const options = [`<option value="">Single unit — ${fmtDuration(product.timeH*60+product.timeM)}${product.weightG>0?', '+product.weightG+'g':''}</option>`];
+        const editPrinterId = row.querySelector('[data-edit-field="printerId"]').value;
+        const resolved = getProductTimeWeight(product, editPrinterId);
+        const options = [`<option value="">Single unit — ${fmtDuration(resolved.timeH*60+resolved.timeM)}${resolved.weightG>0?', '+resolved.weightG+'g':''}</option>`];
         (product.batchConfigs||[]).forEach(cfg => {
           options.push(`<option value="${cfg.id}">${cfg.unitsPerBatch}× batch — ${fmtDuration(cfg.timeH*60+cfg.timeM)}${cfg.weightG>0?', '+cfg.weightG+'g':''}</option>`);
         });
@@ -2066,6 +2108,7 @@ function renderLog(){
       }
       refreshEditBatchOptions();
       row.querySelector('[data-edit-field="productId"]').addEventListener('change', refreshEditBatchOptions);
+      row.querySelector('[data-edit-field="printerId"]').addEventListener('change', refreshEditBatchOptions);
       row.querySelector('[data-action="save"]').addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
         const printerId = row.querySelector('[data-edit-field="printerId"]').value;
@@ -2109,8 +2152,9 @@ function renderLog(){
           const product = catalog.find(p=>p.id===newProductId);
           const batchConfigId = row.querySelector('[data-edit-field="batchConfigId"]').value || null;
           const batchConfig = batchConfigId && product ? (product.batchConfigs||[]).find(c=>c.id===batchConfigId) : null;
-          newPlannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (product ? (product.timeH*60+product.timeM) : 0);
-          newWeight = batchConfig ? (batchConfig.weightG||0) : (product ? (product.weightG||0) : 0);
+          const resolved = product ? getProductTimeWeight(product, printerId) : {timeH:0, timeM:0, weightG:0};
+          newPlannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (resolved.timeH*60+resolved.timeM);
+          newWeight = batchConfig ? (batchConfig.weightG||0) : (resolved.weightG||0);
           newUnitsCompleted = batchConfig ? batchConfig.unitsPerBatch : 1;
           newTestLabel = '';
         }
@@ -2669,6 +2713,7 @@ let typeErrorMsg = '';
 let editingProductId = null; // null = browsing list; '_new' = add-product form; a real id = editing that product
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
+let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
 
 // ---------- rendering: Shipping tab ----------
 // Session-only — nothing here is saved. Resets on reload, on purpose.
@@ -2919,12 +2964,15 @@ let pendingNewProduct = null; // carries g-code-derived defaults from the list v
 
 // ---- Shared Add/Edit form ----
 function renderLoggedAvgHint(p){
-  const avg = productAvgActual(p.id);
-  if(!avg) return '';
-  const catalogMin = p.timeH*60 + p.timeM;
-  const runningLong = avg.count >= 2 && catalogMin>0 && avg.avgMin > catalogMin * 1.10;
-  const pctOver = catalogMin>0 ? Math.round((avg.avgMin/catalogMin - 1)*100) : 0;
-  return `<div class="ps-hint" style="margin-top:8px;${runningLong?'color:var(--heat);':''}">Logged avg: ${fmtDuration(avg.avgMin)} over ${avg.count} print${avg.count!==1?'s':''}${runningLong ? ` — running ~${pctOver}% longer than your estimate, worth bumping up?` : ''}</div>`;
+  const byPrinter = productAvgActualByPrinter(p.id);
+  if(byPrinter.length === 0) return '';
+  const lines = byPrinter.map(stat => {
+    const runningLong = stat.count >= 2 && stat.targetMin>0 && stat.avgMin > stat.targetMin * 1.10;
+    const pctOver = stat.targetMin>0 ? Math.round((stat.avgMin/stat.targetMin - 1)*100) : 0;
+    const targetNote = stat.hasOverride ? '' : ' (default estimate)';
+    return `<div style="${runningLong?'color:var(--heat);':''}">${escapeHtml(stat.printerName)}: ${fmtDuration(stat.avgMin)} over ${stat.count} print${stat.count!==1?'s':''}${runningLong ? ` — running ~${pctOver}% longer than${targetNote||' its'} target, worth a printer-specific time?` : ''}</div>`;
+  }).join('');
+  return `<div class="ps-hint" style="margin-top:8px;">Logged avg by printer:${lines}</div>`;
 }
 
 function renderProductEditor(root){
@@ -3000,6 +3048,7 @@ function renderProductEditor(root){
 
     ${!isNew ? renderProductFilesSection(p) : ''}
     ${!isNew ? renderProductBatchesSection(p) : ''}
+    ${!isNew ? renderPrinterOverridesSection(p) : ''}
   `;
 
   wireProductEditor(root, p, isNew);
@@ -3045,6 +3094,74 @@ function renderProductBatchesSection(p){
       <div class="ps-hint" style="margin-bottom:10px;">Other ways to print multiple units of this same product in one physical print — e.g. an 8-up plate. The numbers above (the single-unit version) stay untouched no matter what's added here.</div>
       ${p.batchConfigs && p.batchConfigs.length>0 ? rows : '<div class="ps-empty">No batches yet.</div>'}
       <button class="ps-btn" style="margin-top:10px;" id="ps-add-batch-btn">+ Add Batch</button>
+    </div>
+  `;
+}
+
+function renderPrinterOverridesSection(p){
+  if(editingOverrideId !== null) return renderPrinterOverrideEditor(p);
+  const overrideIds = Object.keys(p.printerOverrides||{});
+  const rows = overrideIds.map(printerId => {
+    const ov = p.printerOverrides[printerId];
+    const printer = printers.find(pr=>pr.id===printerId);
+    return `
+      <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
+        <span class="ps-hint">${escapeHtml(printer?printer.name:'(deleted printer)')} — ${fmtDuration(ov.timeH*60+ov.timeM)}${ov.weightG>0?', '+ov.weightG+'g':''}</span>
+        <div class="ps-row" style="gap:4px;">
+          <button class="ps-btn ghost small" data-action="edit-override" data-printerid="${printerId}">Edit</button>
+          <button class="ps-btn ghost small" data-action="remove-override" data-printerid="${printerId}">✕</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  const availablePrinters = printers.filter(pr => !overrideIds.includes(pr.id));
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Printer-Specific Times</div>
+      <div class="ps-hint" style="margin-bottom:10px;">Some printers genuinely run faster or slower than others — give a specific printer its own time/weight here instead of using the default above. Logging a print on that printer automatically uses this.</div>
+      ${overrideIds.length>0 ? rows : '<div class="ps-empty">No printer-specific times yet — every printer uses the default above.</div>'}
+      ${availablePrinters.length>0
+        ? `<button class="ps-btn" style="margin-top:10px;" id="ps-add-override-btn">+ Add printer-specific time</button>`
+        : (printers.length>0 ? `<div class="ps-hint" style="margin-top:10px;">Every printer already has its own time set.</div>` : '')}
+    </div>
+  `;
+}
+
+function renderPrinterOverrideEditor(p){
+  const isNewOverride = editingOverrideId === '_new';
+  const overrideIds = Object.keys(p.printerOverrides||{});
+  const printerId = isNewOverride ? null : editingOverrideId;
+  const ov = isNewOverride ? {timeH:p.timeH, timeM:p.timeM, weightG:p.weightG} : p.printerOverrides[printerId];
+  const availablePrinters = printers.filter(pr => !overrideIds.includes(pr.id));
+  const printerOptions = isNewOverride
+    ? availablePrinters.map(pr=>`<option value="${pr.id}">${escapeHtml(pr.name)}</option>`).join('')
+    : `<option value="${printerId}">${escapeHtml((printers.find(pr=>pr.id===printerId)||{}).name || '(deleted printer)')}</option>`;
+
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>${isNewOverride?'Add Printer-Specific Time':'Edit Printer-Specific Time'}</div>
+      <div class="ps-field" style="max-width:260px;margin:8px 0;">
+        <span class="ps-field-label">Printer</span>
+        <select class="ps-select" id="ps-override-printer" ${isNewOverride?'':'disabled'}>${printerOptions}</select>
+      </div>
+      <div class="ps-row" style="flex-wrap:wrap;gap:12px;margin-top:6px;">
+        <div class="ps-field" style="min-width:90px;margin-bottom:0;">
+          <span class="ps-field-label">Hours</span>
+          <input class="ps-input" type="number" min="0" id="ps-override-timeh" value="${ov.timeH}" />
+        </div>
+        <div class="ps-field" style="min-width:90px;margin-bottom:0;">
+          <span class="ps-field-label">Minutes</span>
+          <input class="ps-input" type="number" min="0" max="59" id="ps-override-timem" value="${ov.timeM}" />
+        </div>
+        <div class="ps-field" style="min-width:100px;margin-bottom:0;">
+          <span class="ps-field-label">Weight (g)</span>
+          <input class="ps-input" type="number" min="0" id="ps-override-weight" value="${ov.weightG}" />
+        </div>
+      </div>
+      <div class="ps-row" style="margin-top:16px;gap:8px;">
+        <button class="ps-btn primary" id="ps-override-save">${isNewOverride?'Add':'Save'}</button>
+        <button class="ps-btn ghost" id="ps-override-cancel">Cancel</button>
+      </div>
     </div>
   `;
 }
@@ -3106,7 +3223,7 @@ function renderBatchEditor(p){
 function wireProductEditor(root, p, isNew){
   let pendingFileToAttach = isNew ? (p.pendingFile || null) : null;
   document.getElementById('ps-editor-back').addEventListener('click', () => {
-    editingProductId = null; editingBatchId = null;
+    editingProductId = null; editingBatchId = null; editingOverrideId = null;
     renderCatalog();
   });
 
@@ -3198,7 +3315,7 @@ function wireProductEditor(root, p, isNew){
   });
 
   document.getElementById('ps-editor-done').addEventListener('click', () => {
-    editingProductId = null; editingBatchId = null;
+    editingProductId = null; editingBatchId = null; editingOverrideId = null;
     renderCatalog();
   });
   document.getElementById('ps-editor-delete').addEventListener('click', () => {
@@ -3206,7 +3323,7 @@ function wireProductEditor(root, p, isNew){
     priorityOrder = priorityOrder.filter(x=>x!==p.id);
     delete orderQty[p.id];
     saveCatalog(); saveOrder();
-    editingProductId = null; editingBatchId = null;
+    editingProductId = null; editingBatchId = null; editingOverrideId = null;
     renderCatalog(); renderSchedule(); regenerateIfActive();
   });
 
@@ -3318,6 +3435,42 @@ function wireProductEditor(root, p, isNew){
     batchCancelBtn.addEventListener('click', () => { editingBatchId = null; renderCatalog(); });
   }
 
+  // ---- Printer-specific time overrides ----
+  const addOverrideBtn = document.getElementById('ps-add-override-btn');
+  if(addOverrideBtn){
+    addOverrideBtn.addEventListener('click', () => { editingOverrideId = '_new'; renderCatalog(); });
+  }
+  root.querySelectorAll('[data-action="edit-override"]').forEach(btn => {
+    btn.addEventListener('click', () => { editingOverrideId = btn.getAttribute('data-printerid'); renderCatalog(); });
+  });
+  root.querySelectorAll('[data-action="remove-override"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const printerId = btn.getAttribute('data-printerid');
+      delete p.printerOverrides[printerId];
+      saveCatalog(); renderCatalog();
+    });
+  });
+  const overrideSaveBtn = document.getElementById('ps-override-save');
+  if(overrideSaveBtn){
+    overrideSaveBtn.addEventListener('click', () => {
+      const printerSelect = document.getElementById('ps-override-printer');
+      const printerId = printerSelect.value;
+      if(!printerId) return;
+      const timeH = Math.max(0, parseInt(document.getElementById('ps-override-timeh').value)||0);
+      const timeM = Math.min(59, Math.max(0, parseInt(document.getElementById('ps-override-timem').value)||0));
+      const weightG = Math.max(0, parseInt(document.getElementById('ps-override-weight').value)||0);
+      if(!p.printerOverrides) p.printerOverrides = {};
+      p.printerOverrides[printerId] = {timeH, timeM, weightG};
+      saveCatalog();
+      editingOverrideId = null;
+      renderCatalog();
+    });
+  }
+  const overrideCancelBtn = document.getElementById('ps-override-cancel');
+  if(overrideCancelBtn){
+    overrideCancelBtn.addEventListener('click', () => { editingOverrideId = null; renderCatalog(); });
+  }
+
   // ---- Batch's own project files (edit mode only, not while adding) ----
   if(editingBatchId && editingBatchId !== '_new'){
     const cfg = p.batchConfigs.find(c=>c.id===editingBatchId);
@@ -3422,6 +3575,7 @@ async function importAllData(jsonText){
     if(!p.projectFiles) p.projectFiles = {};
     if(!Array.isArray(p.batchConfigs)) p.batchConfigs = [];
     p.batchConfigs.forEach(cfg => { if(!cfg.projectFiles) cfg.projectFiles = {}; });
+    if(!p.printerOverrides || typeof p.printerOverrides !== 'object') p.printerOverrides = {};
   });
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
@@ -3677,7 +3831,8 @@ function onGenerate(){
     if(entry.qty<=0) return;
     const p = catalog.find(x=>x.id===id);
     if(!p) return;
-    const printTimeMin = p.timeH*60 + p.timeM;
+    const resolved = getProductTimeWeight(p, entry.pin || null);
+    const printTimeMin = resolved.timeH*60 + resolved.timeM;
     if(printTimeMin<=0){ missing.push(p.name); return; }
 
     const batchCfg = entry.batchConfigId ? (p.batchConfigs||[]).find(c=>c.id===entry.batchConfigId) : null;
@@ -3693,7 +3848,7 @@ function onGenerate(){
       }
     } else {
       for(let i=0;i<entry.qty;i++){
-        queue.push({productId:id, name:p.name, type:p.type, weightG:p.weightG, printTimeMin, pin: entry.pin || null});
+        queue.push({productId:id, name:p.name, type:p.type, weightG:resolved.weightG, printTimeMin, pin: entry.pin || null});
       }
     }
   });
