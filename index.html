@@ -3375,7 +3375,14 @@ function renderProductFilesSection(p){
     const entry = p.projectFiles && p.projectFiles[target.id];
     let action;
     if(entry){
-      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}" title="Opens OrcaSlicer with this file">Open in Orca</a> <button class="ps-btn ghost small" data-action="remove-product-file" data-target="${target.id}">✕</button>`;
+      const isGcode = /\.gcode$/i.test(entry.path||'');
+      const emptyTargets = targets.filter(t => t.id !== target.id && !(p.projectFiles && p.projectFiles[t.id]) && !(isGcode && t.id === '_any'));
+      const moveControl = emptyTargets.length>0 ? `
+        <select class="ps-select" style="width:auto;padding:4px 8px;font-size:12px;" data-action="move-product-file" data-target="${target.id}">
+          <option value="">Move to…</option>
+          ${emptyTargets.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}
+        </select>` : '';
+      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}" title="Opens OrcaSlicer with this file">Open in Orca</a> ${moveControl} <button class="ps-btn ghost small" data-action="remove-product-file" data-target="${target.id}">✕</button>`;
     } else if(window.uploadProjectFile){
       action = `<input type="file" data-action="upload-product-file" data-target="${target.id}" style="display:none;" accept=".3mf,.stl,.step,.stp,.gcode" /><button class="ps-btn ghost small" data-action="trigger-product-file-upload" data-target="${target.id}">Upload…</button>`;
     } else {
@@ -3386,7 +3393,7 @@ function renderProductFilesSection(p){
   return `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Project Files</div>
-      <div class="ps-hint" style="margin-bottom:10px;">One file per printer — "Default" covers any printer without its own. Uploading a .gcode here also fills in the numbers above automatically.</div>
+      <div class="ps-hint" style="margin-bottom:10px;">One file per printer — "Default" covers any printer without its own. Uploading a .gcode here also fills in the numbers above automatically. Picked the wrong printer? Use "Move to…" to reassign it without re-uploading.</div>
       ${rows}
     </div>
   `;
@@ -3491,7 +3498,14 @@ function renderBatchEditor(p){
     const entry = cfg.projectFiles && cfg.projectFiles[target.id];
     let action;
     if(entry){
-      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}">Open in Orca</a> <button class="ps-btn ghost small" data-action="remove-batchedit-file" data-target="${target.id}">✕</button>`;
+      const isGcode = /\.gcode$/i.test(entry.path||'');
+      const emptyTargets = targets.filter(t => t.id !== target.id && !(cfg.projectFiles && cfg.projectFiles[t.id]) && !(isGcode && t.id === '_any'));
+      const moveControl = emptyTargets.length>0 ? `
+        <select class="ps-select" style="width:auto;padding:4px 8px;font-size:12px;" data-action="move-batchedit-file" data-target="${target.id}">
+          <option value="">Move to…</option>
+          ${emptyTargets.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}
+        </select>` : '';
+      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}">Open in Orca</a> ${moveControl} <button class="ps-btn ghost small" data-action="remove-batchedit-file" data-target="${target.id}">✕</button>`;
     } else if(window.uploadProjectFile){
       action = `<input type="file" data-action="upload-batchedit-file" data-target="${target.id}" style="display:none;" accept=".3mf,.stl,.step,.stp,.gcode" /><button class="ps-btn ghost small" data-action="trigger-batchedit-file-upload" data-target="${target.id}">Upload…</button>`;
     } else {
@@ -3689,6 +3703,18 @@ function wireProductEditor(root, p, isNew){
         saveCatalog(); renderCatalog();
       });
     }
+    const moveSelect = root.querySelector(`[data-action="move-product-file"][data-target="${target.id}"]`);
+    if(moveSelect){
+      moveSelect.addEventListener('change', () => {
+        const toTarget = moveSelect.value;
+        if(!toTarget || !p.projectFiles || !p.projectFiles[target.id]) return;
+        // Same file, same storage path — just reassign which printer's
+        // slot it lives under. No re-upload, no Supabase Storage call.
+        p.projectFiles[toTarget] = p.projectFiles[target.id];
+        delete p.projectFiles[target.id];
+        saveCatalog(); renderCatalog();
+      });
+    }
   });
 
   // ---- Batches list actions ----
@@ -3832,6 +3858,16 @@ function wireProductEditor(root, p, isNew){
             try { if(window.deleteProjectFile && entry && entry.path) await window.deleteProjectFile(entry.path); }
             catch(err){ console.error(err); }
             if(cfg.projectFiles) delete cfg.projectFiles[target.id];
+            saveCatalog(); renderCatalog();
+          });
+        }
+        const moveSelect = root.querySelector(`[data-action="move-batchedit-file"][data-target="${target.id}"]`);
+        if(moveSelect){
+          moveSelect.addEventListener('change', () => {
+            const toTarget = moveSelect.value;
+            if(!toTarget || !cfg.projectFiles || !cfg.projectFiles[target.id]) return;
+            cfg.projectFiles[toTarget] = cfg.projectFiles[target.id];
+            delete cfg.projectFiles[target.id];
             saveCatalog(); renderCatalog();
           });
         }
