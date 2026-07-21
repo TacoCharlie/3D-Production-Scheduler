@@ -700,6 +700,58 @@ function markTestFailed(entryId){
 }
 function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null, batchConfigId:null}; if(!('batchConfigId' in orderQty[id])) orderQty[id].batchConfigId = null; return orderQty[id]; }
 
+// A batch plate where only some units actually succeeded. Shrinks the
+// original entry down to just the successful units (giving back the
+// quantity and job credit that shouldn't have counted), and creates a
+// sibling entry for the failed portion — its own filament/failure-stats
+// record, but no quantity or job credit. The spool was already correctly
+// charged for the whole plate via the original entry, so this only
+// reallocates that weight between the two — it doesn't deduct twice.
+function splitBatchOutcome(entryId, failCount, failWeightG){
+  const e = productionLog.find(x=>x.id===entryId);
+  if(!e || e.failed || e.isTest) return;
+  const originalUnits = e.unitsCompleted || 1;
+  if(failCount < 1 || failCount >= originalUnits) return;
+  const successCount = originalUnits - failCount;
+  const fullWeight = e.weightGAtLogTime || 0;
+  const clampedFailWeight = Math.max(0, Math.min(fullWeight, failWeightG||0));
+  const successWeight = fullWeight - clampedFailWeight;
+
+  if(e.consumed && e.productId){
+    getOrderEntry(e.productId).qty += failCount;
+  }
+  if(e.jobCounted){
+    applyJobCredit(e, -failCount);
+  }
+
+  e.unitsCompleted = successCount;
+  e.weightGAtLogTime = successWeight;
+
+  const failedEntry = {
+    id: uid('log'),
+    printerId: e.printerId,
+    productId: e.productId,
+    isTest: false,
+    testLabel: '',
+    actualStart: e.actualStart,
+    actualEnd: e.actualEnd,
+    plannedMin: e.plannedMin,
+    weightGAtLogTime: clampedFailWeight,
+    spoolIdAtLogTime: e.spoolIdAtLogTime,
+    consumed: true,
+    spoolConsumed: true,
+    failed: true,
+    notifiedFinishSoon: true,
+    unitsCompleted: failCount,
+    jobId: e.jobId,
+    jobCounted: false
+  };
+  productionLog.push(failedEntry);
+
+  saveLog();
+  saveOrder();
+  saveJobs();
+}
 // Any time a spool actually starts being used on a printer — whichever of
 // the three ways that happened (guided Change Spool, the Printers tab
 // dropdown, or the Filament tab's assignment dropdown) — stamp it, so the
@@ -1257,13 +1309,16 @@ function renderJobs(){
 
   const doneCards = done.map(job => {
     const t = jobTotals(job);
+    const isExpanded = expandedDoneJobs.has(job.id);
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
+          <button class="ps-btn ghost small" data-action="toggle-done-job" style="margin-right:4px;">${isExpanded?'▾':'▸'}</button>
           <span class="ps-hint" style="flex:1.4;">${escapeHtml(job.name)}</span>
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''}</span>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
+        ${isExpanded ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">${renderJobItemRows(job, false)}</div>` : ''}
       </div>
     `;
   }).join('');
@@ -1345,6 +1400,14 @@ function renderJobs(){
     if(editCancelBtn){
       editCancelBtn.addEventListener('click', () => {
         editingJobId = null;
+        renderJobs();
+      });
+    }
+    const toggleDoneBtn = card.querySelector('[data-action="toggle-done-job"]');
+    if(toggleDoneBtn){
+      toggleDoneBtn.addEventListener('click', () => {
+        if(expandedDoneJobs.has(jobId)) expandedDoneJobs.delete(jobId);
+        else expandedDoneJobs.add(jobId);
         renderJobs();
       });
     }
@@ -1756,6 +1819,7 @@ function renderPrinters(){
 let editingLogId = null;
 let editingJobId = null; // which active job's "units done" is showing the edit form
 let failingLogId = null; // which entry is showing the "confirm failed — how much filament?" prompt
+let splittingLogId = null; // which batch entry is showing the "how many of these failed?" prompt
 // Which past days/weeks a person has manually expanded, keyed by
 // "machineId|dateKey" or "machineId|weekStartDateKey". Session-only — not
 // persisted, and not relevant for Theoretical view (no "past" there since
@@ -1800,6 +1864,33 @@ function renderLog(){
               <button class="ps-btn primary small" data-action="confirm-fail">Confirm Failed</button>
               <button class="ps-btn ghost small" data-action="cancel-fail">Cancel</button>
             </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if(e.id === splittingLogId){
+      const fullWeight = e.weightGAtLogTime || 0;
+      const maxFail = (e.unitsCompleted||1) - 1;
+      const defaultFailCount = 1;
+      const proportionalWeight = fullWeight>0 ? Math.round(fullWeight * (defaultFailCount/(e.unitsCompleted||1))) : 0;
+      return `
+        <div class="ps-log-entry" data-id="${e.id}">
+          <div style="width:100%;">
+            <div class="ps-hint" style="margin-bottom:8px;">Splitting <b style="color:var(--text);">${escapeHtml(product?product.name:'(deleted product)')}</b> (${e.unitsCompleted}× batch) — how many of these actually failed? The rest stay credited as successful; the failed ones get their own entry with no quantity or job credit.</div>
+            <div class="ps-row" style="align-items:flex-end;flex-wrap:wrap;">
+              <div class="ps-field" style="margin-bottom:0;">
+                <span class="ps-field-label">How many failed (of ${e.unitsCompleted})</span>
+                <input class="ps-input ps-narrow" style="width:70px;" type="number" min="1" max="${maxFail}" id="ps-split-count-${e.id}" value="${defaultFailCount}" />
+              </div>
+              <div class="ps-field" style="margin-bottom:0;">
+                <span class="ps-field-label">Filament wasted on those (g)</span>
+                <input class="ps-input ps-narrow" style="width:90px;" type="number" min="0" id="ps-split-weight-${e.id}" value="${proportionalWeight}" />
+              </div>
+              <button class="ps-btn primary small" data-action="confirm-split">Confirm Split</button>
+              <button class="ps-btn ghost small" data-action="cancel-split">Cancel</button>
+            </div>
+            <div class="ps-hint" style="margin-top:6px;">Full plate was logged at ${fullWeight}g — the successful units keep whatever's left after the failed portion above.</div>
           </div>
         </div>
       `;
@@ -1887,6 +1978,7 @@ function renderLog(){
         </div>
         <div class="ps-row" style="gap:6px;">
           ${!e.actualEnd && !e.failed ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
+          ${!e.isTest && !e.failed && (e.unitsCompleted||1)>1 ? '<button class="ps-btn ghost small" data-action="split">Some failed…</button>' : ''}
           ${!e.failed
             ? `<button class="ps-btn ghost small" style="color:var(--danger)" data-action="${e.isTest?'fail-test':'fail'}">Mark failed</button>`
             : '<button class="ps-btn ghost small" data-action="unfail">Undo failure</button>'}
@@ -2234,6 +2326,32 @@ function renderLog(){
     if(failBtn){
       failBtn.addEventListener('click', () => {
         failingLogId = id;
+        renderLog();
+      });
+    }
+    const splitBtn = row.querySelector('[data-action="split"]');
+    if(splitBtn){
+      splitBtn.addEventListener('click', () => {
+        splittingLogId = id;
+        renderLog();
+      });
+    }
+    const confirmSplitBtn = row.querySelector('[data-action="confirm-split"]');
+    if(confirmSplitBtn){
+      confirmSplitBtn.addEventListener('click', () => {
+        const countInput = document.getElementById('ps-split-count-'+id);
+        const weightInput = document.getElementById('ps-split-weight-'+id);
+        const failCount = Math.max(1, parseInt(countInput.value)||1);
+        const failWeightG = Math.max(0, parseFloat(weightInput.value)||0);
+        splitBatchOutcome(id, failCount, failWeightG);
+        splittingLogId = null;
+        renderLog(); regenerateIfActive();
+      });
+    }
+    const cancelSplitBtn = row.querySelector('[data-action="cancel-split"]');
+    if(cancelSplitBtn){
+      cancelSplitBtn.addEventListener('click', () => {
+        splittingLogId = null;
         renderLog();
       });
     }
@@ -2747,6 +2865,7 @@ function renderFilament(){
 let typeErrorMsg = '';
 let editingProductId = null; // null = browsing list; '_new' = add-product form; a real id = editing that product
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
+let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
 
@@ -2759,6 +2878,7 @@ let shippingItems = [{id: uid('ship'), productId: '', qty: 1}];
 // below reads from, so new metrics just plug in without re-building a date
 // picker each time. Session-only, like Shipping — nothing here is saved.
 let analyticsRange = 'all'; // 'all' | '7' | '30' | '90'
+let analyticsJobFilter = ''; // '' = all jobs, otherwise a specific jobId
 
 function analyticsSinceDate(){
   if(analyticsRange === 'all') return null;
@@ -2768,11 +2888,14 @@ function analyticsSinceDate(){
 
 // Real, completed production only — same filter Failure Stats uses (no
 // tests, no failed attempts), summed by actual units (batches count fully).
-function computeProductQuantities(sinceDate){
+// jobId, when given, restricts to prints credited to that specific job —
+// prints with no job link at all are excluded once a job filter is active.
+function computeProductQuantities(sinceDate, jobId){
   const counts = {};
   productionLog.forEach(e => {
     if(e.isTest || e.failed || !e.actualEnd || !e.productId) return;
     if(sinceDate && new Date(e.actualStart) < sinceDate) return;
+    if(jobId && e.jobId !== jobId) return;
     counts[e.productId] = (counts[e.productId]||0) + (e.unitsCompleted||1);
   });
   return catalog
@@ -2808,14 +2931,36 @@ function renderAnalytics(){
       renderAnalytics();
     });
   });
+  const jobFilterSelect = document.getElementById('ps-analytics-job-filter');
+  if(jobFilterSelect){
+    jobFilterSelect.addEventListener('change', () => {
+      analyticsJobFilter = jobFilterSelect.value;
+      renderAnalytics();
+    });
+  }
 }
 
 function renderQuantityByProductWidget(sinceDate){
-  const data = computeProductQuantities(sinceDate);
+  // If the previously-selected job filter no longer exists (deleted), fall
+  // back to "all jobs" rather than silently showing an empty, confusing result.
+  if(analyticsJobFilter && !jobs.some(j=>j.id===analyticsJobFilter)) analyticsJobFilter = '';
+  const data = computeProductQuantities(sinceDate, analyticsJobFilter || null);
+  const jobFilterOptions = jobs.slice().sort((a,b)=>a.name.localeCompare(b.name))
+    .map(j => `<option value="${j.id}" ${analyticsJobFilter===j.id?'selected':''}>${escapeHtml(j.name)}</option>`).join('');
+  const jobFilterControl = `
+    <div class="ps-field" style="max-width:260px;margin-bottom:14px;">
+      <span class="ps-field-label">Filter to a job</span>
+      <select class="ps-select" id="ps-analytics-job-filter">
+        <option value="">All jobs</option>
+        ${jobFilterOptions}
+      </select>
+    </div>
+  `;
   if(data.length===0){
     return `
       <div class="ps-panel">
         <div class="ps-panel-title"><span class="dot"></span>Quantity Printed by Product</div>
+        ${jobFilterControl}
         <div class="ps-empty">Nothing completed in this range yet.</div>
       </div>
     `;
@@ -2834,6 +2979,7 @@ function renderQuantityByProductWidget(sinceDate){
   return `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Quantity Printed by Product</div>
+      ${jobFilterControl}
       <div class="ps-hint" style="margin-bottom:14px;">${total} unit${total!==1?'s':''} across ${data.length} product${data.length!==1?'s':''} — completed, non-test prints only.</div>
       ${rows}
     </div>
