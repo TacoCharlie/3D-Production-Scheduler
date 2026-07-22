@@ -1942,7 +1942,10 @@ function renderLog(){
             </div>
             <div class="ps-field" style="flex:1;min-width:170px;margin-bottom:0;">
               <span class="ps-field-label">Actual finish</span>
-              <input class="ps-input" type="datetime-local" data-edit-field="actualEnd" value="${e.actualEnd ? toLocalInputValue(new Date(e.actualEnd)) : ''}" />
+              <div class="ps-row" style="gap:6px;align-items:center;">
+                <input class="ps-input" type="datetime-local" data-edit-field="actualEnd" value="${e.actualEnd ? toLocalInputValue(new Date(e.actualEnd)) : ''}" style="flex:1;" />
+                ${e.actualEnd ? `<button class="ps-btn ghost small" data-action="clear-finish" title="Still printing — not actually finished yet">Clear</button>` : ''}
+              </div>
             </div>
             <div class="ps-row" style="gap:6px;">
               <button class="ps-btn primary small" data-action="save">Save</button>
@@ -2235,6 +2238,13 @@ function renderLog(){
       refreshEditJobOptions(true);
       row.querySelector('[data-edit-field="productId"]').addEventListener('change', () => refreshEditJobOptions(false));
       row.querySelector('[data-edit-field="printerId"]').addEventListener('change', () => refreshEditJobOptions(false));
+      const clearFinishBtn = row.querySelector('[data-action="clear-finish"]');
+      if(clearFinishBtn){
+        clearFinishBtn.addEventListener('click', () => {
+          row.querySelector('[data-edit-field="actualEnd"]').value = '';
+          clearFinishBtn.style.display = 'none';
+        });
+      }
       row.querySelector('[data-action="save"]').addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
         const printerId = row.querySelector('[data-edit-field="printerId"]').value;
