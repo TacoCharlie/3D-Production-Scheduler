@@ -1224,7 +1224,10 @@ function renderJobItemRows(job, editable){
       const loggedForItem = productionLog
         .filter(e => e.jobId===job.id && e.productId===item.id && !e.isTest && !e.failed && e.actualEnd)
         .reduce((s,e) => s + (e.unitsCompleted||1), 0);
-      return `<div>${item.qty}× <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span></div>`;
+      const qtyDisplay = job.status === 'active'
+        ? `<input class="ps-input ps-narrow" type="number" min="0" style="width:60px;display:inline-block;" data-action="job-item-target-qty" data-jobid="${job.id}" data-itemid="${item.id}" value="${item.qty}" />×`
+        : `${item.qty}×`;
+      return `<div>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span></div>`;
     }
     return `
       <tr data-jobid="${job.id}" data-itemid="${item.id}">
@@ -1437,6 +1440,15 @@ function renderJobs(){
         const item = job.items.find(it=>it.id===itemId);
         if(item) item.qty = Math.max(0, parseInt(e.target.value)||0);
         saveJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="job-item-target-qty"]').forEach(input => {
+      input.addEventListener('change', () => {
+        const itemId = input.getAttribute('data-itemid');
+        const item = job.items.find(it=>it.id===itemId);
+        if(item) item.qty = Math.max(0, parseInt(input.value)||0);
+        saveJobs();
+        renderJobs();
       });
     });
     card.querySelectorAll('[data-action="job-item-remove"]').forEach(btn => {
