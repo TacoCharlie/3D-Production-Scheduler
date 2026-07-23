@@ -635,7 +635,7 @@ function syncConsumption(){
     if(!e.spoolConsumed){
       if(e.spoolIdAtLogTime){
         const spool = spools.find(s=>s.id===e.spoolIdAtLogTime);
-        if(spool){ spool.remainingG = Math.max(0, spool.remainingG - (e.weightGAtLogTime||0)); }
+        if(spool){ spool.remainingG = spool.remainingG - (e.weightGAtLogTime||0); }
       }
       e.spoolConsumed = true;
       changed = true;
@@ -667,7 +667,7 @@ function markFailed(entryId, actualWeightG){
       const spool = spools.find(s=>s.id===e.spoolIdAtLogTime);
       if(spool){
         spool.remainingG += (e.weightGAtLogTime||0); // give back what was originally deducted
-        spool.remainingG = Math.max(0, spool.remainingG - actualWeightG); // deduct the corrected amount
+        spool.remainingG = spool.remainingG - actualWeightG; // deduct the corrected amount
       }
     }
     e.weightGAtLogTime = actualWeightG;
@@ -1541,7 +1541,7 @@ function renderStatus(){
     }
 
     const filamentCell = spool
-      ? `<div class="ps-summary-cell"><div class="ps-summary-label" style="margin:0 0 4px;">FILAMENT LEFT</div><div class="ps-summary-num" style="${spoolLow?'color:var(--danger);':''}">${spool.remainingG}g</div><div class="ps-spool-bar-track" style="margin:6px 0 4px;"><div class="ps-spool-bar-fill ${spoolLow?'low':''}" style="width:${spoolPct}%"></div></div><div class="ps-summary-label" style="text-transform:none;letter-spacing:0;">${spoolLow?'low — ':''}${escapeHtml(spool.label)}</div></div>`
+      ? `<div class="ps-summary-cell"><div class="ps-summary-label" style="margin:0 0 4px;">FILAMENT LEFT</div><div class="ps-summary-num" style="${spoolLow?'color:var(--danger);':''}">${Math.max(0,spool.remainingG)}g</div><div class="ps-spool-bar-track" style="margin:6px 0 4px;"><div class="ps-spool-bar-fill ${spoolLow?'low':''}" style="width:${spoolPct}%"></div></div><div class="ps-summary-label" style="text-transform:none;letter-spacing:0;">${spoolLow?'low — ':''}${escapeHtml(spool.label)}</div></div>`
       : `<div class="ps-summary-cell"><div class="ps-summary-label" style="margin:0 0 4px;">FILAMENT LEFT</div><div class="ps-summary-num" style="color:var(--muted);">—</div><div class="ps-summary-label">no spool set</div></div>`;
 
     const machine = liveMachines.find(m => m.id === p.id);
@@ -1603,7 +1603,7 @@ function renderPrinters(){
   const root = document.getElementById('ps-tab-printers');
   const cards = printers.map(p => {
     const activeSpoolOptions = `<option value="">— none assigned —</option>` + spools.filter(s=>!s.retired).map(s =>
-      `<option value="${s.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(s.label)} (${s.remainingG}g left)</option>`
+      `<option value="${s.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(s.label)} (${Math.max(0,s.remainingG)}g left)</option>`
     ).join('');
     const currentSpool = spools.find(s=>s.id===p.spoolId);
     const availableStock = stock.filter(st=>st.qty>0);
@@ -2712,6 +2712,7 @@ function renderFilament(){
   function spoolCard(s, retired){
     const pct = s.totalG>0 ? Math.max(0,Math.min(100, ((s.totalG-s.remainingG)/s.totalG)*100)) : 0;
     const low = !retired && s.remainingG <= LOW_STOCK_G;
+    const overConsumed = s.remainingG < 0;
     const logEntries = productionLog.filter(e => e.spoolIdAtLogTime === s.id);
     const loggedWeight = logEntries.reduce((sum,e) => sum + (e.weightGAtLogTime||0), 0);
     const printerOptions = `<option value="">— none —</option>` + printers.map(p =>
@@ -2731,10 +2732,11 @@ function renderFilament(){
           ${retired ? '<span class="ps-hint">Retired</span>' : ''}
           <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
         </div>
+        ${overConsumed ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number below is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
         <div class="ps-row">
           <div class="ps-field" style="flex:1;margin-bottom:0;">
             <span class="ps-field-label">Remaining (g)</span>
-            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${s.remainingG}" ${retired?'disabled':''} />
+            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${Math.max(0,s.remainingG)}" ${retired?'disabled':''} />
           </div>
           <div class="ps-field" style="flex:1;margin-bottom:0;">
             <span class="ps-field-label">Full spool weight (g)</span>
