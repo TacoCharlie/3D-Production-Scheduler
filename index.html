@@ -649,7 +649,7 @@ function syncConsumption(){
 // the queue the way a real completion does — but the filament it used is
 // genuinely gone, so that stays consumed. Locks the entry (consumed=true)
 // so syncConsumption never tries to touch it again.
-function markFailed(entryId, actualWeightG){
+function markFailed(entryId, actualWeightG, note){
   const e = productionLog.find(x=>x.id===entryId);
   if(!e || e.failed) return;
   if(e.consumed && !e.isTest){
@@ -674,6 +674,7 @@ function markFailed(entryId, actualWeightG){
     saveSpools();
   }
   e.failed = true;
+  if(note !== undefined) e.failureNote = note || '';
   if(!e.actualEnd) e.actualEnd = new Date().toISOString();
   e.consumed = true; // locked — this was never a real unit, don't let it get re-claimed
   saveLog(); saveOrder();
@@ -707,7 +708,7 @@ function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null, b
 // record, but no quantity or job credit. The spool was already correctly
 // charged for the whole plate via the original entry, so this only
 // reallocates that weight between the two — it doesn't deduct twice.
-function splitBatchOutcome(entryId, failCount, failWeightG){
+function splitBatchOutcome(entryId, failCount, failWeightG, note){
   const e = productionLog.find(x=>x.id===entryId);
   if(!e || e.failed || e.isTest) return;
   const originalUnits = e.unitsCompleted || 1;
@@ -744,7 +745,8 @@ function splitBatchOutcome(entryId, failCount, failWeightG){
     notifiedFinishSoon: true,
     unitsCompleted: failCount,
     jobId: e.jobId,
-    jobCounted: false
+    jobCounted: false,
+    failureNote: note || ''
   };
   productionLog.push(failedEntry);
 
@@ -1876,6 +1878,10 @@ function renderLog(){
                 <span class="ps-field-label">Filament actually used (g)</span>
                 <input class="ps-input ps-narrow" style="width:90px;" type="number" min="0" id="ps-fail-weight-${e.id}" value="${estimate}" />
               </div>
+              <div class="ps-field" style="margin-bottom:0;flex:1;min-width:180px;">
+                <span class="ps-field-label">Note (optional)</span>
+                <input class="ps-input" type="text" id="ps-fail-note-${e.id}" placeholder="e.g. bed adhesion, my fault — wrong nozzle temp" value="${escapeHtml(e.failureNote||'')}" />
+              </div>
               <button class="ps-btn primary small" data-action="confirm-fail">Confirm Failed</button>
               <button class="ps-btn ghost small" data-action="cancel-fail">Cancel</button>
             </div>
@@ -1901,6 +1907,10 @@ function renderLog(){
               <div class="ps-field" style="margin-bottom:0;">
                 <span class="ps-field-label">Filament wasted on those (g)</span>
                 <input class="ps-input ps-narrow" style="width:90px;" type="number" min="0" id="ps-split-weight-${e.id}" value="${proportionalWeight}" />
+              </div>
+              <div class="ps-field" style="margin-bottom:0;flex:1;min-width:180px;">
+                <span class="ps-field-label">Note (optional)</span>
+                <input class="ps-input" type="text" id="ps-split-note-${e.id}" placeholder="e.g. bed adhesion, my fault — wrong nozzle temp" />
               </div>
               <button class="ps-btn primary small" data-action="confirm-split">Confirm Split</button>
               <button class="ps-btn ghost small" data-action="cancel-split">Cancel</button>
@@ -1962,6 +1972,11 @@ function renderLog(){
                 ${e.actualEnd ? `<button class="ps-btn ghost small" data-action="clear-finish" title="Still printing — not actually finished yet">Clear</button>` : ''}
               </div>
             </div>
+            ${e.failed ? `
+            <div class="ps-field" style="flex:1;min-width:220px;margin-bottom:0;">
+              <span class="ps-field-label">Failure note (optional)</span>
+              <input class="ps-input" type="text" data-edit-field="failureNote" placeholder="e.g. bed adhesion, my fault — wrong nozzle temp" value="${escapeHtml(e.failureNote||'')}" />
+            </div>` : ''}
             <div class="ps-row" style="gap:6px;">
               <button class="ps-btn primary small" data-action="save">Save</button>
               <button class="ps-btn ghost small" data-action="cancel">Cancel</button>
@@ -1987,12 +2002,14 @@ function renderLog(){
     const titleText = e.isTest ? `<span class="ps-hint" style="text-transform:uppercase;font-weight:700;letter-spacing:0.4px;">Test</span> ${testDesc}` : `${e.unitsCompleted>1?e.unitsCompleted+'× ':''}${escapeHtml(product?product.name:'(deleted product)')}`;
     const jobForEntry = (!e.isTest && e.jobId) ? jobs.find(j=>j.id===e.jobId) : null;
     const jobLine = (!e.isTest && e.jobId) ? `<div class="ps-hint mono">Job: ${jobForEntry ? escapeHtml(jobForEntry.name) : '(deleted job)'}</div>` : '';
+    const failureNoteLine = (e.failed && e.failureNote) ? `<div class="ps-hint" style="color:var(--danger);">Note: ${escapeHtml(e.failureNote)}</div>` : '';
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
           <b>${titleText}</b> on ${escapeHtml(printer?printer.name:'(deleted printer)')}${e.isTest && e.weightGAtLogTime>0 ? ' — '+e.weightGAtLogTime+'g' : ''}
           <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
           ${jobLine}
+          ${failureNoteLine}
         </div>
         <div class="ps-row" style="gap:6px;">
           ${!e.actualEnd && !e.failed ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
@@ -2325,6 +2342,8 @@ function renderLog(){
         e.jobCounted = false;
         e.spoolConsumed = false; // let syncConsumption redo the weight deduction fresh
         e.consumed = (newIsTest || e.failed) ? true : false; // tests and failed entries stay locked; normal ones get (re)claimed by syncConsumption below
+        const noteField = row.querySelector('[data-edit-field="failureNote"]');
+        if(noteField) e.failureNote = noteField.value.trim();
 
         creditJobIfDue(e);
         editingLogId = null;
@@ -2368,7 +2387,9 @@ function renderLog(){
         const weightInput = document.getElementById('ps-split-weight-'+id);
         const failCount = Math.max(1, parseInt(countInput.value)||1);
         const failWeightG = Math.max(0, parseFloat(weightInput.value)||0);
-        splitBatchOutcome(id, failCount, failWeightG);
+        const noteInput = document.getElementById('ps-split-note-'+id);
+        const note = noteInput ? noteInput.value.trim() : '';
+        splitBatchOutcome(id, failCount, failWeightG, note);
         splittingLogId = null;
         renderLog(); regenerateIfActive();
       });
@@ -2392,7 +2413,9 @@ function renderLog(){
       confirmFailBtn.addEventListener('click', () => {
         const weightInput = document.getElementById('ps-fail-weight-'+id);
         const actualWeightG = Math.max(0, parseFloat(weightInput.value)||0);
-        markFailed(id, actualWeightG);
+        const noteInput = document.getElementById('ps-fail-note-'+id);
+        const note = noteInput ? noteInput.value.trim() : '';
+        markFailed(id, actualWeightG, note);
         failingLogId = null;
         renderLog(); regenerateIfActive();
       });
