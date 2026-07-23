@@ -2753,7 +2753,10 @@ function renderFilament(){
     `;
   }
 
-  const activeCards = activeSpools.map(s => spoolCard(s, false)).join('');
+  const healthySpools = activeSpools.filter(s => s.remainingG > LOW_STOCK_G);
+  const lowSpools = activeSpools.filter(s => s.remainingG <= LOW_STOCK_G);
+  const activeCards = healthySpools.map(s => spoolCard(s, false)).join('');
+  const lowCards = lowSpools.map(s => spoolCard(s, false)).join('');
   const retiredCards = retiredSpools.map(s => spoolCard(s, true)).join('');
 
   root.innerHTML = `
@@ -2776,7 +2779,13 @@ function renderFilament(){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Active Spools — Opened / In Use</div>
       <div class="ps-hint" style="margin-bottom:12px;">Spools that have actually been opened — loaded on a printer or sitting spare, tracked precisely. To swap what's loaded on a printer, use "Change Spool" on the Printers tab — it retires the old one (keeping its history) and pulls a fresh one from Stock automatically.</div>
-      ${activeSpools.length===0 ? '<div class="ps-empty">No active spools — use "Change Spool" on the Printers tab to load one from Stock, or add one manually below.</div>' : `<div id="ps-spools-list">${activeCards}</div>`}
+      ${activeSpools.length===0 ? '<div class="ps-empty">No active spools — use "Change Spool" on the Printers tab to load one from Stock, or add one manually below.</div>' : (healthySpools.length>0 ? `<div id="ps-spools-list">${activeCards}</div>` : '')}
+      ${lowSpools.length>0 ? `
+      <div style="margin-top:${healthySpools.length>0?'16px':'0'};">
+        <button class="ps-btn ghost small" id="ps-toggle-low-spools">${showLowSpools?'▾':'▸'} Low / nearly empty (${lowSpools.length})</button>
+        ${showLowSpools ? `<div style="margin-top:10px;">${lowCards}</div>` : ''}
+      </div>
+      ` : ''}
       <div style="margin-top:14px;">
         <button class="ps-btn" id="ps-add-spool">+ Add spool manually</button>
       </div>
@@ -2864,6 +2873,13 @@ function renderFilament(){
     });
   });
 
+  const toggleLowSpoolsBtn = document.getElementById('ps-toggle-low-spools');
+  if(toggleLowSpoolsBtn){
+    toggleLowSpoolsBtn.addEventListener('click', () => {
+      showLowSpools = !showLowSpools;
+      renderFilament();
+    });
+  }
   document.getElementById('ps-add-spool').addEventListener('click', () => {
     spools.push({id: uid('spool'), label:'New spool', material:'PCTG', colorHex:'#cccccc', totalG:1000, remainingG:1000, retired:false});
     saveSpools(); renderFilament();
@@ -2876,6 +2892,7 @@ let typeErrorMsg = '';
 let editingProductId = null; // null = browsing list; '_new' = add-product form; a real id = editing that product
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
+let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
 
