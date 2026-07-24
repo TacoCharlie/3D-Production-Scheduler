@@ -463,7 +463,8 @@ let types = null;
 let settings = null;
 let printers = null;
 let spools = null;
-let stock = null; // unopened inventory: [{id, label, material, colorHex, weightPerSpoolG, qty}]
+let stock = null; // unopened inventory: [{id, label, material, manufacturer, colorHex, weightPerSpoolG, qty, qtyOnOrder, orderedAt}]
+let filamentOrderHistory = null; // completed order cycles: [{manufacturer, material, orderedAt, receivedAt, qty, leadTimeDays}] — used to compute average lead time per manufacturer+material
 let partDefs = null; // maintenance part types: [{id, name, lifespanHours, replacementLog:[{printerId,at,hoursElapsed}]}]
 let orderQty = {};
 let priorityOrder = [];
@@ -529,7 +530,14 @@ async function loadState(){
 
   try { const st = await window.storage.get('stock'); stock = st ? JSON.parse(st.value) : JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
   catch(e){ stock = JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
-  stock.forEach(st => { if(typeof st.qtyOnOrder !== 'number') st.qtyOnOrder = 0; });
+  stock.forEach(st => {
+    if(typeof st.qtyOnOrder !== 'number') st.qtyOnOrder = 0;
+    if(typeof st.manufacturer !== 'string') st.manufacturer = '';
+    if(typeof st.orderedAt === 'undefined') st.orderedAt = null;
+  });
+
+  try { const foh = await window.storage.get('filamentOrderHistory'); filamentOrderHistory = foh ? JSON.parse(foh.value) : []; }
+  catch(e){ filamentOrderHistory = []; }
 
   try { const pd = await window.storage.get('partDefs'); partDefs = pd ? JSON.parse(pd.value) : []; }
   catch(e){ partDefs = []; }
@@ -616,6 +624,7 @@ async function saveSettings(){ try { await window.storage.set('settings', JSON.s
 async function savePrinters(){ try { await window.storage.set('printers', JSON.stringify(printers)); flashSave(); } catch(e){ console.error(e); } }
 async function saveSpools(){ try { await window.storage.set('spools', JSON.stringify(spools)); flashSave(); } catch(e){ console.error(e); } }
 async function saveStock(){ try { await window.storage.set('stock', JSON.stringify(stock)); flashSave(); } catch(e){ console.error(e); } }
+async function saveFilamentOrderHistory(){ try { await window.storage.set('filamentOrderHistory', JSON.stringify(filamentOrderHistory)); flashSave(); } catch(e){ console.error(e); } }
 async function savePartDefs(){ try { await window.storage.set('partDefs', JSON.stringify(partDefs)); flashSave(); } catch(e){ console.error(e); } }
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
 async function saveLog(){ try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); } }
@@ -2768,6 +2777,7 @@ function renderFilament(){
     <tr data-id="${st.id}">
       <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
       <td><input class="ps-input ps-name" data-field="label" value="${escapeHtml(st.label)}" placeholder="e.g. PCTG Pro — Natural" /></td>
+      <td><input class="ps-input" style="max-width:110px" data-field="manufacturer" value="${escapeHtml(st.manufacturer||'')}" placeholder="Manufacturer" /></td>
       <td><input class="ps-input" data-field="material" value="${escapeHtml(st.material)}" placeholder="Material" /></td>
       <td><input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" /></td>
       <td><input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" /></td>
@@ -2834,14 +2844,76 @@ function renderFilament(){
   const lowCards = lowSpools.map(s => spoolCard(s, false)).join('');
   const retiredCards = retiredSpools.map(s => spoolCard(s, true)).join('');
 
+  // ---- Reorder planning ----
+  // Demand is one shared pool across all products for now, matching how
+  // filament is actually tracked today — not split by material, since
+  // products don't specify one. Revisit if that ever needs to change.
+  function computeFilamentDemandG(){
+    const relevantJobs = jobs.filter(j => j.status==='active' || j.status==='queued');
+    let totalG = 0;
+    relevantJobs.forEach(job => {
+      job.items.forEach(item => {
+        const p = catalog.find(x=>x.id===item.id);
+        if(!p) return;
+        const loggedForItem = productionLog
+          .filter(e => e.jobId===job.id && e.productId===item.id && !e.isTest && !e.failed && e.actualEnd)
+          .reduce((s,e) => s + (e.unitsCompleted||1), 0);
+        const remainingQty = Math.max(0, item.qty - loggedForItem);
+        totalG += remainingQty * (p.weightG||0);
+      });
+    });
+    return totalG;
+  }
+  function computeFilamentOnHandG(){
+    const spoolG = spools.filter(s=>!s.retired).reduce((s,sp) => s + Math.max(0,sp.remainingG), 0);
+    const stockG = stock.reduce((s,st) => s + (st.qty||0)*(st.weightPerSpoolG||0), 0);
+    return spoolG + stockG;
+  }
+  function computeLeadTimeSummary(){
+    const groups = {};
+    filamentOrderHistory.forEach(o => {
+      const key = `${o.manufacturer}|||${o.material}`;
+      if(!groups[key]) groups[key] = {manufacturer:o.manufacturer, material:o.material, days:[]};
+      groups[key].days.push(o.leadTimeDays);
+    });
+    return Object.values(groups).map(g => ({
+      manufacturer: g.manufacturer, material: g.material,
+      avgDays: g.days.reduce((s,d)=>s+d,0)/g.days.length,
+      count: g.days.length
+    })).sort((a,b) => a.manufacturer.localeCompare(b.manufacturer));
+  }
+
+  const demandG = computeFilamentDemandG();
+  const onHandG = computeFilamentOnHandG();
+  const shortG = Math.max(0, demandG - onHandG);
+  const leadTimes = computeLeadTimeSummary();
+
+  const reorderWidget = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Reorder Planning</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Demand is everything remaining on active and queued jobs, checked against what's actually on hand — opened spools plus unopened stock. Doesn't split by material yet, since products don't specify one.</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:${shortG>0?'12px':'0'};">
+        <div class="ps-summary-cell"><div class="ps-summary-num">${demandG.toFixed(0)}g</div><div class="ps-summary-label">Needed for active + queued jobs</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${onHandG.toFixed(0)}g</div><div class="ps-summary-label">On hand right now</div></div>
+      </div>
+      ${shortG>0 ? `<div class="ps-warnbox">Short by ~${shortG.toFixed(0)}g for what's already queued — worth ordering now.${leadTimes.length>0 ? ' Average lead time by manufacturer below, for reference.' : ''}</div>` : `<div class="ps-hint" style="color:var(--ok, #6a6);">Enough on hand for everything active and queued right now.</div>`}
+      ${leadTimes.length>0 ? `
+      <div style="margin-top:14px;">
+        ${leadTimes.map(lt => `<div class="ps-hint">${escapeHtml(lt.manufacturer)} — ${escapeHtml(lt.material)}: avg lead time ${lt.avgDays.toFixed(1)} day${lt.avgDays!==1?'s':''} (based on ${lt.count} order${lt.count!==1?'s':''})</div>`).join('')}
+      </div>
+      ` : `<div class="ps-hint" style="margin-top:10px;">No completed orders yet — lead times will show here once you place and receive one.</div>`}
+    </div>
+  `;
+
   root.innerHTML = `
+    ${reorderWidget}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Stock — Unopened Inventory</div>
       <div class="ps-hint" style="margin-bottom:12px;">What you've got sitting in reserve, not loaded on anything yet — plus what's on its way. "In Stock" is available right now; "On Order" is tracked separately and doesn't count as available until you hit Receive.</div>
       ${stock.length===0 ? '<div class="ps-empty">Nothing in stock yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th></th><th>Label</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:80px"></th><th></th></tr></thead>
+        <thead><tr><th></th><th>Label</th><th>Manufacturer</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:80px"></th><th></th></tr></thead>
         <tbody id="ps-stock-body">${stockRows}</tbody>
       </table>
       </div>
@@ -2884,7 +2956,12 @@ function renderFilament(){
         const st = stock.find(x=>x.id===id);
         const field = input.getAttribute('data-field');
         if(field==='weightPerSpoolG' || field==='qty' || field==='qtyOnOrder'){
+          const prevOnOrder = st.qtyOnOrder;
           st[field] = Math.max(field==='weightPerSpoolG'?1:0, parseInt(input.value)||0);
+          if(field==='qtyOnOrder'){
+            if(prevOnOrder<=0 && st.qtyOnOrder>0) st.orderedAt = new Date().toISOString();
+            if(st.qtyOnOrder<=0) st.orderedAt = null;
+          }
         } else {
           st[field] = input.value;
         }
@@ -2895,8 +2972,22 @@ function renderFilament(){
     if(receiveBtn){
       receiveBtn.addEventListener('click', () => {
         const st = stock.find(x=>x.id===id);
+        const receivedAt = new Date().toISOString();
+        if(st.orderedAt){
+          const leadTimeDays = Math.max(0, (new Date(receivedAt) - new Date(st.orderedAt)) / (24*3600000));
+          filamentOrderHistory.push({
+            manufacturer: st.manufacturer || '(unspecified)',
+            material: st.material || '(unspecified)',
+            orderedAt: st.orderedAt,
+            receivedAt,
+            qty: st.qtyOnOrder,
+            leadTimeDays
+          });
+          saveFilamentOrderHistory();
+        }
         st.qty += st.qtyOnOrder;
         st.qtyOnOrder = 0;
+        st.orderedAt = null;
         saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
       });
     }
@@ -2906,7 +2997,7 @@ function renderFilament(){
     });
   });
   document.getElementById('ps-add-stock').addEventListener('click', () => {
-    stock.push({id: uid('stock'), label:'New material', material:'PCTG', colorHex:'#cccccc', weightPerSpoolG:1000, qty:0, qtyOnOrder:0});
+    stock.push({id: uid('stock'), label:'New material', manufacturer:'', material:'PCTG', colorHex:'#cccccc', weightPerSpoolG:1000, qty:0, qtyOnOrder:0, orderedAt:null});
     saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
   });
 
