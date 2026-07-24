@@ -395,6 +395,7 @@ if(sb){
   bootWithAuth();
 }
 
+
 // If this file is running outside a Claude artifact (i.e. hosted as a normal
 // webpage), window.storage won't exist. Fall back to the browser's own
 // localStorage with the same async {get,set,delete,list} shape, so nothing
@@ -2094,6 +2095,7 @@ function renderLog(){
       <div class="ps-row" style="margin-top:14px;">
         <button class="ps-btn primary" id="ps-log-submit">Log print</button>
       </div>
+      <div id="ps-log-busy-warning"></div>
       <div class="ps-hint" style="margin-top:12px;">Logging a start time ripples the Live Schedule forward from that printer's real progress. Adding a finish time (now or later, via "Mark finished now") also feeds the average print-time hints you'll see on the Catalog tab.</div>
     </div>
     <div class="ps-panel">
@@ -2153,7 +2155,40 @@ function renderLog(){
     }
   });
 
+  let busyWarningConfirmed = false;
+  document.getElementById('ps-log-printer').addEventListener('change', () => {
+    busyWarningConfirmed = false;
+    document.getElementById('ps-log-busy-warning').innerHTML = '';
+  });
   document.getElementById('ps-log-submit').addEventListener('click', () => {
+    const printerIdCheck = document.getElementById('ps-log-printer').value;
+    if(printerIdCheck && !busyWarningConfirmed){
+      const alreadyActive = productionLog.find(e => e.printerId===printerIdCheck && !e.actualEnd);
+      if(alreadyActive){
+        const activeProduct = catalog.find(p=>p.id===alreadyActive.productId);
+        const activeName = alreadyActive.isTest ? (alreadyActive.testLabel || 'a test print') : (activeProduct ? activeProduct.name : '(deleted product)');
+        const printerName = (printers.find(p=>p.id===printerIdCheck)||{}).name || 'This printer';
+        document.getElementById('ps-log-busy-warning').innerHTML = `
+          <div class="ps-warnbox" style="margin-top:10px;">
+            ${escapeHtml(printerName)} still shows <b>${escapeHtml(activeName)}</b> as in progress, started ${fmtLogTime(alreadyActive.actualStart)} — logging this too means the printer will show two active prints at once. Sure that's right?
+            <div class="ps-row" style="margin-top:8px;gap:6px;">
+              <button class="ps-btn small" id="ps-log-busy-confirm">Log anyway</button>
+              <button class="ps-btn ghost small" id="ps-log-busy-cancel">Cancel</button>
+            </div>
+          </div>
+        `;
+        document.getElementById('ps-log-busy-confirm').addEventListener('click', () => {
+          busyWarningConfirmed = true;
+          document.getElementById('ps-log-busy-warning').innerHTML = '';
+          document.getElementById('ps-log-submit').click();
+        });
+        document.getElementById('ps-log-busy-cancel').addEventListener('click', () => {
+          document.getElementById('ps-log-busy-warning').innerHTML = '';
+        });
+        return;
+      }
+    }
+    busyWarningConfirmed = false;
     const isTest = document.getElementById('ps-log-istest').checked;
     const printerId = document.getElementById('ps-log-printer').value;
     const startVal = document.getElementById('ps-log-start').value;
