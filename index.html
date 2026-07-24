@@ -1629,25 +1629,32 @@ function renderStatus(){
 function renderPrinters(){
   const root = document.getElementById('ps-tab-printers');
   const cards = printers.map(p => {
-    const activeSpoolOptions = `<option value="">— none assigned —</option>` + spools.filter(s=>!s.retired).map(s =>
-      `<option value="${s.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(s.label)} (${Math.max(0,s.remainingG)}g left)</option>`
-    ).join('');
     const currentSpool = spools.find(s=>s.id===p.spoolId);
     const availableStock = stock.filter(st=>st.qty>0);
+    // A spare is an already-opened spool not currently loaded on any
+    // printer — e.g. one pulled off another machine. Distinct from Stock,
+    // which is unopened and pulling from it creates a brand new spool.
+    const loadedSpoolIds = new Set(printers.map(pr=>pr.spoolId).filter(Boolean));
+    const spareSpools = spools.filter(s => !s.retired && !loadedSpoolIds.has(s.id));
     const changeOpen = changeSpoolOpenFor.has(p.id);
 
     const changePicker = changeOpen ? `
       <div class="ps-field" style="margin-top:10px;margin-bottom:0;background:var(--panel-2);border-radius:4px;padding:10px;">
-        <span class="ps-field-label">Load fresh spool from Stock</span>
-        ${availableStock.length===0 ? `<div class="ps-hint" style="color:var(--danger)">Nothing in Stock — add some on the Filament tab first.</div>` : `
-        <select class="ps-select" data-action="change-spool-select" style="max-width:260px;">
-          ${availableStock.map(st => `<option value="${st.id}">${escapeHtml(st.label)} (${st.weightPerSpoolG}g, ${st.qty} in stock)</option>`).join('')}
+        <span class="ps-field-label">Change spool</span>
+        ${(availableStock.length===0 && spareSpools.length===0) ? `<div class="ps-hint" style="color:var(--danger)">Nothing available — no Stock and no spare spools. Add some on the Filament tab first.</div>` : `
+        <select class="ps-select" data-action="change-spool-select" style="max-width:280px;">
+          ${availableStock.length>0 ? `<optgroup label="From Stock (opens a fresh one)">
+            ${availableStock.map(st => `<option value="stock:${st.id}">${escapeHtml(st.label)} (${st.weightPerSpoolG}g, ${st.qty} in stock)</option>`).join('')}
+          </optgroup>` : ''}
+          ${spareSpools.length>0 ? `<optgroup label="Spare — already opened">
+            ${spareSpools.map(s => `<option value="spare:${s.id}">${escapeHtml(s.label)} (${Math.max(0,s.remainingG)}g left)</option>`).join('')}
+          </optgroup>` : ''}
         </select>
         <div class="ps-row" style="margin-top:8px;gap:8px;">
           <button class="ps-btn primary small" data-action="confirm-change-spool">Confirm Swap</button>
           <button class="ps-btn ghost small" data-action="cancel-change-spool">Cancel</button>
         </div>
-        <div class="ps-hint" style="margin-top:6px;">${currentSpool ? `Retires "${escapeHtml(currentSpool.label)}" (keeps its history) and loads the fresh one.` : `Loads the fresh one — nothing's currently assigned here.`}</div>
+        <div class="ps-hint" style="margin-top:6px;">${currentSpool ? `Retires "${escapeHtml(currentSpool.label)}" (keeps its history) and loads whichever you pick.` : `Loads whichever you pick — nothing's currently assigned here.`}</div>
         `}
       </div>
     ` : '';
@@ -1661,8 +1668,8 @@ function renderPrinters(){
         </div>
         <div class="ps-field" style="margin-bottom:0;">
           <span class="ps-field-label">Loaded spool</span>
-          <div class="ps-row" style="gap:8px;">
-            <select class="ps-select" data-field="spoolId" style="flex:1;">${activeSpoolOptions}</select>
+          <div class="ps-row" style="gap:8px;align-items:center;">
+            <span class="ps-hint" style="flex:1;">${currentSpool ? `${escapeHtml(currentSpool.label)} (${Math.max(0,currentSpool.remainingG)}g left)` : '— none assigned —'}</span>
             <button class="ps-btn small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
           </div>
           <div class="ps-hint">Used to flag when the schedule will run this machine out of filament.</div>
@@ -1771,12 +1778,6 @@ function renderPrinters(){
       p.status = p.status === 'active' ? 'down' : 'active';
       savePrinters(); renderPrinters(); regenerateIfActive();
     });
-    card.querySelector('[data-field="spoolId"]').addEventListener('change', e => {
-      const p = printers.find(x=>x.id===id);
-      p.spoolId = e.target.value || null;
-      if(p.spoolId){ stampSpoolLoad(p.spoolId, p.id); saveSpools(); }
-      savePrinters(); regenerateIfActive();
-    });
     card.querySelector('[data-action="remove"]').addEventListener('click', () => {
       printers = printers.filter(x=>x.id!==id);
       savePrinters(); renderPrinters(); regenerateIfActive();
@@ -1806,9 +1807,9 @@ function renderPrinters(){
     if(confirmBtn){
       confirmBtn.addEventListener('click', () => {
         const select = card.querySelector('[data-action="change-spool-select"]');
-        const stockId = select ? select.value : '';
-        const st = stock.find(x=>x.id===stockId);
-        if(!st || st.qty<=0) return;
+        const raw = select ? select.value : '';
+        const [kind, targetId] = raw.split(':');
+        if(!kind || !targetId) return;
 
         const p = printers.find(x=>x.id===id);
         // Retire whatever's currently loaded — keeps its history, just takes
@@ -1817,18 +1818,30 @@ function renderPrinters(){
           const oldSpool = spools.find(x=>x.id===p.spoolId);
           if(oldSpool) oldSpool.retired = true;
         }
-        // Pull a fresh one from Stock.
-        st.qty -= 1;
-        const newSpool = {
-          id: uid('spool'), label: st.label, material: st.material, colorHex: st.colorHex,
-          totalG: st.weightPerSpoolG, remainingG: st.weightPerSpoolG, retired: false,
-          loadedAt: new Date().toISOString(), loadedOnPrinterId: id
-        };
-        spools.push(newSpool);
-        p.spoolId = newSpool.id;
+
+        if(kind==='stock'){
+          const st = stock.find(x=>x.id===targetId);
+          if(!st || st.qty<=0) return;
+          st.qty -= 1;
+          const newSpool = {
+            id: uid('spool'), label: st.label, material: st.material, colorHex: st.colorHex,
+            totalG: st.weightPerSpoolG, remainingG: st.weightPerSpoolG, retired: false,
+            loadedAt: new Date().toISOString(), loadedOnPrinterId: id
+          };
+          spools.push(newSpool);
+          p.spoolId = newSpool.id;
+          saveStock();
+        } else if(kind==='spare'){
+          const spareSpool = spools.find(x=>x.id===targetId && !x.retired);
+          if(!spareSpool) return;
+          p.spoolId = spareSpool.id;
+          stampSpoolLoad(spareSpool.id, id);
+        } else {
+          return;
+        }
 
         changeSpoolOpenFor.delete(id);
-        saveSpools(); saveStock(); savePrinters();
+        saveSpools(); savePrinters();
         renderPrinters(); renderFilament(); regenerateIfActive();
       });
     }
@@ -2798,9 +2811,6 @@ function renderFilament(){
     const overConsumed = s.remainingG < 0;
     const logEntries = productionLog.filter(e => e.spoolIdAtLogTime === s.id);
     const loggedWeight = logEntries.reduce((sum,e) => sum + (e.weightGAtLogTime||0), 0);
-    const printerOptions = `<option value="">— none —</option>` + printers.map(p =>
-      `<option value="${p.id}" ${p.spoolId===s.id?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`
-    ).join('');
     const usageLine = logEntries.length===0
       ? 'No logged prints have drawn from this spool yet.'
       : `Used in ${logEntries.length} logged print${logEntries.length!==1?'s':''} — ${loggedWeight}g accounted for so far.`;
@@ -2830,7 +2840,7 @@ function renderFilament(){
         ${retired ? '' : `
         <div class="ps-field" style="margin-top:10px;margin-bottom:0;">
           <span class="ps-field-label">Loaded on printer</span>
-          <select class="ps-select" data-field="assign-printer" style="max-width:240px;">${printerOptions}</select>
+          <div class="ps-hint">${(() => { const onPrinter = printers.find(pr=>pr.spoolId===s.id); return onPrinter ? escapeHtml(onPrinter.name) : '— not currently loaded on a printer — use "Change Spool" on the Printers tab —'; })()}</div>
         </div>
         `}
         <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
@@ -3017,20 +3027,6 @@ function renderFilament(){
         renderFilament();
       });
     });
-    const assignSelect = card.querySelector('[data-field="assign-printer"]');
-    if(assignSelect){
-      assignSelect.addEventListener('change', (e) => {
-        const printerId = e.target.value;
-        printers.forEach(p => { if(p.spoolId === id) p.spoolId = null; });
-        if(printerId){
-          const p = printers.find(x=>x.id===printerId);
-          if(p) p.spoolId = id;
-          stampSpoolLoad(id, printerId);
-        }
-        savePrinters(); saveSpools();
-        renderFilament(); renderPrinters(); regenerateIfActive();
-      });
-    }
     card.querySelector('[data-action="remove"]').addEventListener('click', () => {
       spools = spools.filter(x=>x.id!==id);
       printers.forEach(p => { if(p.spoolId===id) p.spoolId = null; });
