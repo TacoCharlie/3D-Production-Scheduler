@@ -1651,7 +1651,7 @@ function renderPrinters(){
           </optgroup>` : ''}
         </select>
         <div class="ps-row" style="margin-top:8px;gap:8px;">
-          <button class="ps-btn primary small" data-action="confirm-change-spool">Confirm Swap</button>
+          <button class="ps-btn primary small" data-action="confirm-change-spool">${currentSpool ? 'Confirm Swap' : 'Load Spool'}</button>
           <button class="ps-btn ghost small" data-action="cancel-change-spool">Cancel</button>
         </div>
         <div class="ps-hint" style="margin-top:6px;">${currentSpool ? `Retires "${escapeHtml(currentSpool.label)}" (keeps its history) and loads whichever you pick.` : `Loads whichever you pick — nothing's currently assigned here.`}</div>
@@ -2944,9 +2944,7 @@ function renderFilament(){
         ${showLowSpools ? `<div style="margin-top:10px;">${lowCards}</div>` : ''}
       </div>
       ` : ''}
-      <div style="margin-top:14px;">
-        <button class="ps-btn" id="ps-add-spool">+ Add spool manually</button>
-      </div>
+      <div class="ps-hint" style="margin-top:14px;">To load a new spool, go to the Printers tab and use "Change Spool" — it pulls from Stock automatically and keeps everything in sync.</div>
       <div class="ps-hint" style="margin-top:12px;">Spools flagged "Low" are under ${LOW_STOCK_G}g.</div>
     </div>
 
@@ -3043,10 +3041,6 @@ function renderFilament(){
       renderFilament();
     });
   }
-  document.getElementById('ps-add-spool').addEventListener('click', () => {
-    spools.push({id: uid('spool'), label:'New spool', material:'PCTG', colorHex:'#cccccc', totalG:1000, remainingG:1000, retired:false});
-    saveSpools(); renderFilament();
-  });
 }
 
 
