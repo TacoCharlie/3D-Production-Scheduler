@@ -1316,7 +1316,7 @@ function renderJobs(){
         </div>
         ` : `
         <div class="ps-row" style="margin-bottom:8px;gap:6px;">
-          <span class="ps-hint">${done} of ${totalUnits} unit${totalUnits!==1?'s':''} done</span>
+          <span class="ps-hint">${done} of ${totalUnits} unit${totalUnits!==1?'s':''} done (${pct.toFixed(0)}%)</span>
           <button class="ps-btn ghost small" data-action="job-edit-start">Edit</button>
         </div>
         `}
