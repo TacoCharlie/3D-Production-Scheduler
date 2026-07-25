@@ -2848,8 +2848,9 @@ function renderFilament(){
     `;
   }
 
-  const healthySpools = activeSpools.filter(s => s.remainingG > LOW_STOCK_G);
-  const lowSpools = activeSpools.filter(s => s.remainingG <= LOW_STOCK_G);
+  const loadedSpoolIdsForSplit = new Set(printers.map(pr=>pr.spoolId).filter(Boolean));
+  const healthySpools = activeSpools.filter(s => s.remainingG > LOW_STOCK_G || loadedSpoolIdsForSplit.has(s.id));
+  const lowSpools = activeSpools.filter(s => s.remainingG <= LOW_STOCK_G && !loadedSpoolIdsForSplit.has(s.id));
   const activeCards = healthySpools.map(s => spoolCard(s, false)).join('');
   const lowCards = lowSpools.map(s => spoolCard(s, false)).join('');
   const retiredCards = retiredSpools.map(s => spoolCard(s, true)).join('');
