@@ -1305,7 +1305,7 @@ function renderJobs(){
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
-          <b style="flex:1.4;">${escapeHtml(job.name)}</b>
+          <input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;font-weight:700;" />
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
           <button class="ps-btn small" data-action="job-done">Mark Done</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
