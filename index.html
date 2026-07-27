@@ -1822,7 +1822,7 @@ function renderPrinters(){
         // it out of rotation — rather than deleting it outright.
         if(p.spoolId){
           const oldSpool = spools.find(x=>x.id===p.spoolId);
-          if(oldSpool) oldSpool.retired = true;
+          if(oldSpool){ oldSpool.retired = true; oldSpool.retiredAt = new Date().toISOString(); }
         }
 
         if(kind==='stock'){
@@ -2820,6 +2820,17 @@ function renderFilament(){
     const usageLine = logEntries.length===0
       ? 'No logged prints have drawn from this spool yet.'
       : `Used in ${logEntries.length} logged print${logEntries.length!==1?'s':''} — ${loggedWeight}g accounted for so far.`;
+    // Retired spools have a final, settled number — worth surfacing clearly
+    // rather than as a "needs correcting" warning, since running over is
+    // often just the spool having a bit more usable filament than its
+    // labeled weight, not a mistake.
+    const retirementSummary = retired ? (
+      overConsumed
+        ? `<div class="ps-hint" style="color:var(--ok, #6a6);margin-top:8px;">Retired ${Math.abs(s.remainingG)}g over its stated ${s.totalG}g — this spool gave you more usable filament than it was rated for.</div>`
+        : (s.remainingG > 0
+          ? `<div class="ps-hint" style="margin-top:8px;">Retired with ${s.remainingG}g left unused out of ${s.totalG}g.</div>`
+          : `<div class="ps-hint" style="margin-top:8px;">Used exactly its stated ${s.totalG}g.</div>`)
+    ) : '';
     return `
       <div class="ps-spool-card" data-id="${s.id}">
         <div class="ps-spool-top">
@@ -2831,7 +2842,8 @@ function renderFilament(){
           ${retired ? '<span class="ps-hint">Retired</span>' : ''}
           <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
         </div>
-        ${overConsumed ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number below is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
+        ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number below is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
+        ${retirementSummary}
         <div class="ps-row">
           <div class="ps-field" style="flex:1;margin-bottom:0;">
             <span class="ps-field-label">Remaining (g)</span>
@@ -3108,11 +3120,12 @@ function renderAnalytics(){
   root.innerHTML = `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Analytics</div>
-      <div class="ps-hint" style="margin-bottom:12px;">More metrics can get added here over time — this is the first one.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">More metrics can get added here over time.</div>
       <div class="ps-row" style="gap:6px;flex-wrap:wrap;">${rangeButtons}</div>
     </div>
     ${renderQuantityByProductWidget(sinceDate)}
     ${renderFinishedJobsWidget(sinceDate)}
+    ${renderSpoolOverageWidget(sinceDate)}
   `;
 
   root.querySelectorAll('[data-action="analytics-range"]').forEach(btn => {
@@ -3219,6 +3232,60 @@ function renderFinishedJobsWidget(sinceDate){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Finished Jobs</div>
       <div class="ps-hint" style="margin-bottom:14px;">${data.length} job${data.length!==1?'s':''} completed · ${totalUnitsAll} unit${totalUnitsAll!==1?'s':''} total</div>
+      ${rows}
+    </div>
+  `;
+}
+
+// Spools retired before this feature existed have no retiredAt — included
+// under "All time" since we know they're done, excluded from narrower
+// ranges since we don't know when, same convention as Finished Jobs.
+function computeRetiredSpoolOverages(sinceDate){
+  return spools
+    .filter(s => s.retired)
+    .filter(s => {
+      if(!sinceDate) return true;
+      if(!s.retiredAt) return false;
+      return new Date(s.retiredAt) >= sinceDate;
+    })
+    .map(s => ({spool: s, overageG: -s.remainingG})) // positive = got more than rated, negative = retired with some left
+    .sort((a,b) => {
+      const at = a.spool.retiredAt ? new Date(a.spool.retiredAt).getTime() : 0;
+      const bt = b.spool.retiredAt ? new Date(b.spool.retiredAt).getTime() : 0;
+      return bt - at;
+    });
+}
+
+function renderSpoolOverageWidget(sinceDate){
+  const data = computeRetiredSpoolOverages(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Spool Overage</div>
+        <div class="ps-hint" style="margin-bottom:12px;">How much extra (or leftover) filament retired spools actually gave you, compared to their stated weight.</div>
+        <div class="ps-empty">No spools retired in this range yet.</div>
+      </div>
+    `;
+  }
+  const totalOverage = data.reduce((s,d)=>s+d.overageG, 0);
+  const avgOverage = totalOverage / data.length;
+  const rows = data.map(({spool, overageG}) => `
+    <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
+      <div>
+        <div>${escapeHtml(spool.label)}</div>
+        <div class="ps-hint mono">${spool.retiredAt ? fmtDateHead(new Date(spool.retiredAt)) : 'retirement date unknown'}</div>
+      </div>
+      <span class="mono ps-hint" style="color:${overageG>0?'var(--ok, #6a6)':(overageG<0?'var(--text)':'')};">${overageG>0?'+':''}${overageG}g</span>
+    </div>
+  `).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Spool Overage</div>
+      <div class="ps-hint" style="margin-bottom:12px;">How much extra (or leftover) filament retired spools actually gave you, compared to their stated weight. Positive means you got more than rated; negative means it was retired with some left unused.</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:14px;">
+        <div class="ps-summary-cell"><div class="ps-summary-num" style="${totalOverage>=0?'color:var(--ok, #6a6);':''}">${totalOverage>0?'+':''}${totalOverage.toFixed(0)}g</div><div class="ps-summary-label">Total across ${data.length} spool${data.length!==1?'s':''}</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${avgOverage>0?'+':''}${avgOverage.toFixed(0)}g</div><div class="ps-summary-label">Average per spool</div></div>
+      </div>
       ${rows}
     </div>
   `;
