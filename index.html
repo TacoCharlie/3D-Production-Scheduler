@@ -1297,6 +1297,10 @@ function renderJobs(){
     const t = jobTotals(job);
     const {done, totalUnits} = jobProgress(job);
     const pct = totalUnits>0 ? Math.min(100, (done/totalUnits)*100) : 0;
+    const timeSpentMin = productionLog
+      .filter(e => e.jobId===job.id && !e.isTest && !e.failed && e.actualEnd)
+      .reduce((s,e) => s + (new Date(e.actualEnd)-new Date(e.actualStart))/60000, 0);
+    const timePct = t.totalMin>0 ? (timeSpentMin/t.totalMin)*100 : 0;
     const isEditing = editingJobId === job.id;
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
@@ -1320,6 +1324,8 @@ function renderJobs(){
           <button class="ps-btn ghost small" data-action="job-edit-start">Edit</button>
         </div>
         `}
+        <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${Math.min(100,timePct)}%;background:var(--cool, #5aa8c9);"></div></div>
+        <div class="ps-hint" style="margin-bottom:8px;">${fmtDuration(timeSpentMin)} of ${fmtDuration(t.totalMin)} print time (${timePct.toFixed(0)}%)</div>
         <div class="ps-joblist">${renderJobItemRows(job, false)}</div>
       </div>
     `;
