@@ -2850,9 +2850,15 @@ function renderFilament(){
           ${retired ? '<span class="ps-hint">Retired</span>' : ''}
           <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
         </div>
+        ${retired ? '' : (() => {
+          const onPrinter = printers.find(pr=>pr.spoolId===s.id);
+          return onPrinter
+            ? `<div style="margin-top:10px;padding:8px 12px;background:color-mix(in srgb, var(--cool, #5aa8c9) 16%, transparent);border-radius:6px;font-weight:700;font-size:14.5px;">⎋ ${escapeHtml(onPrinter.name)}</div>`
+            : `<div class="ps-hint" style="margin-top:10px;">— not currently loaded on a printer — use "Change Spool" on the Printers tab —</div>`;
+        })()}
         ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number below is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
         ${retirementSummary}
-        <div class="ps-row">
+        <div class="ps-row" style="margin-top:10px;">
           <div class="ps-field" style="flex:1;margin-bottom:0;">
             <span class="ps-field-label">Remaining (g)</span>
             <input class="ps-input" type="number" min="0" data-field="remainingG" value="${Math.max(0,s.remainingG)}" ${retired?'disabled':''} />
@@ -2863,12 +2869,6 @@ function renderFilament(){
           </div>
         </div>
         <div class="ps-spool-bar-track"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
-        ${retired ? '' : `
-        <div class="ps-field" style="margin-top:10px;margin-bottom:0;">
-          <span class="ps-field-label">Loaded on printer</span>
-          <div class="ps-hint">${(() => { const onPrinter = printers.find(pr=>pr.spoolId===s.id); return onPrinter ? escapeHtml(onPrinter.name) : '— not currently loaded on a printer — use "Change Spool" on the Printers tab —'; })()}</div>
-        </div>
-        `}
         <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
       </div>
     `;
