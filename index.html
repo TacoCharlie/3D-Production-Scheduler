@@ -1306,6 +1306,8 @@ function renderJobs(){
       .reduce((s,e) => s + (new Date(e.actualEnd)-new Date(e.actualStart))/60000, 0);
     const timePct = t.totalMin>0 ? (timeSpentMin/t.totalMin)*100 : 0;
     const isEditing = editingJobId === job.id;
+    const availableProductsActive = catalog.filter(p => !job.items.some(it=>it.id===p.id));
+    const addOptionsActive = availableProductsActive.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
@@ -1331,6 +1333,13 @@ function renderJobs(){
         <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${Math.min(100,timePct)}%;background:var(--cool, #5aa8c9);"></div></div>
         <div class="ps-hint" style="margin-bottom:8px;">${fmtDuration(timeSpentMin)} of ${fmtDuration(t.totalMin)} print time (${timePct.toFixed(0)}%)</div>
         <div class="ps-joblist">${renderJobItemRows(job, false)}</div>
+        <div class="ps-row" style="margin-top:10px;flex-wrap:wrap;">
+          <select class="ps-select" data-action="job-add-select-active" style="max-width:200px;">
+            <option value="">Choose a product…</option>
+            ${addOptionsActive}
+          </select>
+          <button class="ps-btn small" data-action="job-add-item-active" ${availableProductsActive.length===0?'disabled':''}>+ Add product</button>
+        </div>
       </div>
     `;
   }).join('');
@@ -1451,6 +1460,16 @@ function renderJobs(){
     if(addBtn){
       addBtn.addEventListener('click', () => {
         const id = addSelect.value;
+        if(!id) return;
+        job.items.push({id, qty: 1});
+        saveJobs(); renderJobs();
+      });
+    }
+    const addSelectActive = card.querySelector('[data-action="job-add-select-active"]');
+    const addBtnActive = card.querySelector('[data-action="job-add-item-active"]');
+    if(addBtnActive){
+      addBtnActive.addEventListener('click', () => {
+        const id = addSelectActive.value;
         if(!id) return;
         job.items.push({id, qty: 1});
         saveJobs(); renderJobs();
