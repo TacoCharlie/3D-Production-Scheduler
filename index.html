@@ -2028,14 +2028,18 @@ function renderLog(){
         : e.testLabel ? escapeHtml(e.testLabel)
         : '(untitled test)')
       : null;
-    const titleText = e.isTest ? `<span class="ps-hint" style="text-transform:uppercase;font-weight:700;letter-spacing:0.4px;">Test</span> ${testDesc}` : `${e.unitsCompleted>1?e.unitsCompleted+'× ':''}${escapeHtml(product?product.name:'(deleted product)')}`;
+    const printerLine = `${e.isTest ? 'TEST ' : ''}${escapeHtml(printer?printer.name:'(deleted printer)')}`;
+    const productLine = e.isTest
+      ? `${testDesc}${e.weightGAtLogTime>0 ? ' — '+e.weightGAtLogTime+'g' : ''}`
+      : `${e.unitsCompleted>1?e.unitsCompleted+'× ':''}${escapeHtml(product?product.name:'(deleted product)')}`;
     const jobForEntry = (!e.isTest && e.jobId) ? jobs.find(j=>j.id===e.jobId) : null;
     const jobLine = (!e.isTest && e.jobId) ? `<div class="ps-hint mono">Job: ${jobForEntry ? escapeHtml(jobForEntry.name) : '(deleted job)'}</div>` : '';
     const failureNoteLine = (e.failed && e.failureNote) ? `<div class="ps-hint" style="color:var(--danger);">Note: ${escapeHtml(e.failureNote)}</div>` : '';
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
-          <b>${titleText}</b> on ${escapeHtml(printer?printer.name:'(deleted printer)')}${e.isTest && e.weightGAtLogTime>0 ? ' — '+e.weightGAtLogTime+'g' : ''}
+          <b>${printerLine}</b>
+          <div>${productLine}</div>
           <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
           ${jobLine}
           ${failureNoteLine}
