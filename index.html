@@ -2860,23 +2860,13 @@ function renderFilament(){
     ) : '';
     return `
       <div class="ps-spool-card" data-id="${s.id}">
-        <div class="ps-spool-top">
-          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
-          <input class="ps-input ps-name" data-field="label" value="${escapeHtml(s.label)}" placeholder="e.g. PCTG Pro — Natural" ${retired?'disabled':''} />
-          <input class="ps-input" style="max-width:110px" data-field="material" value="${escapeHtml(s.material)}" placeholder="Material" ${retired?'disabled':''} />
-          <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${s.colorHex||'#cccccc'}" ${retired?'disabled':''} />
-          ${low ? '<span class="ps-badge-low">Low</span>' : ''}
-          ${retired ? '<span class="ps-hint">Retired</span>' : ''}
-          <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
-        </div>
         ${retired ? '' : (() => {
           const onPrinter = printers.find(pr=>pr.spoolId===s.id);
           return onPrinter
-            ? `<div style="margin-top:10px;padding:8px 12px;background:color-mix(in srgb, var(--cool, #5aa8c9) 16%, transparent);border-radius:6px;font-weight:700;font-size:14.5px;">⎋ ${escapeHtml(onPrinter.name)}</div>`
-            : `<div class="ps-hint" style="margin-top:10px;">— not currently loaded on a printer — use "Change Spool" on the Printers tab —</div>`;
+            ? `<div style="padding:8px 12px;background:color-mix(in srgb, var(--cool, #5aa8c9) 16%, transparent);border-radius:6px;font-weight:700;font-size:14.5px;">⎋ ${escapeHtml(onPrinter.name)}</div>`
+            : `<div class="ps-hint">— not currently loaded on a printer — use "Change Spool" on the Printers tab —</div>`;
         })()}
-        ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number below is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
-        ${retirementSummary}
+        <div class="ps-spool-bar-track" style="margin-top:10px;"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
         <div class="ps-row" style="margin-top:10px;">
           <div class="ps-field" style="flex:1;margin-bottom:0;">
             <span class="ps-field-label">Remaining (g)</span>
@@ -2887,7 +2877,17 @@ function renderFilament(){
             <input class="ps-input" type="number" min="0" data-field="totalG" value="${s.totalG}" ${retired?'disabled':''} />
           </div>
         </div>
-        <div class="ps-spool-bar-track"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
+        <div class="ps-spool-top" style="margin-top:10px;">
+          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
+          <input class="ps-input ps-name" data-field="label" value="${escapeHtml(s.label)}" placeholder="e.g. PCTG Pro — Natural" ${retired?'disabled':''} />
+          <input class="ps-input" style="max-width:110px" data-field="material" value="${escapeHtml(s.material)}" placeholder="Material" ${retired?'disabled':''} />
+          <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${s.colorHex||'#cccccc'}" ${retired?'disabled':''} />
+          ${low ? '<span class="ps-badge-low">Low</span>' : ''}
+          ${retired ? '<span class="ps-hint">Retired</span>' : ''}
+          <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
+        </div>
+        ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number below is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
+        ${retirementSummary}
         <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
       </div>
     `;
