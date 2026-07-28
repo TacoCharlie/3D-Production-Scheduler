@@ -3084,6 +3084,7 @@ let editingOverrideId = null; // within a product's editor: null = not editing a
 let shippingItems = [{id: uid('ship'), productId: '', qty: 1}];
 let savedShipments = null; // [{id, name, items: [{productId, qty}]}] — persisted, unlike the working shippingItems above
 let showSaveShipmentForm = false;
+let loadedShipmentId = null; // which saved shipment (if any) the current working items came from
 
 // ---------- rendering: Analytics tab ----------
 // Meant to grow over time — analyticsRange is a shared control every widget
@@ -3497,15 +3498,21 @@ function renderShipping(){
   const remainderOz = (totalLbsExact - wholeLbs) * 16;
 
   const hasValidItems = shippingItems.some(item => item.productId);
+  const loadedShipment = loadedShipmentId ? savedShipments.find(s=>s.id===loadedShipmentId) : null;
   const saveForm = showSaveShipmentForm ? `
     <div class="ps-row" style="gap:8px;margin-top:10px;align-items:center;">
       <input class="ps-input" id="ps-shipping-save-name" placeholder="e.g. Standard wholesale order" style="max-width:280px;" />
       <button class="ps-btn primary small" id="ps-shipping-save-confirm">Save</button>
       <button class="ps-btn ghost small" id="ps-shipping-save-cancel">Cancel</button>
     </div>
+  ` : (loadedShipment ? `
+    <div class="ps-row" style="gap:8px;margin-top:10px;align-items:center;">
+      <button class="ps-btn" id="ps-shipping-update" ${hasValidItems?'':'disabled'}>Update "${escapeHtml(loadedShipment.name)}"</button>
+      <button class="ps-btn ghost small" id="ps-shipping-save-start" ${hasValidItems?'':'disabled'}>Save as new…</button>
+    </div>
   ` : `
     <button class="ps-btn ghost" style="margin-top:10px;" id="ps-shipping-save-start" ${hasValidItems?'':'disabled'}>Save this shipment…</button>
-  `;
+  `);
 
   const savedList = savedShipments.length===0 ? '' : `
     <div class="ps-panel">
@@ -3568,7 +3575,10 @@ function renderShipping(){
   root.querySelectorAll('[data-action="shipping-remove"]').forEach(btn => {
     btn.addEventListener('click', () => {
       shippingItems = shippingItems.filter(x=>x.id!==btn.getAttribute('data-id'));
-      if(shippingItems.length===0) shippingItems.push({id: uid('ship'), productId: '', qty: 1});
+      if(shippingItems.length===0){
+        shippingItems.push({id: uid('ship'), productId: '', qty: 1});
+        loadedShipmentId = null;
+      }
       renderShipping();
     });
   });
@@ -3595,8 +3605,20 @@ function renderShipping(){
       if(!name) return;
       const items = shippingItems.filter(it=>it.productId).map(it => ({productId: it.productId, qty: it.qty}));
       if(items.length===0) return;
-      savedShipments.push({id: uid('shipment'), name, items});
+      const newShipment = {id: uid('shipment'), name, items};
+      savedShipments.push(newShipment);
+      loadedShipmentId = newShipment.id; // now "loaded" -- further saves update this one by default
       showSaveShipmentForm = false;
+      saveSavedShipments();
+      renderShipping();
+    });
+  }
+  const updateBtn = document.getElementById('ps-shipping-update');
+  if(updateBtn){
+    updateBtn.addEventListener('click', () => {
+      const s = savedShipments.find(x=>x.id===loadedShipmentId);
+      if(!s) return;
+      s.items = shippingItems.filter(it=>it.productId).map(it => ({productId: it.productId, qty: it.qty}));
       saveSavedShipments();
       renderShipping();
     });
@@ -3606,12 +3628,15 @@ function renderShipping(){
       const s = savedShipments.find(x=>x.id===btn.getAttribute('data-id'));
       if(!s) return;
       shippingItems = s.items.map(it => ({id: uid('ship'), productId: it.productId, qty: it.qty}));
+      loadedShipmentId = s.id;
       renderShipping();
     });
   });
   root.querySelectorAll('[data-action="shipment-delete"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      savedShipments = savedShipments.filter(x=>x.id!==btn.getAttribute('data-id'));
+      const deletedId = btn.getAttribute('data-id');
+      savedShipments = savedShipments.filter(x=>x.id!==deletedId);
+      if(loadedShipmentId === deletedId) loadedShipmentId = null;
       saveSavedShipments();
       renderShipping();
     });
