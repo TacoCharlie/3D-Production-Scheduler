@@ -3126,6 +3126,7 @@ function renderAnalytics(){
     ${renderQuantityByProductWidget(sinceDate)}
     ${renderFinishedJobsWidget(sinceDate)}
     ${renderSpoolOverageWidget(sinceDate)}
+    ${renderEffectiveTimeWidget(sinceDate)}
   `;
 
   root.querySelectorAll('[data-action="analytics-range"]').forEach(btn => {
@@ -3141,6 +3142,14 @@ function renderAnalytics(){
       renderAnalytics();
     });
   }
+  root.querySelectorAll('[data-action="eff-sort"]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.getAttribute('data-key');
+      if(effTimeSortKey === key) effTimeSortAsc = !effTimeSortAsc;
+      else { effTimeSortKey = key; effTimeSortAsc = true; }
+      renderAnalytics();
+    });
+  });
 }
 
 function renderQuantityByProductWidget(sinceDate){
@@ -3287,6 +3296,89 @@ function renderSpoolOverageWidget(sinceDate){
         <div class="ps-summary-cell"><div class="ps-summary-num">${avgOverage>0?'+':''}${avgOverage.toFixed(0)}g</div><div class="ps-summary-label">Average per spool</div></div>
       </div>
       ${rows}
+    </div>
+  `;
+}
+
+// Unit-weighted, not entry-weighted — a failed batch of 8 should count as
+// 8 failed units, not 1 failed entry, so partial-batch splits are properly
+// reflected in the rate rather than diluted down to "one bad log line."
+let effTimeSortKey = 'effMin'; // 'effMin' | 'failRate' | 'printTime' | 'units'
+let effTimeSortAsc = true;
+
+function computeEffectiveTimeMetrics(sinceDate){
+  const combos = {}; // "productId|||printerId" -> {productId, printerId, totalUnits, failedUnits}
+  productionLog.forEach(e => {
+    if(e.isTest) return;
+    if(!e.failed && !e.actualEnd) return; // still in progress, outcome unknown
+    if(sinceDate && new Date(e.actualEnd || e.actualStart) < sinceDate) return;
+    const key = `${e.productId}|||${e.printerId}`;
+    if(!combos[key]) combos[key] = {productId: e.productId, printerId: e.printerId, totalUnits: 0, failedUnits: 0};
+    const units = e.unitsCompleted || 1;
+    combos[key].totalUnits += units;
+    if(e.failed) combos[key].failedUnits += units;
+  });
+
+  return Object.values(combos).map(c => {
+    const product = catalog.find(p=>p.id===c.productId);
+    const printer = printers.find(p=>p.id===c.printerId);
+    if(!product || !printer) return null;
+    const {timeH, timeM} = getProductTimeWeight(product, c.printerId);
+    const printTimeMin = (timeH||0)*60 + (timeM||0);
+    const failureRate = c.totalUnits>0 ? c.failedUnits/c.totalUnits : 0;
+    const effMin = failureRate < 1 ? printTimeMin / (1-failureRate) : null; // null = can't ever get a good part
+    return {
+      productId: c.productId, productName: product.name,
+      printerId: c.printerId, printerName: printer.name,
+      printTimeMin, failureRate, effMin,
+      totalUnits: c.totalUnits, failedUnits: c.failedUnits
+    };
+  }).filter(Boolean);
+}
+
+function renderEffectiveTimeWidget(sinceDate){
+  let data = computeEffectiveTimeMetrics(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Effective Time per Good Part</div>
+        <div class="ps-hint" style="margin-bottom:12px;">Print time adjusted for failure rate — a faster printer with more failures can still lose to a slower, more reliable one. Lower is better.</div>
+        <div class="ps-empty">No completed prints in this range yet.</div>
+      </div>
+    `;
+  }
+  const sortFns = {
+    effMin: (a,b) => (a.effMin===null?Infinity:a.effMin) - (b.effMin===null?Infinity:b.effMin),
+    failRate: (a,b) => a.failureRate - b.failureRate,
+    printTime: (a,b) => a.printTimeMin - b.printTimeMin,
+    units: (a,b) => a.totalUnits - b.totalUnits
+  };
+  data = data.slice().sort(sortFns[effTimeSortKey]);
+  if(!effTimeSortAsc) data.reverse();
+
+  const headerCell = (key, label) => {
+    const active = effTimeSortKey===key;
+    return `<th data-action="eff-sort" data-key="${key}" style="cursor:pointer;user-select:none;">${label}${active?(effTimeSortAsc?' ▲':' ▼'):''}</th>`;
+  };
+  const rows = data.map(d => `
+    <tr>
+      <td>${escapeHtml(d.productName)}</td>
+      <td>${escapeHtml(d.printerName)}</td>
+      <td class="mono">${fmtDuration(d.printTimeMin)}</td>
+      <td class="mono">${(d.failureRate*100).toFixed(1)}% <span class="ps-hint">(${d.failedUnits} of ${d.totalUnits})</span></td>
+      <td class="mono" style="font-weight:700;">${d.effMin===null ? 'N/A — 100% failure' : fmtDuration(d.effMin)}</td>
+    </tr>
+  `).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Effective Time per Good Part</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Print time adjusted for failure rate — a faster printer with more failures can still lose to a slower, more reliable one. Lower is better. Click a column to sort.</div>
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th>Product</th><th>Printer</th>${headerCell('printTime','Print Time')}${headerCell('failRate','Failure Rate')}${headerCell('effMin','Effective Time / Good Part')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      </div>
     </div>
   `;
 }
