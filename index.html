@@ -3157,6 +3157,7 @@ function renderAnalytics(){
     ${renderFinishedJobsWidget(sinceDate)}
     ${renderSpoolOverageWidget(sinceDate)}
     ${renderPrinterReliabilityWidget(sinceDate)}
+    ${renderPrinterTimeCostWidget(sinceDate)}
     ${renderEffectiveTimeWidget(sinceDate)}
   `;
 
@@ -3185,6 +3186,13 @@ function renderAnalytics(){
   if(printerEffToggle){
     printerEffToggle.addEventListener('click', () => {
       printerEffSortAsc = !printerEffSortAsc;
+      renderAnalytics();
+    });
+  }
+  const printerTimeToggle = document.getElementById('ps-printer-time-sort-toggle');
+  if(printerTimeToggle){
+    printerTimeToggle.addEventListener('click', () => {
+      printerTimeSortAsc = !printerTimeSortAsc;
       renderAnalytics();
     });
   }
@@ -3478,6 +3486,68 @@ function renderPrinterReliabilityWidget(sinceDate){
       <div class="ps-panel-title"><span class="dot"></span>Printer Reliability — Overall</div>
       <div class="ps-hint" style="margin-bottom:12px;">One score per printer, combining every product it's made — how much failures inflate its effective time overall, regardless of what it's printing. 1.00x means no failures; 1.40x means it's effectively taking 40% longer than its raw print times suggest. Lower is better.</div>
       <button class="ps-btn ghost small" id="ps-printer-eff-sort-toggle" style="margin-bottom:10px;">${printerEffSortAsc?'▲ Best first':'▼ Worst first'}</button>
+      ${rows}
+    </div>
+  `;
+}
+
+// Actual machine-minutes spent per good part, per printer — not a
+// multiplier, an honest time cost. Uses real logged duration (not the
+// catalog's estimated time) for both successes and failures, since failed
+// prints still consumed real machine time whether caught early or late.
+// This is what actually answers "which printer is worth the most" across
+// whatever mix of products each one happens to make.
+let printerTimeSortAsc = true;
+
+function computePrinterTimeCost(sinceDate){
+  const byPrinter = {}; // printerId -> {totalTimeMin, goodUnits, productIds:Set}
+  productionLog.forEach(e => {
+    if(e.isTest) return;
+    if(!e.failed && !e.actualEnd) return; // still in progress, outcome unknown
+    if(sinceDate && new Date(e.actualEnd || e.actualStart) < sinceDate) return;
+    if(!e.actualEnd) return; // no real duration to measure
+    const durationMin = (new Date(e.actualEnd) - new Date(e.actualStart)) / 60000;
+    if(!byPrinter[e.printerId]) byPrinter[e.printerId] = {totalTimeMin:0, goodUnits:0, productIds:new Set()};
+    byPrinter[e.printerId].totalTimeMin += durationMin;
+    if(!e.failed) byPrinter[e.printerId].goodUnits += (e.unitsCompleted||1);
+    byPrinter[e.printerId].productIds.add(e.productId);
+  });
+  return Object.entries(byPrinter).map(([printerId, d]) => {
+    const printer = printers.find(p=>p.id===printerId);
+    if(!printer) return null;
+    const effMinPerGoodPart = d.goodUnits>0 ? d.totalTimeMin/d.goodUnits : null;
+    return {printerId, printerName: printer.name, totalTimeMin: d.totalTimeMin, goodUnits: d.goodUnits, effMinPerGoodPart, productCount: d.productIds.size};
+  }).filter(Boolean);
+}
+
+function renderPrinterTimeCostWidget(sinceDate){
+  let data = computePrinterTimeCost(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Effective Time per Good Part — By Printer</div>
+        <div class="ps-hint" style="margin-bottom:12px;">Real machine-minutes spent (including failures) divided by good parts actually produced — a direct answer to which printer is worth the most, across everything it makes. Lower is better.</div>
+        <div class="ps-empty">No completed prints in this range yet.</div>
+      </div>
+    `;
+  }
+  data = data.slice().sort((a,b) => (a.effMinPerGoodPart===null?Infinity:a.effMinPerGoodPart) - (b.effMinPerGoodPart===null?Infinity:b.effMinPerGoodPart));
+  if(!printerTimeSortAsc) data.reverse();
+
+  const rows = data.map(d => `
+    <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
+      <div>
+        <div>${escapeHtml(d.printerName)}</div>
+        <div class="ps-hint mono">${d.goodUnits} good unit${d.goodUnits!==1?'s':''} from ${fmtDuration(d.totalTimeMin)} of machine time · ${d.productCount} product${d.productCount!==1?'s':''}</div>
+      </div>
+      <span class="mono" style="font-weight:700;">${d.effMinPerGoodPart===null ? 'N/A — no good parts yet' : fmtDuration(d.effMinPerGoodPart)}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Effective Time per Good Part — By Printer</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Real machine-minutes spent (including failures) divided by good parts actually produced — a direct answer to which printer is worth the most, across everything it makes. Lower is better.</div>
+      <button class="ps-btn ghost small" id="ps-printer-time-sort-toggle" style="margin-bottom:10px;">${printerTimeSortAsc?'▲ Best first':'▼ Worst first'}</button>
       ${rows}
     </div>
   `;
