@@ -3126,6 +3126,7 @@ function renderAnalytics(){
     ${renderQuantityByProductWidget(sinceDate)}
     ${renderFinishedJobsWidget(sinceDate)}
     ${renderSpoolOverageWidget(sinceDate)}
+    ${renderPrinterReliabilityWidget(sinceDate)}
     ${renderEffectiveTimeWidget(sinceDate)}
   `;
 
@@ -3150,6 +3151,13 @@ function renderAnalytics(){
       renderAnalytics();
     });
   });
+  const printerEffToggle = document.getElementById('ps-printer-eff-sort-toggle');
+  if(printerEffToggle){
+    printerEffToggle.addEventListener('click', () => {
+      printerEffSortAsc = !printerEffSortAsc;
+      renderAnalytics();
+    });
+  }
 }
 
 function renderQuantityByProductWidget(sinceDate){
@@ -3379,6 +3387,68 @@ function renderEffectiveTimeWidget(sinceDate){
         <tbody>${rows}</tbody>
       </table>
       </div>
+    </div>
+  `;
+}
+
+// One score per printer, combining every product it's made — since "print
+// time" itself is product-specific and can't be averaged meaningfully
+// across different products, the comparable number is the multiplier
+// failures add on top of whatever the raw time would have been: a printer
+// with a 1.40x multiplier is effectively taking 40% longer than its raw
+// print times suggest, regardless of what it happens to be printing.
+let printerEffSortAsc = true;
+
+function computePrinterReliability(sinceDate){
+  const byPrinter = {}; // printerId -> {totalUnits, failedUnits, productIds:Set}
+  productionLog.forEach(e => {
+    if(e.isTest) return;
+    if(!e.failed && !e.actualEnd) return;
+    if(sinceDate && new Date(e.actualEnd || e.actualStart) < sinceDate) return;
+    if(!byPrinter[e.printerId]) byPrinter[e.printerId] = {totalUnits:0, failedUnits:0, productIds:new Set()};
+    const units = e.unitsCompleted || 1;
+    byPrinter[e.printerId].totalUnits += units;
+    if(e.failed) byPrinter[e.printerId].failedUnits += units;
+    byPrinter[e.printerId].productIds.add(e.productId);
+  });
+  return Object.entries(byPrinter).map(([printerId, d]) => {
+    const printer = printers.find(p=>p.id===printerId);
+    if(!printer) return null;
+    const failureRate = d.totalUnits>0 ? d.failedUnits/d.totalUnits : 0;
+    const multiplier = failureRate < 1 ? 1/(1-failureRate) : null;
+    return {printerId, printerName: printer.name, failureRate, multiplier, totalUnits: d.totalUnits, failedUnits: d.failedUnits, productCount: d.productIds.size};
+  }).filter(Boolean);
+}
+
+function renderPrinterReliabilityWidget(sinceDate){
+  let data = computePrinterReliability(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Printer Reliability — Overall</div>
+        <div class="ps-hint" style="margin-bottom:12px;">One score per printer, combining every product it's made — how much failures inflate its effective time overall. Lower is better.</div>
+        <div class="ps-empty">No completed prints in this range yet.</div>
+      </div>
+    `;
+  }
+  data = data.slice().sort((a,b) => (a.multiplier===null?Infinity:a.multiplier) - (b.multiplier===null?Infinity:b.multiplier));
+  if(!printerEffSortAsc) data.reverse();
+
+  const rows = data.map(d => `
+    <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
+      <div>
+        <div>${escapeHtml(d.printerName)}</div>
+        <div class="ps-hint mono">${d.failedUnits} of ${d.totalUnits} failed · ${d.productCount} product${d.productCount!==1?'s':''}</div>
+      </div>
+      <span class="mono" style="font-weight:700;">${d.multiplier===null ? 'N/A — 100% failure' : d.multiplier.toFixed(2)+'x'}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Printer Reliability — Overall</div>
+      <div class="ps-hint" style="margin-bottom:12px;">One score per printer, combining every product it's made — how much failures inflate its effective time overall, regardless of what it's printing. 1.00x means no failures; 1.40x means it's effectively taking 40% longer than its raw print times suggest. Lower is better.</div>
+      <button class="ps-btn ghost small" id="ps-printer-eff-sort-toggle" style="margin-bottom:10px;">${printerEffSortAsc?'▲ Best first':'▼ Worst first'}</button>
+      ${rows}
     </div>
   `;
 }
