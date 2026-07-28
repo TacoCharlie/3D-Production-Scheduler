@@ -539,6 +539,9 @@ async function loadState(){
   try { const foh = await window.storage.get('filamentOrderHistory'); filamentOrderHistory = foh ? JSON.parse(foh.value) : []; }
   catch(e){ filamentOrderHistory = []; }
 
+  try { const ss = await window.storage.get('savedShipments'); savedShipments = ss ? JSON.parse(ss.value) : []; }
+  catch(e){ savedShipments = []; }
+
   try { const pd = await window.storage.get('partDefs'); partDefs = pd ? JSON.parse(pd.value) : []; }
   catch(e){ partDefs = []; }
   partDefs.forEach(pd => { if(!Array.isArray(pd.replacementLog)) pd.replacementLog = []; });
@@ -625,6 +628,7 @@ async function savePrinters(){ try { await window.storage.set('printers', JSON.s
 async function saveSpools(){ try { await window.storage.set('spools', JSON.stringify(spools)); flashSave(); } catch(e){ console.error(e); } }
 async function saveStock(){ try { await window.storage.set('stock', JSON.stringify(stock)); flashSave(); } catch(e){ console.error(e); } }
 async function saveFilamentOrderHistory(){ try { await window.storage.set('filamentOrderHistory', JSON.stringify(filamentOrderHistory)); flashSave(); } catch(e){ console.error(e); } }
+async function saveSavedShipments(){ try { await window.storage.set('savedShipments', JSON.stringify(savedShipments)); flashSave(); } catch(e){ console.error(e); } }
 async function savePartDefs(){ try { await window.storage.set('partDefs', JSON.stringify(partDefs)); flashSave(); } catch(e){ console.error(e); } }
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
 async function saveLog(){ try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); } }
@@ -3078,6 +3082,8 @@ let editingOverrideId = null; // within a product's editor: null = not editing a
 // ---------- rendering: Shipping tab ----------
 // Session-only — nothing here is saved. Resets on reload, on purpose.
 let shippingItems = [{id: uid('ship'), productId: '', qty: 1}];
+let savedShipments = null; // [{id, name, items: [{productId, qty}]}] — persisted, unlike the working shippingItems above
+let showSaveShipmentForm = false;
 
 // ---------- rendering: Analytics tab ----------
 // Meant to grow over time — analyticsRange is a shared control every widget
@@ -3490,10 +3496,42 @@ function renderShipping(){
   const wholeLbs = Math.floor(totalLbsExact);
   const remainderOz = (totalLbsExact - wholeLbs) * 16;
 
+  const hasValidItems = shippingItems.some(item => item.productId);
+  const saveForm = showSaveShipmentForm ? `
+    <div class="ps-row" style="gap:8px;margin-top:10px;align-items:center;">
+      <input class="ps-input" id="ps-shipping-save-name" placeholder="e.g. Standard wholesale order" style="max-width:280px;" />
+      <button class="ps-btn primary small" id="ps-shipping-save-confirm">Save</button>
+      <button class="ps-btn ghost small" id="ps-shipping-save-cancel">Cancel</button>
+    </div>
+  ` : `
+    <button class="ps-btn ghost" style="margin-top:10px;" id="ps-shipping-save-start" ${hasValidItems?'':'disabled'}>Save this shipment…</button>
+  `;
+
+  const savedList = savedShipments.length===0 ? '' : `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Saved Shipments</div>
+      ${savedShipments.map(s => {
+        const itemCount = s.items.length;
+        const totalQty = s.items.reduce((sum,it)=>sum+it.qty, 0);
+        return `
+        <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);gap:8px;">
+          <div>
+            <div>${escapeHtml(s.name)}</div>
+            <div class="ps-hint mono">${itemCount} product${itemCount!==1?'s':''} · ${totalQty} unit${totalQty!==1?'s':''}</div>
+          </div>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn small" data-action="shipment-load" data-id="${s.id}">Load</button>
+            <button class="ps-btn ghost small" data-action="shipment-delete" data-id="${s.id}">✕</button>
+          </div>
+        </div>
+      `;}).join('')}
+    </div>
+  `;
+
   root.innerHTML = `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Shipping Weight Calculator</div>
-      <div class="ps-hint" style="margin-bottom:16px;">Pick products and quantities to get a total shipping weight. Nothing here is saved — it resets whenever you leave this tab or reload.</div>
+      <div class="ps-hint" style="margin-bottom:16px;">Pick products and quantities to get a total shipping weight. Your current picks reset if you leave this tab or reload — save them below as a named shipment to reuse later.</div>
       <div id="ps-shipping-rows">${rows}</div>
       <button class="ps-btn" style="margin-top:6px;" id="ps-shipping-add">+ Add product</button>
 
@@ -3504,7 +3542,9 @@ function renderShipping(){
           <div class="ps-hint mono" style="margin-top:4px;">${totalG.toFixed(0)}g of product only — doesn't include box or packaging${hasIncomplete?' — incomplete, one or more products above have no weight set':''}</div>
         </div>
       </div>
+      ${saveForm}
     </div>
+    ${savedList}
   `;
 
   document.getElementById('ps-shipping-add').addEventListener('click', () => {
@@ -3532,6 +3572,50 @@ function renderShipping(){
       renderShipping();
     });
   });
+
+  const saveStartBtn = document.getElementById('ps-shipping-save-start');
+  if(saveStartBtn){
+    saveStartBtn.addEventListener('click', () => {
+      showSaveShipmentForm = true;
+      renderShipping();
+    });
+  }
+  const saveCancelBtn = document.getElementById('ps-shipping-save-cancel');
+  if(saveCancelBtn){
+    saveCancelBtn.addEventListener('click', () => {
+      showSaveShipmentForm = false;
+      renderShipping();
+    });
+  }
+  const saveConfirmBtn = document.getElementById('ps-shipping-save-confirm');
+  if(saveConfirmBtn){
+    saveConfirmBtn.addEventListener('click', () => {
+      const nameInput = document.getElementById('ps-shipping-save-name');
+      const name = nameInput.value.trim();
+      if(!name) return;
+      const items = shippingItems.filter(it=>it.productId).map(it => ({productId: it.productId, qty: it.qty}));
+      if(items.length===0) return;
+      savedShipments.push({id: uid('shipment'), name, items});
+      showSaveShipmentForm = false;
+      saveSavedShipments();
+      renderShipping();
+    });
+  }
+  root.querySelectorAll('[data-action="shipment-load"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const s = savedShipments.find(x=>x.id===btn.getAttribute('data-id'));
+      if(!s) return;
+      shippingItems = s.items.map(it => ({id: uid('ship'), productId: it.productId, qty: it.qty}));
+      renderShipping();
+    });
+  });
+  root.querySelectorAll('[data-action="shipment-delete"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      savedShipments = savedShipments.filter(x=>x.id!==btn.getAttribute('data-id'));
+      saveSavedShipments();
+      renderShipping();
+    });
+  });
 }
 
 function renderCatalog(){
@@ -3553,7 +3637,7 @@ function renderCatalogList(root){
     </div>
   `).join('');
 
-  const productRows = catalog.map(p => {
+  const productRows = catalog.map((p, idx) => {
     const printMin = p.timeH*60 + p.timeM;
     const incomplete = printMin<=0;
     const fileCount = Object.keys(p.projectFiles||{}).length;
@@ -3570,10 +3654,15 @@ function renderCatalogList(root){
         <td class="ps-hint">${Object.keys(cfg.projectFiles||{}).length>0?Object.keys(cfg.projectFiles||{}).length+' file'+(Object.keys(cfg.projectFiles||{}).length!==1?'s':''):'—'}</td>
         <td></td>
         <td></td>
+        <td></td>
       </tr>
     `).join('') : '';
     return `
       <tr data-id="${p.id}">
+        <td style="white-space:nowrap;width:1%;">
+          <button class="ps-btn ghost small" data-action="catalog-up" ${idx===0?'disabled':''} title="Move up">↑</button>
+          <button class="ps-btn ghost small" data-action="catalog-down" ${idx===catalog.length-1?'disabled':''} title="Move down">↓</button>
+        </td>
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${badge}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
         <td class="mono ps-hint">${incomplete?'—':fmtDuration(printMin)}</td>
         <td class="mono ps-hint">${p.weightG>0?p.weightG+'g':'—'}</td>
@@ -3609,7 +3698,7 @@ function renderCatalogList(root){
       ${catalog.length===0 ? '<div class="ps-empty">No products yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px"></th></tr></thead>
+        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px"></th></tr></thead>
         <tbody>${productRows}</tbody>
       </table>
       </div>
@@ -3634,6 +3723,26 @@ function renderCatalogList(root){
     btn.addEventListener('click', () => {
       editingProductId = btn.closest('tr').getAttribute('data-id');
       renderCatalog();
+    });
+  });
+  root.querySelectorAll('[data-action="catalog-up"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.closest('tr').getAttribute('data-id');
+      const idx = catalog.findIndex(p=>p.id===id);
+      if(idx > 0){
+        [catalog[idx-1], catalog[idx]] = [catalog[idx], catalog[idx-1]];
+        saveCatalog(); renderCatalog();
+      }
+    });
+  });
+  root.querySelectorAll('[data-action="catalog-down"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.closest('tr').getAttribute('data-id');
+      const idx = catalog.findIndex(p=>p.id===id);
+      if(idx !== -1 && idx < catalog.length-1){
+        [catalog[idx], catalog[idx+1]] = [catalog[idx+1], catalog[idx]];
+        saveCatalog(); renderCatalog();
+      }
     });
   });
 
