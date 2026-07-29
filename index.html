@@ -3163,6 +3163,7 @@ function renderAnalytics(){
     ${renderSpoolOverageWidget(sinceDate)}
     ${renderPrinterReliabilityWidget(sinceDate)}
     ${renderPrinterTimeCostWidget(sinceDate)}
+    ${renderPrinterEfficiencyWidget(sinceDate)}
     ${renderEffectiveTimeWidget(sinceDate)}
   `;
 
@@ -3198,6 +3199,13 @@ function renderAnalytics(){
   if(printerTimeToggle){
     printerTimeToggle.addEventListener('click', () => {
       printerTimeSortAsc = !printerTimeSortAsc;
+      renderAnalytics();
+    });
+  }
+  const printerEfficiencyToggle = document.getElementById('ps-printer-efficiency-sort-toggle');
+  if(printerEfficiencyToggle){
+    printerEfficiencyToggle.addEventListener('click', () => {
+      printerEfficiencyBestFirst = !printerEfficiencyBestFirst;
       renderAnalytics();
     });
   }
@@ -3553,6 +3561,78 @@ function renderPrinterTimeCostWidget(sinceDate){
       <div class="ps-panel-title"><span class="dot"></span>Effective Time per Good Part — By Printer</div>
       <div class="ps-hint" style="margin-bottom:12px;">Real machine-minutes spent (including failures) divided by good parts actually produced — a direct answer to which printer is worth the most, across everything it makes. Lower is better.</div>
       <button class="ps-btn ghost small" id="ps-printer-time-sort-toggle" style="margin-bottom:10px;">${printerTimeSortAsc?'▲ Best first':'▼ Worst first'}</button>
+      ${rows}
+    </div>
+  `;
+}
+
+// Adjusts for part difficulty: raw machine-minutes-per-good-part penalizes
+// a printer just for happening to make bigger/harder parts. Normalizing
+// each print against THAT PRINTER'S OWN expected time for that specific
+// product (its override if set, else the catalog default) means a printer
+// stuck with harder parts isn't penalized for it — each print is measured
+// against its own baseline first, then combined across everything the
+// printer makes. 100% = perfectly matches its own expectations with zero
+// time lost to failures.
+let printerEfficiencyBestFirst = true; // higher % is better, so "best first" = descending
+
+function computePrinterEfficiency(sinceDate){
+  const byPrinter = {}; // printerId -> {expectedMinForGood, actualTimeMin, goodUnits, productIds:Set}
+  productionLog.forEach(e => {
+    if(e.isTest) return;
+    if(!e.failed && !e.actualEnd) return;
+    if(sinceDate && new Date(e.actualEnd || e.actualStart) < sinceDate) return;
+    if(!e.actualEnd) return;
+    const product = catalog.find(p=>p.id===e.productId);
+    if(!product) return;
+    const durationMin = (new Date(e.actualEnd) - new Date(e.actualStart)) / 60000;
+    if(!byPrinter[e.printerId]) byPrinter[e.printerId] = {expectedMinForGood:0, actualTimeMin:0, goodUnits:0, productIds:new Set()};
+    byPrinter[e.printerId].actualTimeMin += durationMin;
+    byPrinter[e.printerId].productIds.add(e.productId);
+    if(!e.failed){
+      const units = e.unitsCompleted || 1;
+      const {timeH, timeM} = getProductTimeWeight(product, e.printerId);
+      const expectedMinPerUnit = (timeH||0)*60 + (timeM||0);
+      byPrinter[e.printerId].expectedMinForGood += expectedMinPerUnit * units;
+      byPrinter[e.printerId].goodUnits += units;
+    }
+  });
+  return Object.entries(byPrinter).map(([printerId, d]) => {
+    const printer = printers.find(p=>p.id===printerId);
+    if(!printer) return null;
+    const efficiency = d.actualTimeMin>0 ? d.expectedMinForGood/d.actualTimeMin : null;
+    return {printerId, printerName: printer.name, efficiency, actualTimeMin: d.actualTimeMin, goodUnits: d.goodUnits, productCount: d.productIds.size};
+  }).filter(Boolean);
+}
+
+function renderPrinterEfficiencyWidget(sinceDate){
+  let data = computePrinterEfficiency(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Printer Efficiency — Difficulty-Adjusted</div>
+        <div class="ps-hint" style="margin-bottom:12px;">What fraction of a printer's running time converts into on-schedule good output, measured against that printer's own expected time for whatever it happens to print — so it's not penalized just for making bigger or harder parts. Higher is better.</div>
+        <div class="ps-empty">No completed prints in this range yet.</div>
+      </div>
+    `;
+  }
+  data = data.slice().sort((a,b) => (b.efficiency===null?-Infinity:b.efficiency) - (a.efficiency===null?-Infinity:a.efficiency));
+  if(!printerEfficiencyBestFirst) data.reverse();
+
+  const rows = data.map(d => `
+    <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
+      <div>
+        <div>${escapeHtml(d.printerName)}</div>
+        <div class="ps-hint mono">${d.goodUnits} good unit${d.goodUnits!==1?'s':''} from ${fmtDuration(d.actualTimeMin)} of machine time · ${d.productCount} product${d.productCount!==1?'s':''}</div>
+      </div>
+      <span class="mono" style="font-weight:700;">${d.efficiency===null ? 'N/A' : (d.efficiency*100).toFixed(0)+'%'}</span>
+    </div>
+  `).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Printer Efficiency — Difficulty-Adjusted</div>
+      <div class="ps-hint" style="margin-bottom:12px;">What fraction of a printer's running time converts into on-schedule good output, measured against that printer's own expected time for whatever it happens to print — so it's not penalized just for making bigger or harder parts. 100% = perfectly on schedule with zero time lost to failures. Higher is better.</div>
+      <button class="ps-btn ghost small" id="ps-printer-efficiency-sort-toggle" style="margin-bottom:10px;">${printerEfficiencyBestFirst?'▲ Best first':'▼ Worst first'}</button>
       ${rows}
     </div>
   `;
