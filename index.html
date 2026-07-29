@@ -2615,6 +2615,7 @@ function renderEstimate(){
           ${addOptions}
         </select>
         <button class="ps-btn" id="ps-estimate-add-btn" ${availableProducts.length===0?'disabled':''}>+ Add to scenario</button>
+        <button class="ps-btn ghost" id="ps-estimate-clear-top" ${estimateItems.length===0?'disabled':''}>Clear scenario</button>
       </div>
     </div>
 
@@ -2692,12 +2693,15 @@ function renderEstimate(){
   });
 
   document.getElementById('ps-estimate-run').addEventListener('click', runEstimate);
-  document.getElementById('ps-estimate-clear').addEventListener('click', () => {
+  const clearScenario = () => {
     estimateItems = [];
     saveEstimateItems();
     document.getElementById('ps-estimate-output').innerHTML = '';
     renderEstimate();
-  });
+  };
+  document.getElementById('ps-estimate-clear').addEventListener('click', clearScenario);
+  const clearTopBtn = document.getElementById('ps-estimate-clear-top');
+  if(clearTopBtn) clearTopBtn.addEventListener('click', clearScenario);
   const saveJobBtn = document.getElementById('ps-estimate-save-job');
   if(saveJobBtn){
     saveJobBtn.addEventListener('click', () => {
