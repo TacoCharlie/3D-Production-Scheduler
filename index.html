@@ -2275,6 +2275,7 @@ function renderLog(){
     }
     busyWarningConfirmed = false;
     lowFilamentConfirmed = false;
+    const isTest = document.getElementById('ps-log-istest').checked;
     const printerId = document.getElementById('ps-log-printer').value;
     const startVal = document.getElementById('ps-log-start').value;
     const endVal = document.getElementById('ps-log-end').value;
