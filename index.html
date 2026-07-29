@@ -870,11 +870,7 @@ function fmtDuration(min){
 }
 function fmtSpan(fromDate, toDate){
   const totalMin = Math.max(0, (toDate - fromDate) / 60000);
-  if(totalMin < 60*24) return fmtDuration(totalMin);
-  let days = Math.floor(totalMin / (60*24));
-  let hours = Math.round((totalMin - days*60*24) / 60);
-  if(hours>=24){ days += 1; hours = 0; }
-  return hours>0 ? `${days}d ${hours}h` : `${days}d`;
+  return fmtDuration(totalMin);
 }
 
 // Turns a slicer-style duration string ("2h 15m 30s", "1d 2h", "45m") into
