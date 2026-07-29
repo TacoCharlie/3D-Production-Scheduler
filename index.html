@@ -457,6 +457,7 @@ const DEFAULT_PRINTERS = [
 const DEFAULT_SPOOLS = [];
 const DEFAULT_STOCK = [];
 const LOW_STOCK_G = 150;
+const LOG_WARN_FILAMENT_G = 100;
 
 let catalog = null;
 let types = null;
@@ -2152,6 +2153,7 @@ function renderLog(){
         <button class="ps-btn primary" id="ps-log-submit">Log print</button>
       </div>
       <div id="ps-log-busy-warning"></div>
+      <div id="ps-log-filament-warning"></div>
       <div class="ps-hint" style="margin-top:12px;">Logging a start time ripples the Live Schedule forward from that printer's real progress. Adding a finish time (now or later, via "Mark finished now") also feeds the average print-time hints you'll see on the Catalog tab.</div>
     </div>
     <div class="ps-panel">
@@ -2212,12 +2214,39 @@ function renderLog(){
   });
 
   let busyWarningConfirmed = false;
+  let lowFilamentConfirmed = false;
   document.getElementById('ps-log-printer').addEventListener('change', () => {
     busyWarningConfirmed = false;
+    lowFilamentConfirmed = false;
     document.getElementById('ps-log-busy-warning').innerHTML = '';
+    document.getElementById('ps-log-filament-warning').innerHTML = '';
   });
   document.getElementById('ps-log-submit').addEventListener('click', () => {
     const printerIdCheck = document.getElementById('ps-log-printer').value;
+    if(printerIdCheck && !lowFilamentConfirmed){
+      const printerCheck = printers.find(p=>p.id===printerIdCheck);
+      const spoolCheck = printerCheck && printerCheck.spoolId ? spools.find(s=>s.id===printerCheck.spoolId && !s.retired) : null;
+      if(spoolCheck && spoolCheck.remainingG <= LOG_WARN_FILAMENT_G){
+        document.getElementById('ps-log-filament-warning').innerHTML = `
+          <div class="ps-warnbox" style="margin-top:10px;">
+            ${escapeHtml(printerCheck.name)}'s loaded spool "${escapeHtml(spoolCheck.label)}" only has <b>${Math.max(0,spoolCheck.remainingG)}g</b> left — this print may not finish on it. Change the spool on the Filament tab, or continue anyway.
+            <div class="ps-row" style="margin-top:8px;gap:6px;">
+              <button class="ps-btn small" id="ps-log-filament-confirm">Log anyway</button>
+              <button class="ps-btn ghost small" id="ps-log-filament-cancel">Cancel</button>
+            </div>
+          </div>
+        `;
+        document.getElementById('ps-log-filament-confirm').addEventListener('click', () => {
+          lowFilamentConfirmed = true;
+          document.getElementById('ps-log-filament-warning').innerHTML = '';
+          document.getElementById('ps-log-submit').click();
+        });
+        document.getElementById('ps-log-filament-cancel').addEventListener('click', () => {
+          document.getElementById('ps-log-filament-warning').innerHTML = '';
+        });
+        return;
+      }
+    }
     if(printerIdCheck && !busyWarningConfirmed){
       const alreadyActive = productionLog.find(e => e.printerId===printerIdCheck && !e.actualEnd);
       if(alreadyActive){
@@ -2245,7 +2274,7 @@ function renderLog(){
       }
     }
     busyWarningConfirmed = false;
-    const isTest = document.getElementById('ps-log-istest').checked;
+    lowFilamentConfirmed = false;
     const printerId = document.getElementById('ps-log-printer').value;
     const startVal = document.getElementById('ps-log-start').value;
     const endVal = document.getElementById('ps-log-end').value;
