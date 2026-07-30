@@ -1618,9 +1618,15 @@ function renderStatus(){
 
     // Job status: which active Job (from the Jobs tab) this printer's
     // current-or-next product belongs to, if any, and how far along that
-    // job is overall (not just on this printer).
+    // job is overall (not just on this printer). For a print that's
+    // actually in progress, use the job it was logged against directly —
+    // guessing by product match falls apart when the same product appears
+    // in more than one active job. Guessing is only necessary for a
+    // not-yet-started upcoming print, which has no log entry yet.
     if(!relevantProductId && upcoming) relevantProductId = upcoming.productId;
-    const job = findActiveJobForProduct(relevantProductId);
+    const job = (inProgress && inProgress.jobId)
+      ? jobs.find(j => j.id === inProgress.jobId && j.status === 'active') || null
+      : findActiveJobForProduct(relevantProductId);
     let jobSection = '';
     if(job){
       const {done, totalUnits} = jobProgress(job);
