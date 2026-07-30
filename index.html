@@ -1904,12 +1904,9 @@ let splittingLogId = null; // which batch entry is showing the "how many of thes
 let expandedPastDays = new Set();
 let expandedPastWeeks = new Set();
 
-function renderLog(){
-  const root = document.getElementById('ps-tab-log');
-  const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
-  const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
-
+function renderFailureStatsWidget(){
   const resolved = productionLog.filter(e => !e.isTest && (e.failed || e.actualEnd));
+  if(resolved.length===0) return '';
   const totalFailures = resolved.filter(e=>e.failed).length;
   const failureRate = resolved.length>0 ? (totalFailures/resolved.length*100) : 0;
   const perPrinterStats = printers.map(p => {
@@ -1917,6 +1914,31 @@ function renderLog(){
     const pFailed = pResolved.filter(e=>e.failed).length;
     return {name: p.name, failed: pFailed, total: pResolved.length, rate: pResolved.length>0 ? (pFailed/pResolved.length*100) : null};
   }).filter(s => s.total>0);
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Failure Stats</div>
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="ps-summary-cell"><div class="ps-summary-num">${totalFailures}</div><div class="ps-summary-label">Total failures</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${failureRate.toFixed(1)}%</div><div class="ps-summary-label">Failure rate (${totalFailures} of ${resolved.length})</div></div>
+      </div>
+      ${perPrinterStats.length>0 ? `
+      <div style="margin-top:12px;">
+        ${perPrinterStats.map(s => `
+          <div class="ps-row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+            <span>${escapeHtml(s.name)}</span>
+            <span class="mono ps-hint">${s.failed} / ${s.total} — ${s.rate.toFixed(1)}%</span>
+          </div>
+        `).join('')}
+      </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderLog(){
+  const root = document.getElementById('ps-tab-log');
+  const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
+  const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 
   const entries = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
   const rows = entries.map(e => {
@@ -2089,25 +2111,6 @@ function renderLog(){
   }).join('');
 
   root.innerHTML = `
-    ${resolved.length>0 ? `
-    <div class="ps-panel">
-      <div class="ps-panel-title"><span class="dot"></span>Failure Stats</div>
-      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);">
-        <div class="ps-summary-cell"><div class="ps-summary-num">${totalFailures}</div><div class="ps-summary-label">Total failures</div></div>
-        <div class="ps-summary-cell"><div class="ps-summary-num">${failureRate.toFixed(1)}%</div><div class="ps-summary-label">Failure rate (${totalFailures} of ${resolved.length})</div></div>
-      </div>
-      ${perPrinterStats.length>0 ? `
-      <div style="margin-top:12px;">
-        ${perPrinterStats.map(s => `
-          <div class="ps-row" style="justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
-            <span>${escapeHtml(s.name)}</span>
-            <span class="mono ps-hint">${s.failed} / ${s.total} — ${s.rate.toFixed(1)}%</span>
-          </div>
-        `).join('')}
-      </div>
-      ` : ''}
-    </div>
-    ` : ''}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Log a Print</div>
       <label class="ps-row" style="gap:6px;margin-bottom:12px;cursor:pointer;">
@@ -3194,6 +3197,7 @@ function renderAnalytics(){
       <div class="ps-hint" style="margin-bottom:12px;">More metrics can get added here over time.</div>
       <div class="ps-row" style="gap:6px;flex-wrap:wrap;">${rangeButtons}</div>
     </div>
+    ${renderFailureStatsWidget()}
     ${renderQuantityByProductWidget(sinceDate)}
     ${renderFinishedJobsWidget(sinceDate)}
     ${renderSpoolOverageWidget(sinceDate)}
