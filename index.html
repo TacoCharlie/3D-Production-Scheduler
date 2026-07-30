@@ -1904,6 +1904,32 @@ let splittingLogId = null; // which batch entry is showing the "how many of thes
 let expandedPastDays = new Set();
 let expandedPastWeeks = new Set();
 
+// History filters. 'range' selects a preset window; 'custom' uses the
+// explicit from/to dates instead. Session-only, resets on reload — matches
+// how the Analytics range filter already behaves.
+let logHistoryRange = '7'; // '7' | '30' | 'all' | 'custom'
+let logHistoryFrom = '';   // yyyy-mm-dd, used when range==='custom'
+let logHistoryTo = '';     // yyyy-mm-dd, used when range==='custom'
+let logHistoryPrinterId = ''; // '' = all printers
+let logHistoryProductId = ''; // '' = all products
+let logHistoryJobId = '';     // '' = all jobs
+
+function logHistoryMatchesFilters(e){
+  if(logHistoryPrinterId && e.printerId !== logHistoryPrinterId) return false;
+  if(logHistoryProductId && e.productId !== logHistoryProductId) return false;
+  if(logHistoryJobId && e.jobId !== logHistoryJobId) return false;
+  const start = new Date(e.actualStart);
+  if(logHistoryRange === 'custom'){
+    if(logHistoryFrom && start < new Date(logHistoryFrom+'T00:00:00')) return false;
+    if(logHistoryTo && start > new Date(logHistoryTo+'T23:59:59')) return false;
+  } else if(logHistoryRange !== 'all'){
+    const days = parseInt(logHistoryRange, 10);
+    const cutoff = new Date(Date.now() - days*24*60*60*1000);
+    if(start < cutoff) return false;
+  }
+  return true;
+}
+
 function renderFailureStatsWidget(){
   const resolved = productionLog.filter(e => !e.isTest && (e.failed || e.actualEnd));
   if(resolved.length===0) return '';
@@ -1940,7 +1966,10 @@ function renderLog(){
   const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
   const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 
-  const entries = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
+  const allEntriesSorted = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
+  const entries = allEntriesSorted.filter(e =>
+    logHistoryMatchesFilters(e) || e.id===editingLogId || e.id===failingLogId || e.id===splittingLogId
+  );
   const rows = entries.map(e => {
     const printer = printers.find(p=>p.id===e.printerId);
     const product = catalog.find(p=>p.id===e.productId);
@@ -2167,9 +2196,72 @@ function renderLog(){
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>History</div>
-      ${entries.length===0 ? '<div class="ps-empty">Nothing logged yet.</div>' : rows}
+      <div class="ps-row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        <button class="ps-btn ${logHistoryRange==='7'?'primary':'ghost'} small" data-action="log-range" data-range="7">Last 7 days</button>
+        <button class="ps-btn ${logHistoryRange==='30'?'primary':'ghost'} small" data-action="log-range" data-range="30">Last 30 days</button>
+        <button class="ps-btn ${logHistoryRange==='all'?'primary':'ghost'} small" data-action="log-range" data-range="all">All time</button>
+        <button class="ps-btn ${logHistoryRange==='custom'?'primary':'ghost'} small" data-action="log-range" data-range="custom">Custom range</button>
+      </div>
+      ${logHistoryRange==='custom' ? `
+      <div class="ps-row" style="gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">From</span>
+          <input class="ps-input" type="date" id="ps-log-filter-from" value="${escapeHtml(logHistoryFrom)}" />
+        </div>
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">To</span>
+          <input class="ps-input" type="date" id="ps-log-filter-to" value="${escapeHtml(logHistoryTo)}" />
+        </div>
+      </div>
+      ` : ''}
+      <div class="ps-row" style="gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
+          <span class="ps-field-label">Printer</span>
+          <select class="ps-select" id="ps-log-filter-printer">
+            <option value="">All printers</option>
+            ${printers.map(p => `<option value="${p.id}" ${logHistoryPrinterId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
+          <span class="ps-field-label">Product</span>
+          <select class="ps-select" id="ps-log-filter-product">
+            <option value="">All products</option>
+            ${catalog.map(p => `<option value="${p.id}" ${logHistoryProductId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
+          <span class="ps-field-label">Job</span>
+          <select class="ps-select" id="ps-log-filter-job">
+            <option value="">All jobs</option>
+            ${jobs.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(j => `<option value="${j.id}" ${logHistoryJobId===j.id?'selected':''}>${escapeHtml(j.name)}</option>`).join('')}
+          </select>
+        </div>
+        ${(logHistoryPrinterId||logHistoryProductId||logHistoryJobId) ? `<button class="ps-btn ghost small" id="ps-log-filter-clear" style="align-self:flex-end;">Clear filters</button>` : ''}
+      </div>
+      ${entries.length===0 ? '<div class="ps-empty">Nothing matches the current filters.</div>' : rows}
     </div>
   `;
+
+  root.querySelectorAll('[data-action="log-range"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      logHistoryRange = btn.getAttribute('data-range');
+      renderLog();
+    });
+  });
+  const filterFrom = document.getElementById('ps-log-filter-from');
+  if(filterFrom) filterFrom.addEventListener('change', () => { logHistoryFrom = filterFrom.value; renderLog(); });
+  const filterTo = document.getElementById('ps-log-filter-to');
+  if(filterTo) filterTo.addEventListener('change', () => { logHistoryTo = filterTo.value; renderLog(); });
+  document.getElementById('ps-log-filter-printer').addEventListener('change', (ev) => { logHistoryPrinterId = ev.target.value; renderLog(); });
+  document.getElementById('ps-log-filter-product').addEventListener('change', (ev) => { logHistoryProductId = ev.target.value; renderLog(); });
+  document.getElementById('ps-log-filter-job').addEventListener('change', (ev) => { logHistoryJobId = ev.target.value; renderLog(); });
+  const filterClearBtn = document.getElementById('ps-log-filter-clear');
+  if(filterClearBtn){
+    filterClearBtn.addEventListener('click', () => {
+      logHistoryPrinterId = ''; logHistoryProductId = ''; logHistoryJobId = '';
+      renderLog();
+    });
+  }
 
   const testCheckbox = document.getElementById('ps-log-istest');
   testCheckbox.addEventListener('change', () => {
