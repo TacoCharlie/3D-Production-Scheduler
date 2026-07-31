@@ -448,7 +448,7 @@ const DEFAULT_CATALOG = [
   {id:'cutter2', name:'Back Cutter 2', type:'cutter', timeH:0, timeM:0, weightG:0},
   {id:'cutter3', name:'Back Cutter 3', type:'cutter', timeH:0, timeM:0, weightG:0},
 ];
-const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15, estimateSpoolG:1000, manualLeadTimeDays:7, reorderSafetyDays:2, electricityRatePerKwh:0.15, printerWattageW:150, filamentCostPerKg:20, earlyWarningDays:2 };
+const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15, estimateSpoolG:1000, manualLeadTimeDays:7, reorderSafetyDays:2, printerWattageW:150, filamentCostPerKg:20, earlyWarningDays:2, summerMonths:[6,7,8,9], peakStart:'14:00', peakEnd:'20:00', winterPeakRate:0.15, winterOffPeakRate:0.15, summerPeakRate:0.15, summerOffPeakRate:0.15 };
 const DEFAULT_PRINTERS = [
   {id:'printer1', name:'Centauri Carbon 1', status:'active', spoolId:null},
   {id:'printer2', name:'Centauri Carbon 2', status:'active', spoolId:null},
@@ -522,10 +522,21 @@ async function loadState(){
   if(typeof settings.estimateSpoolG !== 'number') settings.estimateSpoolG = 1000;
   if(typeof settings.manualLeadTimeDays !== 'number') settings.manualLeadTimeDays = 7;
   if(typeof settings.reorderSafetyDays !== 'number') settings.reorderSafetyDays = 2;
-  if(typeof settings.electricityRatePerKwh !== 'number') settings.electricityRatePerKwh = 0.15;
   if(typeof settings.printerWattageW !== 'number') settings.printerWattageW = 150;
   if(typeof settings.filamentCostPerKg !== 'number') settings.filamentCostPerKg = 20;
   if(typeof settings.earlyWarningDays !== 'number') settings.earlyWarningDays = 2;
+  // Time-of-use electricity rates replaced the old single flat rate. Any
+  // saved data from before this existed gets migrated: the old flat rate
+  // becomes the starting point for all four TOU rates, so nothing changes
+  // in the estimates until the person actually customizes them.
+  const legacyRate = (typeof settings.electricityRatePerKwh === 'number') ? settings.electricityRatePerKwh : 0.15;
+  if(!Array.isArray(settings.summerMonths)) settings.summerMonths = [6,7,8,9];
+  if(typeof settings.peakStart !== 'string') settings.peakStart = '14:00';
+  if(typeof settings.peakEnd !== 'string') settings.peakEnd = '20:00';
+  if(typeof settings.winterPeakRate !== 'number') settings.winterPeakRate = legacyRate;
+  if(typeof settings.winterOffPeakRate !== 'number') settings.winterOffPeakRate = legacyRate;
+  if(typeof settings.summerPeakRate !== 'number') settings.summerPeakRate = legacyRate;
+  if(typeof settings.summerOffPeakRate !== 'number') settings.summerOffPeakRate = legacyRate;
 
   try { const pr = await window.storage.get('printers'); printers = pr ? JSON.parse(pr.value) : JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
   catch(e){ printers = JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
@@ -655,7 +666,15 @@ function logStockChange(st, delta, reason){
 async function saveSavedShipments(){ try { await window.storage.set('savedShipments', JSON.stringify(savedShipments)); flashSave(); } catch(e){ console.error(e); } }
 async function savePartDefs(){ try { await window.storage.set('partDefs', JSON.stringify(partDefs)); flashSave(); } catch(e){ console.error(e); } }
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
-async function saveLog(){ try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); } }
+async function saveLog(){
+  // In-memory productionLog is already updated by the caller before this
+  // runs, so the dependent views can refresh immediately — they shouldn't
+  // wait on the storage write, which may have real latency depending on
+  // where this is deployed. The persistence itself still happens below.
+  if(document.getElementById('ps-tab-settings')) renderSettings();
+  if(document.getElementById('ps-tab-catalog')) renderCatalog();
+  try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); }
+}
 // Every log entry claims exactly one unit of its product's queued quantity,
 // exactly once, tracked via entry.consumed. This runs after any log change
 // AND once on load, so entries that predate this mechanism (or were created
@@ -899,12 +918,66 @@ function getFilamentCostPerGram(){
   }
   return (settings.filamentCostPerKg||0) / 1000;
 }
-function computeProductCOGS(product){
-  const costPerGram = getFilamentCostPerGram();
+function isSummerDate(date){
+  return settings.summerMonths.includes(date.getMonth()+1);
+}
+function isPeakTime(date){
+  const mins = date.getHours()*60 + date.getMinutes();
+  const [ph,pm] = settings.peakStart.split(':').map(Number);
+  const [eh,em] = settings.peakEnd.split(':').map(Number);
+  const startMins = ph*60+pm, endMins = eh*60+em;
+  if(startMins <= endMins) return mins >= startMins && mins < endMins;
+  return mins >= startMins || mins < endMins; // window wraps past midnight
+}
+function getTouBucket(date){
+  const summer = isSummerDate(date);
+  const peak = isPeakTime(date);
+  return summer ? (peak ? 'summerPeak' : 'summerOffPeak') : (peak ? 'winterPeak' : 'winterOffPeak');
+}
+const TOU_BUCKET_LABELS = { summerPeak:'Summer Peak', summerOffPeak:'Summer Off-Peak', winterPeak:'Winter Peak', winterOffPeak:'Winter Off-Peak' };
+function getElectricityRateForDate(date){
+  const bucket = getTouBucket(date);
+  return settings[bucket + 'Rate'];
+}
+// The "right now" rate — whatever bucket this exact moment falls into.
+function getCurrentElectricityRate(){
+  return getElectricityRateForDate(new Date());
+}
+// The blended rate is all-time, not a rolling window — it's meant to
+// evolve gradually as real usage accumulates across all four TOU buckets,
+// weighted by how many kWh actually landed in each one. Falls back to the
+// current-moment rate when there's no completed-print history yet.
+function computeBlendedElectricityRate(){
+  const kW = (settings.printerWattageW||0)/1000;
+  let totalKWh = 0, totalCost = 0;
+  productionLog.forEach(e => {
+    if(!e.actualStart || !e.actualEnd) return; // needs a real, finished duration
+    const hours = Math.max(0, (new Date(e.actualEnd) - new Date(e.actualStart)) / 3600000);
+    const kWh = hours * kW;
+    if(kWh <= 0) return;
+    const rate = getElectricityRateForDate(new Date(e.actualStart));
+    totalKWh += kWh;
+    totalCost += kWh * rate;
+  });
+  if(totalKWh <= 0) return getCurrentElectricityRate();
+  return totalCost / totalKWh;
+}
+function computeProductCOGS(product, precomputed){
+  const costPerGram = precomputed ? precomputed.costPerGram : getFilamentCostPerGram();
   const filamentCost = (product.weightG||0) * costPerGram;
   const printHours = (product.timeH||0) + (product.timeM||0)/60;
-  const electricityCost = printHours * ((settings.printerWattageW||0)/1000) * (settings.electricityRatePerKwh||0);
-  return { filamentCost, electricityCost, total: filamentCost + electricityCost };
+  const kW = (settings.printerWattageW||0)/1000;
+  const blendedRate = precomputed ? precomputed.blendedRate : computeBlendedElectricityRate();
+  const nowRate = precomputed ? precomputed.nowRate : getCurrentElectricityRate();
+  const electricityCostBlended = printHours * kW * blendedRate;
+  const electricityCostNow = printHours * kW * nowRate;
+  return {
+    filamentCost,
+    electricityCostBlended, electricityCostNow,
+    totalBlended: filamentCost + electricityCostBlended,
+    totalNow: filamentCost + electricityCostNow,
+    blendedRate, nowRate
+  };
 }
 
 function fmtTimeOfDay(hhmm){
@@ -4508,6 +4581,11 @@ function renderCatalogList(root){
   `;
   }).join('');
 
+  const costPerGramNow = getFilamentCostPerGram();
+  const blendedElecRateNow = computeBlendedElectricityRate();
+  const currentElecRateNow = getCurrentElectricityRate();
+  const costPrecomputed = { costPerGram: costPerGramNow, blendedRate: blendedElecRateNow, nowRate: currentElecRateNow };
+
   const productRows = catalog.map((p, idx) => {
     const printMin = p.timeH*60 + p.timeM;
     const incomplete = printMin<=0;
@@ -4517,12 +4595,13 @@ function renderCatalogList(root){
     const badge = batchCount>0
       ? ` <button class="ps-tag" data-action="toggle-batch-preview" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool); border:none; cursor:pointer;" title="${isExpanded?'Hide':'Show'} batch details">${isExpanded?'▾':'▸'} ${batchCount}× batch${batchCount!==1?'es':''}</button>`
       : '';
-    const cogs = incomplete ? null : computeProductCOGS(p);
+    const cogs = incomplete ? null : computeProductCOGS(p, costPrecomputed);
     const subRows = (isExpanded && batchCount>0) ? p.batchConfigs.map(cfg => `
       <tr class="ps-batch-preview-row" style="opacity:0.75;">
         <td style="padding-left:28px;" class="ps-hint">↳ ${cfg.unitsPerBatch}× batch</td>
         <td class="mono ps-hint">${fmtDuration(cfg.timeH*60+cfg.timeM)}</td>
         <td class="mono ps-hint">${cfg.weightG>0?cfg.weightG+'g':'—'}</td>
+        <td></td>
         <td></td>
         <td class="ps-hint">${Object.keys(cfg.projectFiles||{}).length>0?Object.keys(cfg.projectFiles||{}).length+' file'+(Object.keys(cfg.projectFiles||{}).length!==1?'s':''):'—'}</td>
         <td></td>
@@ -4538,7 +4617,8 @@ function renderCatalogList(root){
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${badge}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
         <td class="mono ps-hint">${incomplete?'—':fmtDuration(printMin)}</td>
         <td class="mono ps-hint">${p.weightG>0?p.weightG+'g':'—'}</td>
-        <td class="mono ps-hint" title="${cogs?`Filament $${cogs.filamentCost.toFixed(2)} + electricity $${cogs.electricityCost.toFixed(2)}`:''}">${cogs?'$'+cogs.total.toFixed(2):'—'}</td>
+        <td class="mono ps-hint" title="${cogs?`Filament $${cogs.filamentCost.toFixed(2)} + electricity $${cogs.electricityCostBlended.toFixed(2)} (blended $${cogs.blendedRate.toFixed(3)}/kWh, all-time weighted average)`:''}">${cogs?'$'+cogs.totalBlended.toFixed(2):'—'}</td>
+        <td class="mono ps-hint" title="${cogs?`Filament $${cogs.filamentCost.toFixed(2)} + electricity $${cogs.electricityCostNow.toFixed(2)} (${TOU_BUCKET_LABELS[getTouBucket(new Date())]} rate, $${cogs.nowRate.toFixed(3)}/kWh, right now)`:''}">${cogs?'$'+cogs.totalNow.toFixed(2):'—'}</td>
         <td class="ps-hint">${fileCount>0?fileCount+' file'+(fileCount!==1?'s':''):'—'}</td>
         <td class="ps-hint">${batchCount>0?batchCount+' batch'+(batchCount!==1?'es':''):'—'}</td>
         <td><button class="ps-btn small" data-action="edit-product">Edit</button></td>
@@ -4571,7 +4651,7 @@ function renderCatalogList(root){
       ${catalog.length===0 ? '<div class="ps-empty">No products yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Est. cost</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px"></th></tr></thead>
+        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px"></th></tr></thead>
         <tbody>${productRows}</tbody>
       </table>
       </div>
@@ -5376,10 +5456,15 @@ async function importAllData(jsonText){
 
 let editingWorkWindow = false; // Settings tab: whether the work-window time fields are in edit mode
 let editingCostSettings = false; // Settings tab: whether the cost calculator fields are in edit mode
+let editingTouSettings = false; // Settings tab: whether the time-of-use electricity rate fields are in edit mode
+const MONTH_NAMES_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function renderSettings(){
   const root = document.getElementById('ps-tab-settings');
   const dayChecks = [1,2,3,4,5,6,0].map(d => `
     <span class="ps-daycheck ${settings.workDays.includes(d)?'on':''}" data-day="${d}">${DAY_NAMES[d]}</span>
+  `).join('');
+  const monthChecks = MONTH_NAMES_SHORT.map((name, i) => `
+    <span class="ps-daycheck ${settings.summerMonths.includes(i+1)?'on':''}" data-month="${i+1}">${name}</span>
   `).join('');
   const costedSpoolCount = spools.filter(s => s.costPerSpool > 0).length;
   const blendedCostNote = costedSpoolCount > 0
@@ -5391,7 +5476,7 @@ function renderSettings(){
       <div class="ps-panel-title"><span class="dot"></span>Work Window</div>
       <div class="ps-field">
         <span class="ps-field-label">Work days</span>
-        <div class="ps-row" style="flex-wrap:wrap;gap:6px;">${dayChecks}</div>
+        <div class="ps-row" id="ps-work-days" style="flex-wrap:wrap;gap:6px;">${dayChecks}</div>
       </div>
       <div class="ps-row" style="align-items:flex-end;">
         ${editingWorkWindow ? `
@@ -5431,13 +5516,9 @@ function renderSettings(){
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Cost Calculator</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Drives the "Est. cost" column on the Catalog tab — filament cost per product uses a blended $/g from your Stock entries' recorded spool costs (once you add them), and electricity cost is print time × wattage × rate below.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Drives the "Cost (avg)" and "Cost (now)" columns on the Catalog tab — filament cost per product uses a blended $/g from your Stock entries' recorded spool costs (once you add them), and electricity cost is print time × wattage × the time-of-use rate below.</div>
       <div class="ps-row" style="align-items:flex-end;">
         ${editingCostSettings ? `
-        <div class="ps-field" style="flex:1;">
-          <span class="ps-field-label">Electricity rate ($/kWh)</span>
-          <input class="ps-input" type="number" min="0" step="0.01" id="ps-electricity-rate" value="${settings.electricityRatePerKwh}" />
-        </div>
         <div class="ps-field" style="flex:1;">
           <span class="ps-field-label">Printer power draw (W)</span>
           <input class="ps-input" type="number" min="0" id="ps-printer-wattage" value="${settings.printerWattageW}" />
@@ -5452,10 +5533,6 @@ function renderSettings(){
         </div>
         ` : `
         <div class="ps-field" style="flex:1;">
-          <span class="ps-field-label">Electricity rate ($/kWh)</span>
-          <div class="ps-hint mono" style="padding:8px 0;">$${settings.electricityRatePerKwh.toFixed(2)}</div>
-        </div>
-        <div class="ps-field" style="flex:1;">
           <span class="ps-field-label">Printer power draw (W)</span>
           <div class="ps-hint mono" style="padding:8px 0;">${settings.printerWattageW}W</div>
         </div>
@@ -5467,6 +5544,78 @@ function renderSettings(){
         <button class="ps-btn ghost small" id="ps-edit-cost-settings">Edit</button>
         `}
       </div>
+    </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Electricity Rates (Time-of-Use)</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Set which months count as summer (winter is everything else) and your daily peak window — together they define four rate buckets. "Cost (now)" on the Catalog tab uses whichever bucket applies at this exact moment; "Cost (avg)" uses a blended rate weighted by how much of your actual print history has landed in each bucket, so it shifts gradually as real usage accumulates rather than jumping around.</div>
+      <div class="ps-field">
+        <span class="ps-field-label">Summer months</span>
+        <div class="ps-row" id="ps-summer-months" style="flex-wrap:wrap;gap:6px;">${monthChecks}</div>
+      </div>
+      <div class="ps-row" style="align-items:flex-end;margin-top:10px;">
+        ${editingTouSettings ? `
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Peak window starts</span>
+          <input class="ps-input" type="time" id="ps-peak-start" value="${settings.peakStart}" />
+        </div>
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Peak window ends</span>
+          <input class="ps-input" type="time" id="ps-peak-end" value="${settings.peakEnd}" />
+        </div>
+        ` : `
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Peak window</span>
+          <div class="ps-hint mono" style="padding:8px 0;">${fmtTimeOfDay(settings.peakStart)} – ${fmtTimeOfDay(settings.peakEnd)}</div>
+        </div>
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Right now</span>
+          <div class="ps-hint mono" style="padding:8px 0;">${TOU_BUCKET_LABELS[getTouBucket(new Date())]} — $${getCurrentElectricityRate().toFixed(3)}/kWh</div>
+        </div>
+        `}
+      </div>
+      <div class="ps-row" style="align-items:flex-end;margin-top:10px;flex-wrap:wrap;">
+        ${editingTouSettings ? `
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Winter Peak ($/kWh)</span>
+          <input class="ps-input" type="number" min="0" step="0.01" id="ps-rate-winter-peak" value="${settings.winterPeakRate}" />
+        </div>
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Winter Off-Peak ($/kWh)</span>
+          <input class="ps-input" type="number" min="0" step="0.01" id="ps-rate-winter-offpeak" value="${settings.winterOffPeakRate}" />
+        </div>
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Summer Peak ($/kWh)</span>
+          <input class="ps-input" type="number" min="0" step="0.01" id="ps-rate-summer-peak" value="${settings.summerPeakRate}" />
+        </div>
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Summer Off-Peak ($/kWh)</span>
+          <input class="ps-input" type="number" min="0" step="0.01" id="ps-rate-summer-offpeak" value="${settings.summerOffPeakRate}" />
+        </div>
+        <div class="ps-row" style="gap:6px;">
+          <button class="ps-btn primary small" id="ps-save-tou-settings">Save</button>
+          <button class="ps-btn ghost small" id="ps-cancel-tou-settings">Cancel</button>
+        </div>
+        ` : `
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Winter Peak</span>
+          <div class="ps-hint mono" style="padding:8px 0;">$${settings.winterPeakRate.toFixed(3)}/kWh</div>
+        </div>
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Winter Off-Peak</span>
+          <div class="ps-hint mono" style="padding:8px 0;">$${settings.winterOffPeakRate.toFixed(3)}/kWh</div>
+        </div>
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Summer Peak</span>
+          <div class="ps-hint mono" style="padding:8px 0;">$${settings.summerPeakRate.toFixed(3)}/kWh</div>
+        </div>
+        <div class="ps-field" style="flex:1;min-width:130px;">
+          <span class="ps-field-label">Summer Off-Peak</span>
+          <div class="ps-hint mono" style="padding:8px 0;">$${settings.summerOffPeakRate.toFixed(3)}/kWh</div>
+        </div>
+        <button class="ps-btn ghost small" id="ps-edit-tou-settings">Edit</button>
+        `}
+      </div>
+      <div class="ps-hint" style="margin-top:10px;">Blended rate right now, from actual print history: $${computeBlendedElectricityRate().toFixed(3)}/kWh${productionLog.filter(e=>e.actualStart&&e.actualEnd).length===0?' (no finished prints logged yet — using the current-moment rate as a starting point)':''}.</div>
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Notifications</div>
@@ -5515,7 +5664,7 @@ function renderSettings(){
     e.target.value = '';
   });
 
-  root.querySelectorAll('.ps-daycheck').forEach(el => {
+  root.querySelectorAll('#ps-work-days .ps-daycheck').forEach(el => {
     el.addEventListener('click', () => {
       const d = parseInt(el.getAttribute('data-day'));
       if(settings.workDays.includes(d)) settings.workDays = settings.workDays.filter(x=>x!==d);
@@ -5558,7 +5707,6 @@ function renderSettings(){
   const saveCostSettingsBtn = document.getElementById('ps-save-cost-settings');
   if(saveCostSettingsBtn){
     saveCostSettingsBtn.addEventListener('click', () => {
-      settings.electricityRatePerKwh = Math.max(0, parseFloat(document.getElementById('ps-electricity-rate').value)||0);
       settings.printerWattageW = Math.max(0, parseFloat(document.getElementById('ps-printer-wattage').value)||0);
       settings.filamentCostPerKg = Math.max(0, parseFloat(document.getElementById('ps-filament-cost-perkg').value)||0);
       editingCostSettings = false;
@@ -5570,6 +5718,47 @@ function renderSettings(){
   if(cancelCostSettingsBtn){
     cancelCostSettingsBtn.addEventListener('click', () => {
       editingCostSettings = false;
+      renderSettings();
+    });
+  }
+
+  // Summer-month toggles are scoped to their own container so they can't
+  // collide with the Work Days toggles, which share the same .ps-daycheck
+  // styling class but a different data attribute.
+  root.querySelectorAll('#ps-summer-months .ps-daycheck').forEach(el => {
+    el.addEventListener('click', () => {
+      const m = parseInt(el.getAttribute('data-month'));
+      if(settings.summerMonths.includes(m)) settings.summerMonths = settings.summerMonths.filter(x=>x!==m);
+      else settings.summerMonths.push(m);
+      saveSettings(); renderSettings();
+      if(document.getElementById('ps-tab-catalog')) renderCatalog();
+    });
+  });
+  const editTouBtn = document.getElementById('ps-edit-tou-settings');
+  if(editTouBtn){
+    editTouBtn.addEventListener('click', () => {
+      editingTouSettings = true;
+      renderSettings();
+    });
+  }
+  const saveTouBtn = document.getElementById('ps-save-tou-settings');
+  if(saveTouBtn){
+    saveTouBtn.addEventListener('click', () => {
+      settings.peakStart = document.getElementById('ps-peak-start').value;
+      settings.peakEnd = document.getElementById('ps-peak-end').value;
+      settings.winterPeakRate = Math.max(0, parseFloat(document.getElementById('ps-rate-winter-peak').value)||0);
+      settings.winterOffPeakRate = Math.max(0, parseFloat(document.getElementById('ps-rate-winter-offpeak').value)||0);
+      settings.summerPeakRate = Math.max(0, parseFloat(document.getElementById('ps-rate-summer-peak').value)||0);
+      settings.summerOffPeakRate = Math.max(0, parseFloat(document.getElementById('ps-rate-summer-offpeak').value)||0);
+      editingTouSettings = false;
+      saveSettings(); renderSettings();
+      if(document.getElementById('ps-tab-catalog')) renderCatalog();
+    });
+  }
+  const cancelTouBtn = document.getElementById('ps-cancel-tou-settings');
+  if(cancelTouBtn){
+    cancelTouBtn.addEventListener('click', () => {
+      editingTouSettings = false;
       renderSettings();
     });
   }
