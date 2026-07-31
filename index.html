@@ -448,7 +448,7 @@ const DEFAULT_CATALOG = [
   {id:'cutter2', name:'Back Cutter 2', type:'cutter', timeH:0, timeM:0, weightG:0},
   {id:'cutter3', name:'Back Cutter 3', type:'cutter', timeH:0, timeM:0, weightG:0},
 ];
-const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15, estimateSpoolG:1000 };
+const DEFAULT_SETTINGS = { workDays:[1,2,3,4,5], startTime:'08:00', endTime:'18:00', downtimeMin:15, estimateSpoolG:1000, manualLeadTimeDays:7, reorderSafetyDays:2 };
 const DEFAULT_PRINTERS = [
   {id:'printer1', name:'Centauri Carbon 1', status:'active', spoolId:null},
   {id:'printer2', name:'Centauri Carbon 2', status:'active', spoolId:null},
@@ -519,6 +519,8 @@ async function loadState(){
   try { const s = await window.storage.get('settings'); settings = s ? JSON.parse(s.value) : JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
   catch(e){ settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
   if(typeof settings.estimateSpoolG !== 'number') settings.estimateSpoolG = 1000;
+  if(typeof settings.manualLeadTimeDays !== 'number') settings.manualLeadTimeDays = 7;
+  if(typeof settings.reorderSafetyDays !== 'number') settings.reorderSafetyDays = 2;
 
   try { const pr = await window.storage.get('printers'); printers = pr ? JSON.parse(pr.value) : JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
   catch(e){ printers = JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
@@ -2966,7 +2968,10 @@ function renderFilament(){
       <td><input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" /></td>
       <td><input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" /></td>
       <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" /></td>
-      <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" /></td>
+      <td>
+        <input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" />
+        ${st.qtyOnOrder>0 && st.orderedAt ? `<div class="ps-hint" style="margin-top:3px;white-space:nowrap;">ordered ${new Date(st.orderedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</div>` : ''}
+      </td>
       <td>${st.qtyOnOrder>0 ? `<button class="ps-btn small" data-action="receive-stock">Receive</button>` : ''}</td>
       <td><button class="ps-btn ghost small" data-action="remove-stock">✕</button></td>
     </tr>
@@ -3077,12 +3082,67 @@ function renderFilament(){
     })).sort((a,b) => a.manufacturer.localeCompare(b.manufacturer));
   }
 
+  // How many grams have actually gone out the door per day, recently —
+  // this is what determines when you'll run out, not the static queued-job
+  // total below. Uses real logged weight (including test prints and
+  // failures — filament was physically consumed either way), averaged over
+  // a fixed calendar window so weekends/downtime pull the average down
+  // realistically instead of only counting "active" days.
+  function computeDailyConsumptionRateG(windowDays){
+    const cutoff = new Date(Date.now() - windowDays*24*60*60*1000);
+    const totalG = productionLog
+      .filter(e => new Date(e.actualStart) >= cutoff)
+      .reduce((s,e) => s + (e.weightGAtLogTime||0), 0);
+    return totalG / windowDays;
+  }
+  const dailyRateG = computeDailyConsumptionRateG(14);
+  const onHandForRunwayG = computeFilamentOnHandG();
+  const runwayDays = dailyRateG > 0 ? onHandForRunwayG / dailyRateG : null;
+
+  const leadTimes = computeLeadTimeSummary();
+  const effectiveLeadDays = leadTimes.length>0
+    ? Math.max(...leadTimes.map(lt=>lt.avgDays))
+    : settings.manualLeadTimeDays;
+  const reorderPointDays = effectiveLeadDays + settings.reorderSafetyDays;
+  const runwayShort = runwayDays !== null && runwayDays <= reorderPointDays;
+  const stockoutDate = runwayDays !== null ? new Date(Date.now() + runwayDays*24*60*60*1000) : null;
+
+  const runwayWidget = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Filament Runway</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Based on ${dailyRateG.toFixed(0)}g/day actual usage (last 14 days, including tests and failures) against what's on hand right now. Compared to a ${effectiveLeadDays.toFixed(1)}-day lead time${leadTimes.length===0?' (no completed orders yet — using the manual estimate below)':' (from your order history)'} plus ${settings.reorderSafetyDays}-day safety buffer.</div>
+      ${dailyRateG<=0 ? `
+        <div class="ps-hint">No production logged in the last 14 days — can't project a runway yet.</div>
+      ` : `
+        <div class="ps-summary-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:${runwayShort?'12px':'0'};">
+          <div class="ps-summary-cell"><div class="ps-summary-num">${runwayDays.toFixed(1)}</div><div class="ps-summary-label">Days of filament left</div></div>
+          <div class="ps-summary-cell"><div class="ps-summary-num">${reorderPointDays.toFixed(1)}</div><div class="ps-summary-label">Reorder point (days)</div></div>
+          <div class="ps-summary-cell"><div class="ps-summary-num">${stockoutDate.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div><div class="ps-summary-label">Projected run-out</div></div>
+        </div>
+        ${runwayShort
+          ? `<div class="ps-warnbox">You're inside your reorder window — at this pace you'll run out before a new order could realistically arrive. Order now if you haven't already.</div>`
+          : `<div class="ps-hint" style="color:var(--ok, #6a6);">Runway is longer than your reorder point — no rush yet, but this narrows fast if usage picks up.</div>`}
+      `}
+      <div class="ps-row" style="gap:10px;align-items:flex-end;margin-top:14px;flex-wrap:wrap;">
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">Manual lead time estimate (days)</span>
+          <input class="ps-input ps-narrow" type="number" min="0" step="0.5" id="ps-reorder-manual-leadtime" value="${settings.manualLeadTimeDays}" />
+        </div>
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">Safety buffer (days)</span>
+          <input class="ps-input ps-narrow" type="number" min="0" step="0.5" id="ps-reorder-safety-days" value="${settings.reorderSafetyDays}" />
+        </div>
+        <div class="ps-hint" style="flex:1;min-width:180px;">${leadTimes.length>0 ? 'Used automatically once real lead times have more data — this stays as a fallback for now.' : "You haven't received a tracked order yet, so this manual number is what's driving the reorder point above."}</div>
+      </div>
+    </div>
+  `;
+
   const demandG = computeFilamentDemandG();
   const onHandG = computeFilamentOnHandG();
   const shortG = Math.max(0, demandG - onHandG);
-  const leadTimes = computeLeadTimeSummary();
 
   const reorderWidget = `
+    ${runwayWidget}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Reorder Planning</div>
       <div class="ps-hint" style="margin-bottom:12px;">Demand is everything remaining on active and queued jobs, checked against what's actually on hand — opened spools plus unopened stock. Doesn't split by material yet, since products don't specify one.</div>
@@ -3094,6 +3154,28 @@ function renderFilament(){
       ${leadTimes.length>0 ? `
       <div style="margin-top:14px;">
         ${leadTimes.map(lt => `<div class="ps-hint">${escapeHtml(lt.manufacturer)} — ${escapeHtml(lt.material)}: avg lead time ${lt.avgDays.toFixed(1)} day${lt.avgDays!==1?'s':''} (based on ${lt.count} order${lt.count!==1?'s':''})</div>`).join('')}
+      </div>
+      <div style="margin-top:14px;">
+        <button class="ps-btn ghost small" id="ps-toggle-order-history">${showOrderHistory?'▾':'▸'} Order history (${filamentOrderHistory.length})</button>
+        ${showOrderHistory ? `
+        <div style="overflow-x:auto;margin-top:10px;">
+        <table class="ps-table">
+          <thead><tr><th>Manufacturer</th><th>Material</th><th>Qty</th><th>Ordered</th><th>Received</th><th style="width:90px">Lead time</th></tr></thead>
+          <tbody>
+            ${filamentOrderHistory.slice().sort((a,b)=>new Date(b.receivedAt)-new Date(a.receivedAt)).map(o => `
+              <tr>
+                <td>${escapeHtml(o.manufacturer||'—')}</td>
+                <td>${escapeHtml(o.material||'—')}</td>
+                <td>${o.qty}</td>
+                <td class="mono">${new Date(o.orderedAt).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})}</td>
+                <td class="mono">${new Date(o.receivedAt).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})}</td>
+                <td class="mono">${o.leadTimeDays.toFixed(1)}d</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        </div>
+        ` : ''}
       </div>
       ` : `<div class="ps-hint" style="margin-top:10px;">No completed orders yet — lead times will show here once you place and receive one.</div>`}
     </div>
@@ -3139,6 +3221,18 @@ function renderFilament(){
     </div>
     ` : ''}
   `;
+
+  // ---- Runway settings handlers ----
+  document.getElementById('ps-reorder-manual-leadtime').addEventListener('change', (ev) => {
+    settings.manualLeadTimeDays = Math.max(0, parseFloat(ev.target.value)||0);
+    saveSettings();
+    renderFilament();
+  });
+  document.getElementById('ps-reorder-safety-days').addEventListener('change', (ev) => {
+    settings.reorderSafetyDays = Math.max(0, parseFloat(ev.target.value)||0);
+    saveSettings();
+    renderFilament();
+  });
 
   // ---- Stock handlers ----
   root.querySelectorAll('#ps-stock-body tr').forEach(tr => {
@@ -3224,6 +3318,14 @@ function renderFilament(){
       renderFilament();
     });
   }
+
+  const toggleOrderHistoryBtn = document.getElementById('ps-toggle-order-history');
+  if(toggleOrderHistoryBtn){
+    toggleOrderHistoryBtn.addEventListener('click', () => {
+      showOrderHistory = !showOrderHistory;
+      renderFilament();
+    });
+  }
 }
 
 
@@ -3233,6 +3335,7 @@ let editingProductId = null; // null = browsing list; '_new' = add-product form;
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
+let showOrderHistory = false; // Filament tab: whether the order-history table under Reorder Planning is expanded
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
 
@@ -4748,7 +4851,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs, partDefs
+    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs, partDefs, filamentOrderHistory
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -4777,6 +4880,7 @@ async function importAllData(jsonText){
   if(Array.isArray(data.estimateItems)) estimateItems = data.estimateItems;
   if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
   if(Array.isArray(data.jobs)) jobs = data.jobs;
+  if(Array.isArray(data.filamentOrderHistory)) filamentOrderHistory = data.filamentOrderHistory;
   if(Array.isArray(data.partDefs)){
     partDefs = data.partDefs;
     partDefs.forEach(pd => { if(!Array.isArray(pd.replacementLog)) pd.replacementLog = []; });
@@ -4806,7 +4910,7 @@ async function importAllData(jsonText){
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs(), savePartDefs()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs(), savePartDefs(), saveFilamentOrderHistory()
   ]);
   syncConsumption();
 
