@@ -945,15 +945,38 @@ function getElectricityRateForDate(date){
 function getCurrentElectricityRate(){
   return getElectricityRateForDate(new Date());
 }
-// Weighted by hours, so a reading covering more runtime counts more — same
-// principle as the blended electricity rate. Each reading should be its
-// own period's totals (e.g. "This Month" from a monitoring app, or any
-// other span that doesn't overlap the others), not a running lifetime
-// total, or the readings would double-count.
+// The scheduler already knows, with certainty, exactly when this printer
+// was really printing — actualStart/actualEnd on every logged entry. That's
+// more trustworthy than a smart-plug app's own "Runtime" figure, which
+// often counts broader "powered on" time (idle-between-prints, standby)
+// rather than strictly active printing, and would bias wattage low if used
+// directly. So a reading only needs kWh + a date range; hours are computed
+// from real logged prints in that window, matching how the blended
+// electricity rate already treats "real duration."
+function computeLoggedHoursForPrinterInRange(printerId, dateFromISO, dateToISO){
+  const from = new Date(dateFromISO + 'T00:00:00');
+  const to = new Date(dateToISO + 'T23:59:59');
+  return productionLog
+    .filter(e => e.printerId===printerId && e.actualStart && e.actualEnd)
+    .filter(e => {
+      const start = new Date(e.actualStart);
+      return start >= from && start <= to;
+    })
+    .reduce((s,e) => s + Math.max(0, (new Date(e.actualEnd) - new Date(e.actualStart))/3600000), 0);
+}
+// Weighted by logged hours, so a reading covering more real print time
+// counts more — same principle as the blended electricity rate. A reading
+// with no logged prints in its range contributes nothing (rather than
+// corrupting the average with a bogus hours figure).
 function computePrinterWattageFromReadings(p){
   if(!p.wattageReadings || p.wattageReadings.length===0) return null;
-  const totalKWh = p.wattageReadings.reduce((s,r) => s + r.kWh, 0);
-  const totalHours = p.wattageReadings.reduce((s,r) => s + r.hours, 0);
+  let totalKWh = 0, totalHours = 0;
+  p.wattageReadings.forEach(r => {
+    const hours = computeLoggedHoursForPrinterInRange(p.id, r.dateFrom, r.dateTo);
+    if(hours <= 0) return;
+    totalKWh += r.kWh;
+    totalHours += hours;
+  });
   if(totalHours <= 0) return null;
   return (totalKWh / totalHours) * 1000;
 }
@@ -2069,21 +2092,27 @@ function renderPrinters(){
               <div>${displayLine} <button class="ps-btn ghost small" data-action="toggle-wattage-readings" style="padding:1px 6px;font-size:10px;">${wattageReadingsOpenFor.has(p.id)?'Hide':(readingCount>0?'Manage':'Add')} readings</button></div>
               ${wattageReadingsOpenFor.has(p.id) ? `
               <div style="margin-top:8px;padding:10px;background:var(--panel-2);border-radius:6px;">
-                <div class="ps-hint" style="margin-bottom:8px;">Paste in whatever your monitoring app shows for a period (e.g. "This Month": kWh and Runtime hours) — no need for a clean isolated print, add a new one anytime you check and the average keeps refining itself.</div>
-                ${readingCount>0 ? p.wattageReadings.map(r => `
+                <div class="ps-hint" style="margin-bottom:8px;">Give the kWh from your monitoring app for a date range — hours come from this printer's own logged prints in that range, not your monitoring app's "Runtime" figure (which often counts idle time, not just active printing). No clean isolated print needed; add a new one anytime and the average keeps refining itself.</div>
+                ${readingCount>0 ? p.wattageReadings.map(r => {
+                  const loggedHours = computeLoggedHoursForPrinterInRange(p.id, r.dateFrom, r.dateTo);
+                  return `
                   <div class="ps-row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
-                    <span class="ps-hint">${new Date(r.recordedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})} — ${r.kWh}kWh / ${r.hours}h = ${Math.round((r.kWh/r.hours)*1000)}W</span>
+                    <span class="ps-hint">${new Date(r.dateFrom+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}–${new Date(r.dateTo+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})} — ${r.kWh}kWh${loggedHours>0 ? ` / ${loggedHours.toFixed(1)}h logged = ${Math.round((r.kWh/loggedHours)*1000)}W` : ` — no logged prints in this range, not counted`}</span>
                     <button class="ps-btn ghost small" data-action="remove-wattage-reading" data-readingid="${r.id}" style="padding:0 6px;">✕</button>
                   </div>
-                `).join('') : ''}
+                `;}).join('') : ''}
                 <div class="ps-row" style="gap:8px;align-items:flex-end;margin-top:8px;flex-wrap:wrap;">
                   <div class="ps-field" style="margin-bottom:0;">
                     <span class="ps-field-label">kWh</span>
                     <input class="ps-input ps-narrow" type="number" min="0" step="0.001" id="ps-reading-kwh-${p.id}" style="width:80px;" />
                   </div>
                   <div class="ps-field" style="margin-bottom:0;">
-                    <span class="ps-field-label">Runtime (h)</span>
-                    <input class="ps-input ps-narrow" type="number" min="0" step="0.1" id="ps-reading-hours-${p.id}" style="width:80px;" />
+                    <span class="ps-field-label">From</span>
+                    <input class="ps-input ps-narrow" type="date" id="ps-reading-from-${p.id}" style="width:130px;" />
+                  </div>
+                  <div class="ps-field" style="margin-bottom:0;">
+                    <span class="ps-field-label">To</span>
+                    <input class="ps-input ps-narrow" type="date" id="ps-reading-to-${p.id}" style="width:130px;" />
                   </div>
                   <button class="ps-btn small" data-action="add-wattage-reading">+ Add</button>
                 </div>
@@ -2301,11 +2330,13 @@ function renderPrinters(){
       addReadingBtn.addEventListener('click', () => {
         const p = printers.find(x=>x.id===id);
         const kwhInput = document.getElementById(`ps-reading-kwh-${id}`);
-        const hoursInput = document.getElementById(`ps-reading-hours-${id}`);
+        const fromInput = document.getElementById(`ps-reading-from-${id}`);
+        const toInput = document.getElementById(`ps-reading-to-${id}`);
         const kWh = parseFloat(kwhInput.value)||0;
-        const hours = parseFloat(hoursInput.value)||0;
-        if(kWh<=0 || hours<=0) return;
-        p.wattageReadings.push({id: uid('reading'), kWh, hours, recordedAt: new Date().toISOString()});
+        const dateFrom = fromInput.value;
+        const dateTo = toInput.value;
+        if(kWh<=0 || !dateFrom || !dateTo || dateFrom>dateTo) return;
+        p.wattageReadings.push({id: uid('reading'), kWh, dateFrom, dateTo, recordedAt: new Date().toISOString()});
         savePrinters(); renderPrinters();
         if(document.getElementById('ps-tab-settings')) renderSettings();
         if(document.getElementById('ps-tab-catalog')) renderCatalog();
