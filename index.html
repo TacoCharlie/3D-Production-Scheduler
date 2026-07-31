@@ -1257,9 +1257,12 @@ function renderJobItemRows(job, editable){
       const loggedForItem = productionLog
         .filter(e => e.jobId===job.id && e.productId===item.id && !e.isTest && !e.failed && e.actualEnd)
         .reduce((s,e) => s + (e.unitsCompleted||1), 0);
-      const qtyDisplay = job.status === 'active'
-        ? `<input class="ps-input ps-narrow" type="number" min="0" style="width:60px;display:inline-block;" data-action="job-item-target-qty" data-jobid="${job.id}" data-itemid="${item.id}" value="${item.qty}" />×`
-        : `${item.qty}×`;
+      const itemKey = `${job.id}|${item.id}`;
+      const qtyDisplay = (job.status === 'active' && editingJobItemTarget === itemKey)
+        ? `<input class="ps-input ps-narrow" type="number" min="0" style="width:60px;display:inline-block;" data-action="job-item-target-qty" data-jobid="${job.id}" data-itemid="${item.id}" value="${item.qty}" autofocus />× <button class="ps-btn ghost small" data-action="save-job-item-target" data-jobid="${job.id}" data-itemid="${item.id}" style="padding:1px 8px;">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-item-target" style="padding:1px 8px;">✕</button>`
+        : (job.status === 'active'
+          ? `${item.qty}× <button class="ps-btn ghost small" data-action="edit-job-item-target" data-jobid="${job.id}" data-itemid="${item.id}" style="padding:1px 6px;font-size:10px;" title="Edit target quantity">✎</button>`
+          : `${item.qty}×`);
       const hitTarget = item.qty > 0 && loggedForItem >= item.qty;
       const row = `<div>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span>${hitTarget ? `<span style="color:var(--ok);margin-left:6px;" title="Target reached">✓</span>` : ''}</div>`;
       (hitTarget ? completed : remaining).push(row);
@@ -1515,17 +1518,35 @@ function renderJobs(){
         saveJobs();
       });
     });
-    card.querySelectorAll('[data-action="job-item-target-qty"]').forEach(input => {
-      input.addEventListener('change', () => {
-        const itemId = input.getAttribute('data-itemid');
+    card.querySelectorAll('[data-action="edit-job-item-target"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        editingJobItemTarget = `${btn.getAttribute('data-jobid')}|${btn.getAttribute('data-itemid')}`;
+        renderJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="save-job-item-target"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const jobId = btn.getAttribute('data-jobid');
+        const itemId = btn.getAttribute('data-itemid');
+        const input = card.querySelector(`[data-action="job-item-target-qty"][data-jobid="${jobId}"][data-itemid="${itemId}"]`);
+        const targetJob = jobs.find(j=>j.id===jobId);
         const newQty = Math.max(0, parseInt(input.value)||0);
-        if(newQty === 0){
-          job.items = job.items.filter(it=>it.id!==itemId);
-        } else {
-          const item = job.items.find(it=>it.id===itemId);
-          if(item) item.qty = newQty;
+        if(targetJob){
+          if(newQty === 0){
+            targetJob.items = targetJob.items.filter(it=>it.id!==itemId);
+          } else {
+            const item = targetJob.items.find(it=>it.id===itemId);
+            if(item) item.qty = newQty;
+          }
+          saveJobs();
         }
-        saveJobs();
+        editingJobItemTarget = null;
+        renderJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="cancel-job-item-target"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        editingJobItemTarget = null;
         renderJobs();
       });
     });
@@ -1562,6 +1583,8 @@ function renderJobs(){
 }
 
 let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
+let editingPrinterNameId = null; // which printer's name field is in edit mode
+let editingPartDefId = null; // which maintenance part row is in edit mode
 
 // ---------- rendering: Status tab ----------
 function renderStatus(){
@@ -1734,7 +1757,9 @@ function renderPrinters(){
     return `
       <div class="ps-printer-card" data-id="${p.id}">
         <div class="ps-printer-top">
-          <input class="ps-input ps-name" data-field="name" value="${escapeHtml(p.name)}" />
+          ${editingPrinterNameId===p.id
+            ? `<input class="ps-input ps-name" data-field="name" value="${escapeHtml(p.name)}" autofocus /> <button class="ps-btn ghost small" data-action="save-printer-name">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-name">✕</button>`
+            : `<b style="flex:1;">${escapeHtml(p.name)}</b> <button class="ps-btn ghost small" data-action="edit-printer-name" title="Rename">✎</button>`}
           <span class="ps-status-pill ${p.status}" data-action="toggle-status">${p.status === 'active' ? 'Active' : 'Down'}</span>
           <button class="ps-btn ghost small" data-action="remove" title="Remove printer">✕</button>
         </div>
@@ -1777,14 +1802,35 @@ function renderPrinters(){
     `;
   }).join('');
 
-  const partDefRows = partDefs.map(pd => `
+  const partDefRows = partDefs.map(pd => {
+    if(editingPartDefId === pd.id){
+      return `
+      <tr data-id="${pd.id}" data-editing="1">
+        <td><input class="ps-input ps-name" data-field="name" value="${escapeHtml(pd.name)}" /></td>
+        <td><input class="ps-input ps-narrow" type="number" min="1" data-field="lifespanHours" value="${Math.round(pd.lifespanHours)}" style="width:90px;" /></td>
+        <td class="ps-hint">${pd.replacementLog.length} logged</td>
+        <td>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn primary small" data-action="save-part">Save</button>
+            <button class="ps-btn ghost small" data-action="cancel-part-edit">Cancel</button>
+          </div>
+        </td>
+      </tr>`;
+    }
+    return `
     <tr data-id="${pd.id}">
-      <td><input class="ps-input ps-name" data-field="name" value="${escapeHtml(pd.name)}" /></td>
-      <td><input class="ps-input ps-narrow" type="number" min="1" data-field="lifespanHours" value="${Math.round(pd.lifespanHours)}" style="width:90px;" /></td>
+      <td><b>${escapeHtml(pd.name)}</b></td>
+      <td class="mono">${Math.round(pd.lifespanHours)}h</td>
       <td class="ps-hint">${pd.replacementLog.length} logged</td>
-      <td><button class="ps-btn ghost small" data-action="remove-part">✕</button></td>
+      <td>
+        <div class="ps-row" style="gap:6px;">
+          <button class="ps-btn ghost small" data-action="edit-part">Edit</button>
+          <button class="ps-btn ghost small" data-action="remove-part">✕</button>
+        </div>
+      </td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 
   root.innerHTML = `
     <div class="ps-panel">
@@ -1814,37 +1860,79 @@ function renderPrinters(){
 
   root.querySelectorAll('#ps-parts-body tr').forEach(tr => {
     const pid = tr.getAttribute('data-id');
-    tr.querySelectorAll('[data-field]').forEach(input => {
-      input.addEventListener('change', () => {
+    const editBtn = tr.querySelector('[data-action="edit-part"]');
+    if(editBtn){
+      editBtn.addEventListener('click', () => {
+        editingPartDefId = pid;
+        renderPrinters();
+      });
+    }
+    const saveBtn = tr.querySelector('[data-action="save-part"]');
+    if(saveBtn){
+      saveBtn.addEventListener('click', () => {
         const pd = partDefs.find(x=>x.id===pid);
-        const field = input.getAttribute('data-field');
-        if(field==='lifespanHours'){
-          pd.lifespanHours = Math.max(1, parseFloat(input.value)||1);
-        } else {
-          pd[field] = input.value;
-        }
+        tr.querySelectorAll('[data-field]').forEach(input => {
+          const field = input.getAttribute('data-field');
+          if(field==='lifespanHours'){
+            pd.lifespanHours = Math.max(1, parseFloat(input.value)||1);
+          } else {
+            pd[field] = input.value;
+          }
+        });
+        editingPartDefId = null;
         savePartDefs(); renderPrinters(); regenerateIfActive();
       });
-    });
-    tr.querySelector('[data-action="remove-part"]').addEventListener('click', () => {
-      partDefs = partDefs.filter(x=>x.id!==pid);
-      printers.forEach(p => { delete p.partInstalls[pid]; });
-      savePartDefs(); savePrinters(); renderPrinters();
-    });
+    }
+    const cancelBtn = tr.querySelector('[data-action="cancel-part-edit"]');
+    if(cancelBtn){
+      cancelBtn.addEventListener('click', () => {
+        editingPartDefId = null;
+        renderPrinters();
+      });
+    }
+    const removeBtn = tr.querySelector('[data-action="remove-part"]');
+    if(removeBtn){
+      removeBtn.addEventListener('click', () => {
+        partDefs = partDefs.filter(x=>x.id!==pid);
+        printers.forEach(p => { delete p.partInstalls[pid]; });
+        savePartDefs(); savePrinters(); renderPrinters();
+      });
+    }
   });
   document.getElementById('ps-add-part').addEventListener('click', () => {
     const newId = uid('part');
     partDefs.push({id:newId, name:'New part', lifespanHours:1000, replacementLog:[]});
     printers.forEach(p => { p.partInstalls[newId] = {installedAt: new Date().toISOString(), notified:false}; });
+    editingPartDefId = newId;
     savePartDefs(); savePrinters(); renderPrinters();
   });
 
   root.querySelectorAll('.ps-printer-card').forEach(card => {
     const id = card.getAttribute('data-id');
-    card.querySelector('[data-field="name"]').addEventListener('change', e => {
-      const p = printers.find(x=>x.id===id); p.name = e.target.value;
-      savePrinters(); regenerateIfActive();
-    });
+    const editNameBtn = card.querySelector('[data-action="edit-printer-name"]');
+    if(editNameBtn){
+      editNameBtn.addEventListener('click', () => {
+        editingPrinterNameId = id;
+        renderPrinters();
+      });
+    }
+    const saveNameBtn = card.querySelector('[data-action="save-printer-name"]');
+    if(saveNameBtn){
+      saveNameBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        const input = card.querySelector('[data-field="name"]');
+        p.name = input.value.trim() || p.name;
+        editingPrinterNameId = null;
+        savePrinters(); renderPrinters(); regenerateIfActive();
+      });
+    }
+    const cancelNameBtn = card.querySelector('[data-action="cancel-printer-name"]');
+    if(cancelNameBtn){
+      cancelNameBtn.addEventListener('click', () => {
+        editingPrinterNameId = null;
+        renderPrinters();
+      });
+    }
     card.querySelector('[data-action="toggle-status"]').addEventListener('click', () => {
       const p = printers.find(x=>x.id===id);
       p.status = p.status === 'active' ? 'down' : 'active';
@@ -1923,7 +2011,9 @@ function renderPrinters(){
   document.getElementById('ps-add-printer').addEventListener('click', () => {
     const newPartInstalls = {};
     partDefs.forEach(pd => { newPartInstalls[pd.id] = {installedAt: new Date().toISOString(), notified:false}; });
-    printers.push({id: uid('printer'), name: 'New printer', status:'active', spoolId:null, partInstalls: newPartInstalls});
+    const newId = uid('printer');
+    printers.push({id: newId, name: 'New printer', status:'active', spoolId:null, partInstalls: newPartInstalls});
+    editingPrinterNameId = newId;
     savePrinters(); renderPrinters(); regenerateIfActive();
   });
 }
@@ -1931,6 +2021,7 @@ function renderPrinters(){
 // ---------- rendering: Log tab ----------
 let editingLogId = null;
 let editingJobId = null; // which active job's "units done" is showing the edit form
+let editingJobItemTarget = null; // "jobId|itemId" of the line item whose target qty is being edited
 let failingLogId = null; // which entry is showing the "confirm failed — how much filament?" prompt
 let splittingLogId = null; // which batch entry is showing the "how many of these failed?" prompt
 // Which past days/weeks a person has manually expanded, keyed by
@@ -2991,21 +3082,48 @@ function renderFilament(){
   const root = document.getElementById('ps-tab-filament');
 
   // ---- Stock (unopened inventory) ----
-  const stockRows = stock.map(st => `
+  const stockRows = stock.map(st => {
+    const isEditing = editingStockId === st.id;
+    if(isEditing){
+      return `
+      <tr data-id="${st.id}" data-editing="1">
+        <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
+        <td><input class="ps-input ps-name" data-field="label" value="${escapeHtml(st.label)}" placeholder="e.g. PCTG Pro — Natural" /></td>
+        <td><input class="ps-input" style="max-width:110px" data-field="manufacturer" value="${escapeHtml(st.manufacturer||'')}" placeholder="Manufacturer" /></td>
+        <td><input class="ps-input" data-field="material" value="${escapeHtml(st.material)}" placeholder="Material" /></td>
+        <td><input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" /></td>
+        <td><input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" /></td>
+        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" /></td>
+        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" /></td>
+        <td></td>
+        <td>
+          <div class="ps-row" style="gap:6px;">
+            <button class="ps-btn primary small" data-action="save-stock">Save</button>
+            <button class="ps-btn ghost small" data-action="cancel-stock-edit">Cancel</button>
+          </div>
+        </td>
+      </tr>`;
+    }
+    return `
     <tr data-id="${st.id}">
       <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
-      <td><input class="ps-input ps-name" data-field="label" value="${escapeHtml(st.label)}" placeholder="e.g. PCTG Pro — Natural" /></td>
-      <td><input class="ps-input" style="max-width:110px" data-field="manufacturer" value="${escapeHtml(st.manufacturer||'')}" placeholder="Manufacturer" /></td>
-      <td><input class="ps-input" data-field="material" value="${escapeHtml(st.material)}" placeholder="Material" /></td>
-      <td><input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" /></td>
-      <td><input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" /></td>
-      <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" /></td>
+      <td><b>${escapeHtml(st.label)||'(unnamed)'}</b></td>
+      <td>${escapeHtml(st.manufacturer||'—')}</td>
+      <td>${escapeHtml(st.material||'—')}</td>
+      <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
+      <td class="mono">${st.weightPerSpoolG}g</td>
+      <td class="mono">${st.qty}</td>
       <td>
-        <input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" />
+        <span class="mono">${st.qtyOnOrder}</span>
         ${st.qtyOnOrder>0 && st.orderedAt ? `<div class="ps-hint" style="margin-top:3px;white-space:nowrap;">ordered ${new Date(st.orderedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</div>` : ''}
       </td>
       <td>${st.qtyOnOrder>0 ? `<button class="ps-btn small" data-action="receive-stock">Receive</button>` : ''}</td>
-      <td><button class="ps-btn ghost small" data-action="remove-stock">✕</button></td>
+      <td>
+        <div class="ps-row" style="gap:6px;">
+          <button class="ps-btn ghost small" data-action="edit-stock">Edit</button>
+          <button class="ps-btn ghost small" data-action="remove-stock">✕</button>
+        </div>
+      </td>
     </tr>
     ${receivingStockId===st.id ? `
     <tr data-id="${st.id}-receive-form">
@@ -3022,7 +3140,8 @@ function renderFilament(){
       </td>
     </tr>
     ` : ''}
-  `).join('');
+  `;
+  }).join('');
 
   // ---- Active spools (opened, in use or spare) ----
   const activeSpools = spools.filter(s => !s.retired);
@@ -3308,27 +3427,43 @@ function renderFilament(){
   root.querySelectorAll('#ps-stock-body tr').forEach(tr => {
     const id = tr.getAttribute('data-id');
     if(!id || id.endsWith('-receive-form')) return;
-    tr.querySelectorAll('[data-field]').forEach(input => {
-      input.addEventListener('change', () => {
+
+    const editBtn = tr.querySelector('[data-action="edit-stock"]');
+    if(editBtn){
+      editBtn.addEventListener('click', () => {
+        editingStockId = id;
+        renderFilament();
+      });
+    }
+    const saveBtn = tr.querySelector('[data-action="save-stock"]');
+    if(saveBtn){
+      saveBtn.addEventListener('click', () => {
         const st = stock.find(x=>x.id===id);
-        const field = input.getAttribute('data-field');
-        if(field==='weightPerSpoolG' || field==='qty' || field==='qtyOnOrder'){
-          const prevOnOrder = st.qtyOnOrder;
-          const prevQty = st.qty;
-          st[field] = Math.max(field==='weightPerSpoolG'?1:0, parseInt(input.value)||0);
-          if(field==='qtyOnOrder'){
-            if(prevOnOrder<=0 && st.qtyOnOrder>0) st.orderedAt = new Date().toISOString();
-            if(st.qtyOnOrder<=0) st.orderedAt = null;
+        if(!st) return;
+        const prevQty = st.qty;
+        const prevOnOrder = st.qtyOnOrder;
+        tr.querySelectorAll('[data-field]').forEach(input => {
+          const field = input.getAttribute('data-field');
+          if(field==='weightPerSpoolG' || field==='qty' || field==='qtyOnOrder'){
+            st[field] = Math.max(field==='weightPerSpoolG'?1:0, parseInt(input.value)||0);
+          } else {
+            st[field] = input.value;
           }
-          if(field==='qty' && st.qty !== prevQty){
-            logStockChange(st, st.qty - prevQty, 'Manual correction');
-          }
-        } else {
-          st[field] = input.value;
-        }
+        });
+        if(prevOnOrder<=0 && st.qtyOnOrder>0) st.orderedAt = new Date().toISOString();
+        if(st.qtyOnOrder<=0) st.orderedAt = null;
+        if(st.qty !== prevQty) logStockChange(st, st.qty - prevQty, 'Manual correction');
+        editingStockId = null;
         saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
       });
-    });
+    }
+    const cancelEditBtn = tr.querySelector('[data-action="cancel-stock-edit"]');
+    if(cancelEditBtn){
+      cancelEditBtn.addEventListener('click', () => {
+        editingStockId = null;
+        renderFilament();
+      });
+    }
     const receiveBtn = tr.querySelector('[data-action="receive-stock"]');
     if(receiveBtn){
       receiveBtn.addEventListener('click', () => {
@@ -3336,10 +3471,13 @@ function renderFilament(){
         renderFilament();
       });
     }
-    tr.querySelector('[data-action="remove-stock"]').addEventListener('click', () => {
-      stock = stock.filter(x=>x.id!==id);
-      saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
-    });
+    const removeBtn = tr.querySelector('[data-action="remove-stock"]');
+    if(removeBtn){
+      removeBtn.addEventListener('click', () => {
+        stock = stock.filter(x=>x.id!==id);
+        saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+      });
+    }
   });
   root.querySelectorAll('[data-action="confirm-receive"]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3378,7 +3516,9 @@ function renderFilament(){
     });
   });
   document.getElementById('ps-add-stock').addEventListener('click', () => {
-    stock.push({id: uid('stock'), label:'New material', manufacturer:'', material:'PCTG', colorHex:'#cccccc', weightPerSpoolG:1000, qty:0, qtyOnOrder:0, orderedAt:null});
+    const newStock = {id: uid('stock'), label:'New material', manufacturer:'', material:'PCTG', colorHex:'#cccccc', weightPerSpoolG:1000, qty:0, qtyOnOrder:0, orderedAt:null};
+    stock.push(newStock);
+    editingStockId = newStock.id;
     saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
   });
 
@@ -3434,12 +3574,14 @@ function renderFilament(){
 
 // ---------- rendering: Catalog tab ----------
 let typeErrorMsg = '';
+let editingTypeId = null; // which product type row is in edit mode
 let editingProductId = null; // null = browsing list; '_new' = add-product form; a real id = editing that product
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
 let showOrderHistory = false; // Filament tab: whether the order-history table under Reorder Planning is expanded
 let receivingStockId = null; // which stock row is showing the "how many actually arrived?" confirmation
+let editingStockId = null; // which stock row is in edit mode (fields are read-only otherwise, to avoid accidental changes)
 let showStockLog = false; // Filament tab: whether the stock change log is expanded
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
@@ -4170,13 +4312,26 @@ function renderCatalog(){
 
 // ---- Browsing view: a plain list, nothing inline-editable ----
 function renderCatalogList(root){
-  const typeRows = types.map(t => `
-    <div class="ps-row" style="gap:8px;margin-bottom:8px;">
-      <input class="ps-input" style="max-width:160px" data-field="name" value="${escapeHtml(t.name)}" />
-      <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="color" value="${t.color}" />
-      <button class="ps-btn ghost small" data-action="remove" title="Remove type">✕</button>
+  const typeRows = types.map(t => {
+    if(editingTypeId === t.id){
+      return `
+      <div class="ps-row" style="gap:8px;margin-bottom:8px;">
+        <input class="ps-input" style="max-width:160px" data-field="name" value="${escapeHtml(t.name)}" autofocus />
+        <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="color" value="${t.color}" />
+        <button class="ps-btn primary small" data-action="save-type" data-id="${t.id}">Save</button>
+        <button class="ps-btn ghost small" data-action="cancel-type-edit">Cancel</button>
+      </div>
+    `;
+    }
+    return `
+    <div class="ps-row" style="gap:8px;margin-bottom:8px;align-items:center;">
+      <span class="ps-spool-swatch" style="background:${escapeHtml(t.color)}"></span>
+      <b style="flex:1;">${escapeHtml(t.name)}</b>
+      <button class="ps-btn ghost small" data-action="edit-type" data-id="${t.id}">Edit</button>
+      <button class="ps-btn ghost small" data-action="remove" data-id="${t.id}" title="Remove type">✕</button>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   const productRows = catalog.map((p, idx) => {
     const printMin = p.timeH*60 + p.timeM;
@@ -4288,21 +4443,39 @@ function renderCatalogList(root){
   });
 
   document.getElementById('ps-add-type').addEventListener('click', () => {
-    types.push({id: uid('type'), name:'New type', color:'#9a9184'});
+    const newId = uid('type');
+    types.push({id: newId, name:'New type', color:'#9a9184'});
     typeErrorMsg='';
+    editingTypeId = newId;
     saveTypes(); renderCatalog();
   });
-  root.querySelectorAll('#ps-types-list .ps-row').forEach((row, i) => {
-    const t = types[i];
-    row.querySelector('[data-field="name"]').addEventListener('change', e => {
-      t.name = e.target.value.trim() || t.name;
+  root.querySelectorAll('[data-action="edit-type"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      editingTypeId = btn.getAttribute('data-id');
+      renderCatalog();
+    });
+  });
+  root.querySelectorAll('[data-action="save-type"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = types.find(x=>x.id===btn.getAttribute('data-id'));
+      const row = btn.closest('.ps-row');
+      const nameInput = row.querySelector('[data-field="name"]');
+      const colorInput = row.querySelector('[data-field="color"]');
+      t.name = nameInput.value.trim() || t.name;
+      t.color = colorInput.value;
+      editingTypeId = null;
       saveTypes(); renderCatalog(); regenerateIfActive();
     });
-    row.querySelector('[data-field="color"]').addEventListener('change', e => {
-      t.color = e.target.value;
-      saveTypes(); renderCatalog(); regenerateIfActive();
+  });
+  root.querySelectorAll('[data-action="cancel-type-edit"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      editingTypeId = null;
+      renderCatalog();
     });
-    row.querySelector('[data-action="remove"]').addEventListener('click', () => {
+  });
+  root.querySelectorAll('#ps-types-list [data-action="remove"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = types.find(x=>x.id===btn.getAttribute('data-id'));
       if(types.length<=1){ typeErrorMsg = 'Need at least one product type.'; renderCatalog(); return; }
       if(catalog.some(p=>p.type===t.id)){ typeErrorMsg = `"${t.name}" is still used by a product — change those first.`; renderCatalog(); return; }
       types = types.filter(x=>x.id!==t.id);
