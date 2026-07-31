@@ -1240,7 +1240,9 @@ function renderJobItemRows(job, editable){
       const qtyDisplay = job.status === 'active'
         ? `<input class="ps-input ps-narrow" type="number" min="0" style="width:60px;display:inline-block;" data-action="job-item-target-qty" data-jobid="${job.id}" data-itemid="${item.id}" value="${item.qty}" />×`
         : `${item.qty}×`;
-      return `<div>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span></div>`;
+      const hitTarget = item.qty > 0 && loggedForItem >= item.qty;
+      const doneMark = hitTarget ? `<span style="color:var(--ok);margin-left:6px;" title="Target reached">✓</span>` : '';
+      return `<div>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span>${doneMark}</div>`;
     }
     return `
       <tr data-jobid="${job.id}" data-itemid="${item.id}">
