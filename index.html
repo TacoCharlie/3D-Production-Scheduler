@@ -542,6 +542,7 @@ async function loadState(){
   catch(e){ printers = JSON.parse(JSON.stringify(DEFAULT_PRINTERS)); }
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
+  printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
 
   try { const sp = await window.storage.get('spools'); spools = sp ? JSON.parse(sp.value) : JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
   catch(e){ spools = JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
@@ -943,16 +944,22 @@ function getElectricityRateForDate(date){
 function getCurrentElectricityRate(){
   return getElectricityRateForDate(new Date());
 }
+function getPrinterWattage(printerId){
+  const p = printers.find(x=>x.id===printerId);
+  return (p && typeof p.wattageW === 'number') ? p.wattageW : settings.printerWattageW;
+}
 // The blended rate is all-time, not a rolling window — it's meant to
 // evolve gradually as real usage accumulates across all four TOU buckets,
-// weighted by how many kWh actually landed in each one. Falls back to the
+// weighted by how many kWh actually landed in each one. Uses each entry's
+// actual printer's measured wattage, not one flat figure, so a fleet with
+// different printers is accounted for accurately. Falls back to the
 // current-moment rate when there's no completed-print history yet.
 function computeBlendedElectricityRate(){
-  const kW = (settings.printerWattageW||0)/1000;
   let totalKWh = 0, totalCost = 0;
   productionLog.forEach(e => {
     if(!e.actualStart || !e.actualEnd) return; // needs a real, finished duration
     const hours = Math.max(0, (new Date(e.actualEnd) - new Date(e.actualStart)) / 3600000);
+    const kW = getPrinterWattage(e.printerId) / 1000;
     const kWh = hours * kW;
     if(kWh <= 0) return;
     const rate = getElectricityRateForDate(new Date(e.actualStart));
@@ -962,11 +969,35 @@ function computeBlendedElectricityRate(){
   if(totalKWh <= 0) return getCurrentElectricityRate();
   return totalCost / totalKWh;
 }
+// A product isn't tied to one specific printer, so its generic cost
+// estimate needs a representative wattage across the fleet. Weight each
+// printer by how many hours it's actually logged, all-time — a printer
+// that runs constantly should count more than one that rarely does. Falls
+// back to a simple average of active printers, then the Settings default,
+// if there's no usage history yet.
+function computeFleetAverageWattageW(){
+  const hoursByPrinter = {};
+  productionLog.forEach(e => {
+    if(!e.actualStart || !e.actualEnd || !e.printerId) return;
+    const hours = Math.max(0, (new Date(e.actualEnd) - new Date(e.actualStart)) / 3600000);
+    if(hours <= 0) return;
+    hoursByPrinter[e.printerId] = (hoursByPrinter[e.printerId]||0) + hours;
+  });
+  const printerIds = Object.keys(hoursByPrinter);
+  if(printerIds.length > 0){
+    const totalHours = printerIds.reduce((s,id) => s + hoursByPrinter[id], 0);
+    const weightedW = printerIds.reduce((s,id) => s + hoursByPrinter[id] * getPrinterWattage(id), 0);
+    if(totalHours > 0) return weightedW / totalHours;
+  }
+  const active = printers.filter(p => p.status==='active');
+  if(active.length > 0) return active.reduce((s,p) => s + getPrinterWattage(p.id), 0) / active.length;
+  return settings.printerWattageW;
+}
 function computeProductCOGS(product, precomputed){
   const costPerGram = precomputed ? precomputed.costPerGram : getFilamentCostPerGram();
   const filamentCost = (product.weightG||0) * costPerGram;
   const printHours = (product.timeH||0) + (product.timeM||0)/60;
-  const kW = (settings.printerWattageW||0)/1000;
+  const kW = (precomputed ? precomputed.fleetWattageW : computeFleetAverageWattageW()) / 1000;
   const blendedRate = precomputed ? precomputed.blendedRate : computeBlendedElectricityRate();
   const nowRate = precomputed ? precomputed.nowRate : getCurrentElectricityRate();
   const electricityCostBlended = printHours * kW * blendedRate;
@@ -1804,6 +1835,7 @@ function renderJobs(){
 
 let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
 let editingPrinterNameId = null; // which printer's name field is in edit mode
+let editingPrinterWattageId = null; // which printer's wattage field is in edit mode
 let editingPartDefId = null; // which maintenance part row is in edit mode
 
 // ---------- rendering: Status tab ----------
@@ -1994,6 +2026,11 @@ function renderPrinters(){
           <span class="ps-status-pill ${p.status}" data-action="toggle-status">${p.status === 'active' ? 'Active' : 'Down'}</span>
           <button class="ps-btn ghost small" data-action="remove" title="Remove printer">✕</button>
         </div>
+        <div class="ps-hint" style="margin-bottom:10px;">
+          ${editingPrinterWattageId===p.id
+            ? `Power draw: <input class="ps-input ps-narrow" type="number" min="0" data-field="wattageW" value="${p.wattageW}" style="width:70px;display:inline-block;" autofocus />W <button class="ps-btn ghost small" data-action="save-printer-wattage">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-wattage">✕</button>`
+            : `Power draw: <b style="color:var(--text);">${p.wattageW}W</b> <button class="ps-btn ghost small" data-action="edit-printer-wattage" style="padding:1px 6px;font-size:10px;" title="Edit measured wattage">✎</button> <span style="opacity:0.75;">— from your monitoring app, feeds the cost calculator</span>`}
+        </div>
         <div class="ps-field" style="margin-bottom:0;">
           <span class="ps-field-label">Loaded spool</span>
           <div class="ps-row" style="gap:8px;align-items:center;">
@@ -2161,6 +2198,32 @@ function renderPrinters(){
     if(cancelNameBtn){
       cancelNameBtn.addEventListener('click', () => {
         editingPrinterNameId = null;
+        renderPrinters();
+      });
+    }
+    const editWattageBtn = card.querySelector('[data-action="edit-printer-wattage"]');
+    if(editWattageBtn){
+      editWattageBtn.addEventListener('click', () => {
+        editingPrinterWattageId = id;
+        renderPrinters();
+      });
+    }
+    const saveWattageBtn = card.querySelector('[data-action="save-printer-wattage"]');
+    if(saveWattageBtn){
+      saveWattageBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        const input = card.querySelector('[data-field="wattageW"]');
+        p.wattageW = Math.max(0, parseFloat(input.value)||0);
+        editingPrinterWattageId = null;
+        savePrinters(); renderPrinters();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
+      });
+    }
+    const cancelWattageBtn = card.querySelector('[data-action="cancel-printer-wattage"]');
+    if(cancelWattageBtn){
+      cancelWattageBtn.addEventListener('click', () => {
+        editingPrinterWattageId = null;
         renderPrinters();
       });
     }
@@ -4584,7 +4647,8 @@ function renderCatalogList(root){
   const costPerGramNow = getFilamentCostPerGram();
   const blendedElecRateNow = computeBlendedElectricityRate();
   const currentElecRateNow = getCurrentElectricityRate();
-  const costPrecomputed = { costPerGram: costPerGramNow, blendedRate: blendedElecRateNow, nowRate: currentElecRateNow };
+  const fleetWattageWNow = computeFleetAverageWattageW();
+  const costPrecomputed = { costPerGram: costPerGramNow, blendedRate: blendedElecRateNow, nowRate: currentElecRateNow, fleetWattageW: fleetWattageWNow };
 
   const productRows = catalog.map((p, idx) => {
     const printMin = p.timeH*60 + p.timeM;
@@ -5435,6 +5499,7 @@ async function importAllData(jsonText){
   });
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
+  printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
   printers.forEach(p => {
     if(!p.partInstalls) p.partInstalls = {};
     partDefs.forEach(pd => {
@@ -5516,11 +5581,11 @@ function renderSettings(){
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Cost Calculator</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Drives the "Cost (avg)" and "Cost (now)" columns on the Catalog tab — filament cost per product uses a blended $/g from your Stock entries' recorded spool costs (once you add them), and electricity cost is print time × wattage × the time-of-use rate below.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Drives the "Cost (avg)" and "Cost (now)" columns on the Catalog tab — filament cost per product uses a blended $/g from your Stock entries' recorded spool costs (once you add them), and electricity cost is print time × each printer's actual measured wattage (set per-printer on the Printers tab) × the time-of-use rate below. The default here only applies until a printer has its own real wattage entered.</div>
       <div class="ps-row" style="align-items:flex-end;">
         ${editingCostSettings ? `
         <div class="ps-field" style="flex:1;">
-          <span class="ps-field-label">Printer power draw (W)</span>
+          <span class="ps-field-label">Default printer power draw (W)</span>
           <input class="ps-input" type="number" min="0" id="ps-printer-wattage" value="${settings.printerWattageW}" />
         </div>
         <div class="ps-field" style="flex:1;">
@@ -5533,7 +5598,7 @@ function renderSettings(){
         </div>
         ` : `
         <div class="ps-field" style="flex:1;">
-          <span class="ps-field-label">Printer power draw (W)</span>
+          <span class="ps-field-label">Default printer power draw (W)</span>
           <div class="ps-hint mono" style="padding:8px 0;">${settings.printerWattageW}W</div>
         </div>
         <div class="ps-field" style="flex:1;">
@@ -5544,6 +5609,7 @@ function renderSettings(){
         <button class="ps-btn ghost small" id="ps-edit-cost-settings">Edit</button>
         `}
       </div>
+      <div class="ps-hint" style="margin-top:10px;">Set each printer's real measured wattage on the Printers tab for accurate per-printer cost tracking.</div>
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Electricity Rates (Time-of-Use)</div>
