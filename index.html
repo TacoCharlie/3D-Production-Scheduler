@@ -880,6 +880,11 @@ function fmtClock(date){
 function fmtDateHead(date){
   return DAY_NAMES[date.getDay()] + ', ' + date.toLocaleDateString(undefined,{month:'short',day:'numeric'});
 }
+function fmtTimeOfDay(hhmm){
+  const [h,m] = hhmm.split(':').map(Number);
+  const d = new Date(2000,0,1,h,m);
+  return d.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
+}
 function fmtDuration(min){
   min = Math.round(min);
   const h = Math.floor(min/60), m = min%60;
@@ -1280,6 +1285,10 @@ function renderJobItemRows(job, editable){
   return job.items.map((item, idx) => {
     const p = catalog.find(x=>x.id===item.id);
     if(!p) return '';
+    const itemKey = `${job.id}|${item.id}`;
+    const qtyCell = editingQueuedItemQty === itemKey
+      ? `<input class="ps-input ps-narrow" type="number" min="0" data-action="job-item-qty" value="${item.qty}" style="width:60px;" autofocus /> <button class="ps-btn ghost small" data-action="save-job-item-qty" data-jobid="${job.id}" data-itemid="${item.id}" style="padding:1px 8px;">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-item-qty" style="padding:1px 8px;">✕</button>`
+      : `${item.qty} <button class="ps-btn ghost small" data-action="edit-job-item-qty" data-jobid="${job.id}" data-itemid="${item.id}" style="padding:1px 6px;font-size:10px;" title="Edit quantity">✎</button>`;
     return `
       <tr data-jobid="${job.id}" data-itemid="${item.id}">
         <td>
@@ -1289,7 +1298,7 @@ function renderJobItemRows(job, editable){
           </div>
         </td>
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
-        <td><input class="ps-input ps-narrow" type="number" min="0" data-action="job-item-qty" value="${item.qty}" /></td>
+        <td>${qtyCell}</td>
         <td><button class="ps-btn ghost small" data-action="job-item-remove">✕</button></td>
       </tr>`;
   }).join('');
@@ -1308,7 +1317,9 @@ function renderJobs(){
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
-          <input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;" />
+          ${editingJobNameId===job.id
+            ? `<input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;" autofocus /> <button class="ps-btn ghost small" data-action="save-job-name">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-name">✕</button>`
+            : `<b style="flex:1.4;">${escapeHtml(job.name)}</b> <button class="ps-btn ghost small" data-action="edit-job-name">✎</button>`}
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
           <button class="ps-btn primary small" data-action="job-activate">Move to Active Queue</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
@@ -1346,7 +1357,9 @@ function renderJobs(){
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
-          <input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;font-weight:700;" />
+          ${editingJobNameId===job.id
+            ? `<input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;font-weight:700;" autofocus /> <button class="ps-btn ghost small" data-action="save-job-name">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-name">✕</button>`
+            : `<b style="flex:1.4;">${escapeHtml(job.name)}</b> <button class="ps-btn ghost small" data-action="edit-job-name">✎</button>`}
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
           <button class="ps-btn small" data-action="job-done">Mark Done</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
@@ -1422,11 +1435,27 @@ function renderJobs(){
     const job = jobs.find(j=>j.id===jobId);
     if(!job) return;
 
-    const renameInput = card.querySelector('[data-action="job-rename"]');
-    if(renameInput){
-      renameInput.addEventListener('change', e => {
-        job.name = e.target.value.trim() || job.name;
-        saveJobs();
+    const editNameBtn = card.querySelector('[data-action="edit-job-name"]');
+    if(editNameBtn){
+      editNameBtn.addEventListener('click', () => {
+        editingJobNameId = jobId;
+        renderJobs();
+      });
+    }
+    const saveNameBtn = card.querySelector('[data-action="save-job-name"]');
+    if(saveNameBtn){
+      saveNameBtn.addEventListener('click', () => {
+        const input = card.querySelector('[data-action="job-rename"]');
+        job.name = input.value.trim() || job.name;
+        editingJobNameId = null;
+        saveJobs(); renderJobs();
+      });
+    }
+    const cancelNameBtn = card.querySelector('[data-action="cancel-job-name"]');
+    if(cancelNameBtn){
+      cancelNameBtn.addEventListener('click', () => {
+        editingJobNameId = null;
+        renderJobs();
       });
     }
     const activateBtn = card.querySelector('[data-action="job-activate"]');
@@ -1510,12 +1539,26 @@ function renderJobs(){
         saveJobs(); renderJobs();
       });
     }
-    card.querySelectorAll('[data-action="job-item-qty"]').forEach(input => {
-      input.addEventListener('change', e => {
-        const itemId = e.target.closest('tr').getAttribute('data-itemid');
+    card.querySelectorAll('[data-action="edit-job-item-qty"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        editingQueuedItemQty = `${btn.getAttribute('data-jobid')}|${btn.getAttribute('data-itemid')}`;
+        renderJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="save-job-item-qty"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.getAttribute('data-itemid');
+        const input = card.querySelector(`tr[data-itemid="${itemId}"] [data-action="job-item-qty"]`);
         const item = job.items.find(it=>it.id===itemId);
-        if(item) item.qty = Math.max(0, parseInt(e.target.value)||0);
-        saveJobs();
+        if(item) item.qty = Math.max(0, parseInt(input.value)||0);
+        editingQueuedItemQty = null;
+        saveJobs(); renderJobs();
+      });
+    });
+    card.querySelectorAll('[data-action="cancel-job-item-qty"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        editingQueuedItemQty = null;
+        renderJobs();
       });
     });
     card.querySelectorAll('[data-action="edit-job-item-target"]').forEach(btn => {
@@ -1576,7 +1619,9 @@ function renderJobs(){
   const newJobBtn = document.getElementById('ps-job-new');
   if(newJobBtn){
     newJobBtn.addEventListener('click', () => {
-      jobs.push({id: uid('job'), name: 'New job', items: [], status:'queued', createdAt: new Date().toISOString(), manualDone: 0});
+      const newId = uid('job');
+      jobs.push({id: newId, name: 'New job', items: [], status:'queued', createdAt: new Date().toISOString(), manualDone: 0});
+      editingJobNameId = newId;
       saveJobs(); renderJobs();
     });
   }
@@ -2022,6 +2067,8 @@ function renderPrinters(){
 let editingLogId = null;
 let editingJobId = null; // which active job's "units done" is showing the edit form
 let editingJobItemTarget = null; // "jobId|itemId" of the line item whose target qty is being edited
+let editingJobNameId = null; // which job's name field is in edit mode
+let editingQueuedItemQty = null; // "jobId|itemId" of the queued-job line item whose qty is being edited
 let failingLogId = null; // which entry is showing the "confirm failed — how much filament?" prompt
 let splittingLogId = null; // which batch entry is showing the "how many of these failed?" prompt
 // Which past days/weeks a person has manually expanded, keyed by
@@ -3167,6 +3214,40 @@ function renderFilament(){
           ? `<div class="ps-hint" style="margin-top:8px;">Retired with ${s.remainingG}g left unused out of ${s.totalG}g.</div>`
           : `<div class="ps-hint" style="margin-top:8px;">Used exactly its stated ${s.totalG}g.</div>`)
     ) : '';
+    const isEditing = !retired && editingSpoolId === s.id;
+    const fieldsBlock = isEditing ? `
+        <div class="ps-row" style="margin-top:10px;">
+          <div class="ps-field" style="flex:1;margin-bottom:0;">
+            <span class="ps-field-label">Remaining (g)</span>
+            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${Math.max(0,s.remainingG)}" />
+          </div>
+          <div class="ps-field" style="flex:1;margin-bottom:0;">
+            <span class="ps-field-label">Full spool weight (g)</span>
+            <input class="ps-input" type="number" min="0" data-field="totalG" value="${s.totalG}" />
+          </div>
+        </div>
+        <div class="ps-spool-top" style="margin-top:10px;">
+          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
+          <input class="ps-input ps-name" data-field="label" value="${escapeHtml(s.label)}" placeholder="e.g. PCTG Pro — Natural" autofocus />
+          <input class="ps-input" style="max-width:110px" data-field="material" value="${escapeHtml(s.material)}" placeholder="Material" />
+          <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${s.colorHex||'#cccccc'}" />
+          <button class="ps-btn primary small" data-action="save-spool">Save</button>
+          <button class="ps-btn ghost small" data-action="cancel-spool-edit">Cancel</button>
+        </div>
+    ` : `
+        <div class="ps-row" style="margin-top:10px;gap:16px;">
+          <div class="ps-hint">Remaining: <b style="color:${overConsumed?'var(--danger)':'var(--text)'};">${Math.max(0,s.remainingG)}g</b></div>
+          <div class="ps-hint">Full spool: <b style="color:var(--text);">${s.totalG}g</b></div>
+        </div>
+        <div class="ps-spool-top" style="margin-top:10px;">
+          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
+          <b style="flex:1;">${escapeHtml(s.label)}</b>
+          <span class="ps-hint">${escapeHtml(s.material)}</span>
+          ${low ? '<span class="ps-badge-low">Low</span>' : ''}
+          ${retired ? '<span class="ps-hint">Retired</span>' : `<button class="ps-btn ghost small" data-action="edit-spool">Edit</button>`}
+          <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
+        </div>
+    `;
     return `
       <div class="ps-spool-card" data-id="${s.id}">
         ${retired ? '' : (() => {
@@ -3176,26 +3257,8 @@ function renderFilament(){
             : `<div class="ps-hint">— not currently loaded on a printer — use "Change Spool" on the Printers tab —</div>`;
         })()}
         <div class="ps-spool-bar-track" style="margin-top:10px;"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
-        <div class="ps-row" style="margin-top:10px;">
-          <div class="ps-field" style="flex:1;margin-bottom:0;">
-            <span class="ps-field-label">Remaining (g)</span>
-            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${Math.max(0,s.remainingG)}" ${retired?'disabled':''} />
-          </div>
-          <div class="ps-field" style="flex:1;margin-bottom:0;">
-            <span class="ps-field-label">Full spool weight (g)</span>
-            <input class="ps-input" type="number" min="0" data-field="totalG" value="${s.totalG}" ${retired?'disabled':''} />
-          </div>
-        </div>
-        <div class="ps-spool-top" style="margin-top:10px;">
-          <span class="ps-spool-swatch" style="background:${escapeHtml(s.colorHex||'#999')}"></span>
-          <input class="ps-input ps-name" data-field="label" value="${escapeHtml(s.label)}" placeholder="e.g. PCTG Pro — Natural" ${retired?'disabled':''} />
-          <input class="ps-input" style="max-width:110px" data-field="material" value="${escapeHtml(s.material)}" placeholder="Material" ${retired?'disabled':''} />
-          <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${s.colorHex||'#cccccc'}" ${retired?'disabled':''} />
-          ${low ? '<span class="ps-badge-low">Low</span>' : ''}
-          ${retired ? '<span class="ps-hint">Retired</span>' : ''}
-          <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
-        </div>
-        ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number below is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
+        ${fieldsBlock}
+        ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number above is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
         ${retirementSummary}
         <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
       </div>
@@ -3525,25 +3588,46 @@ function renderFilament(){
   // ---- Active/retired spool handlers ----
   root.querySelectorAll('.ps-spool-card').forEach(card => {
     const id = card.getAttribute('data-id');
-    card.querySelectorAll('[data-field]:not([data-field="assign-printer"])').forEach(input => {
-      input.addEventListener('change', () => {
+    const editBtn = card.querySelector('[data-action="edit-spool"]');
+    if(editBtn){
+      editBtn.addEventListener('click', () => {
+        editingSpoolId = id;
+        renderFilament();
+      });
+    }
+    const saveBtn = card.querySelector('[data-action="save-spool"]');
+    if(saveBtn){
+      saveBtn.addEventListener('click', () => {
         const s = spools.find(x=>x.id===id);
-        const field = input.getAttribute('data-field');
-        if(field==='remainingG' || field==='totalG'){
-          s[field] = Math.max(0, parseFloat(input.value)||0);
-        } else {
-          s[field] = input.value;
-        }
+        card.querySelectorAll('[data-field]:not([data-field="assign-printer"])').forEach(input => {
+          const field = input.getAttribute('data-field');
+          if(field==='remainingG' || field==='totalG'){
+            s[field] = Math.max(0, parseFloat(input.value)||0);
+          } else {
+            s[field] = input.value;
+          }
+        });
+        editingSpoolId = null;
         saveSpools(); renderPrinters(); regenerateIfActive();
         renderFilament();
       });
-    });
-    card.querySelector('[data-action="remove"]').addEventListener('click', () => {
-      spools = spools.filter(x=>x.id!==id);
-      printers.forEach(p => { if(p.spoolId===id) p.spoolId = null; });
-      saveSpools(); savePrinters();
-      renderFilament(); renderPrinters(); regenerateIfActive();
-    });
+    }
+    const cancelBtn = card.querySelector('[data-action="cancel-spool-edit"]');
+    if(cancelBtn){
+      cancelBtn.addEventListener('click', () => {
+        editingSpoolId = null;
+        renderFilament();
+      });
+    }
+    const removeBtn = card.querySelector('[data-action="remove"]');
+    if(removeBtn){
+      removeBtn.addEventListener('click', () => {
+        spools = spools.filter(x=>x.id!==id);
+        printers.forEach(p => { if(p.spoolId===id) p.spoolId = null; });
+        saveSpools(); savePrinters();
+        renderFilament(); renderPrinters(); regenerateIfActive();
+      });
+    }
   });
 
   const toggleLowSpoolsBtn = document.getElementById('ps-toggle-low-spools');
@@ -3583,6 +3667,7 @@ let showOrderHistory = false; // Filament tab: whether the order-history table u
 let receivingStockId = null; // which stock row is showing the "how many actually arrived?" confirmation
 let editingStockId = null; // which stock row is in edit mode (fields are read-only otherwise, to avoid accidental changes)
 let showStockLog = false; // Filament tab: whether the stock change log is expanded
+let editingSpoolId = null; // which active spool card is in edit mode
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
 
@@ -5197,6 +5282,7 @@ async function importAllData(jsonText){
   renderSchedule(); renderLog(); renderEstimate(); renderJobs(); renderPrinters(); renderFilament(); renderCatalog(); renderSettings();
 }
 
+let editingWorkWindow = false; // Settings tab: whether the work-window time fields are in edit mode
 function renderSettings(){
   const root = document.getElementById('ps-tab-settings');
   const dayChecks = [1,2,3,4,5,6,0].map(d => `
@@ -5211,6 +5297,7 @@ function renderSettings(){
         <div class="ps-row" style="flex-wrap:wrap;gap:6px;">${dayChecks}</div>
       </div>
       <div class="ps-row" style="align-items:flex-end;">
+        ${editingWorkWindow ? `
         <div class="ps-field" style="flex:1;">
           <span class="ps-field-label">Window opens</span>
           <input class="ps-input" type="time" id="ps-start-time" value="${settings.startTime}" />
@@ -5223,6 +5310,25 @@ function renderSettings(){
           <span class="ps-field-label">Downtime between prints (min)</span>
           <input class="ps-input" type="number" min="0" id="ps-downtime" value="${settings.downtimeMin}" />
         </div>
+        <div class="ps-row" style="gap:6px;">
+          <button class="ps-btn primary small" id="ps-save-work-window">Save</button>
+          <button class="ps-btn ghost small" id="ps-cancel-work-window">Cancel</button>
+        </div>
+        ` : `
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Window opens</span>
+          <div class="ps-hint mono" style="padding:8px 0;">${fmtTimeOfDay(settings.startTime)}</div>
+        </div>
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Window closes</span>
+          <div class="ps-hint mono" style="padding:8px 0;">${fmtTimeOfDay(settings.endTime)}</div>
+        </div>
+        <div class="ps-field" style="flex:1;">
+          <span class="ps-field-label">Downtime between prints (min)</span>
+          <div class="ps-hint mono" style="padding:8px 0;">${settings.downtimeMin}</div>
+        </div>
+        <button class="ps-btn ghost small" id="ps-edit-work-window">Edit</button>
+        `}
       </div>
       <div class="ps-hint">Applies to every active printer. A print must both start and finish inside the window unless it's longer than the whole window — those are allowed to start inside the window and run unattended past close. Downtime is only inserted between two prints on the same machine, same day; the last print of a day never needs a trailing gap.</div>
     </div>
@@ -5281,9 +5387,30 @@ function renderSettings(){
       saveSettings(); renderSettings(); regenerateIfActive();
     });
   });
-  document.getElementById('ps-start-time').addEventListener('change', e => { settings.startTime = e.target.value; saveSettings(); regenerateIfActive(); });
-  document.getElementById('ps-end-time').addEventListener('change', e => { settings.endTime = e.target.value; saveSettings(); regenerateIfActive(); });
-  document.getElementById('ps-downtime').addEventListener('change', e => { settings.downtimeMin = Math.max(0, parseInt(e.target.value)||0); saveSettings(); regenerateIfActive(); });
+  const editWorkWindowBtn = document.getElementById('ps-edit-work-window');
+  if(editWorkWindowBtn){
+    editWorkWindowBtn.addEventListener('click', () => {
+      editingWorkWindow = true;
+      renderSettings();
+    });
+  }
+  const saveWorkWindowBtn = document.getElementById('ps-save-work-window');
+  if(saveWorkWindowBtn){
+    saveWorkWindowBtn.addEventListener('click', () => {
+      settings.startTime = document.getElementById('ps-start-time').value;
+      settings.endTime = document.getElementById('ps-end-time').value;
+      settings.downtimeMin = Math.max(0, parseInt(document.getElementById('ps-downtime').value)||0);
+      editingWorkWindow = false;
+      saveSettings(); renderSettings(); regenerateIfActive();
+    });
+  }
+  const cancelWorkWindowBtn = document.getElementById('ps-cancel-work-window');
+  if(cancelWorkWindowBtn){
+    cancelWorkWindowBtn.addEventListener('click', () => {
+      editingWorkWindow = false;
+      renderSettings();
+    });
+  }
 }
 
 // ---------- rendering: Schedule tab ----------
