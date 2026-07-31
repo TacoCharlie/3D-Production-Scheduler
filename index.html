@@ -466,6 +466,7 @@ let printers = null;
 let spools = null;
 let stock = null; // unopened inventory: [{id, label, material, manufacturer, colorHex, weightPerSpoolG, qty, qtyOnOrder, orderedAt}]
 let filamentOrderHistory = null; // completed order cycles: [{manufacturer, material, orderedAt, receivedAt, qty, leadTimeDays}] — used to compute average lead time per manufacturer+material
+let stockChangeLog = null; // audit trail for every change to a stock row's "In Stock" qty: [{id, stockId, label, delta, reason, at, resultingQty}] — so a shelf-count mismatch is traceable instead of a mystery
 let partDefs = null; // maintenance part types: [{id, name, lifespanHours, replacementLog:[{printerId,at,hoursElapsed}]}]
 let orderQty = {};
 let priorityOrder = [];
@@ -541,6 +542,9 @@ async function loadState(){
 
   try { const foh = await window.storage.get('filamentOrderHistory'); filamentOrderHistory = foh ? JSON.parse(foh.value) : []; }
   catch(e){ filamentOrderHistory = []; }
+
+  try { const scl = await window.storage.get('stockChangeLog'); stockChangeLog = scl ? JSON.parse(scl.value) : []; }
+  catch(e){ stockChangeLog = []; }
 
   try { const ss = await window.storage.get('savedShipments'); savedShipments = ss ? JSON.parse(ss.value) : []; }
   catch(e){ savedShipments = []; }
@@ -631,6 +635,18 @@ async function savePrinters(){ try { await window.storage.set('printers', JSON.s
 async function saveSpools(){ try { await window.storage.set('spools', JSON.stringify(spools)); flashSave(); } catch(e){ console.error(e); } }
 async function saveStock(){ try { await window.storage.set('stock', JSON.stringify(stock)); flashSave(); } catch(e){ console.error(e); } }
 async function saveFilamentOrderHistory(){ try { await window.storage.set('filamentOrderHistory', JSON.stringify(filamentOrderHistory)); flashSave(); } catch(e){ console.error(e); } }
+async function saveStockChangeLog(){ try { await window.storage.set('stockChangeLog', JSON.stringify(stockChangeLog)); flashSave(); } catch(e){ console.error(e); } }
+// Records every change to a stock row's "In Stock" count, so a shelf-count
+// mismatch is traceable after the fact instead of a mystery. Call this at
+// the exact moment qty changes, after the new value is already set on st.
+function logStockChange(st, delta, reason){
+  if(delta === 0) return;
+  stockChangeLog.push({
+    id: uid('stocklog'), stockId: st.id, label: st.label,
+    delta, reason, at: new Date().toISOString(), resultingQty: st.qty
+  });
+  saveStockChangeLog();
+}
 async function saveSavedShipments(){ try { await window.storage.set('savedShipments', JSON.stringify(savedShipments)); flashSave(); } catch(e){ console.error(e); } }
 async function savePartDefs(){ try { await window.storage.set('partDefs', JSON.stringify(partDefs)); flashSave(); } catch(e){ console.error(e); } }
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
@@ -1232,10 +1248,12 @@ function logPartReplacement(printerId, partDefId){
 
 
 function renderJobItemRows(job, editable){
-  return job.items.map((item, idx) => {
-    const p = catalog.find(x=>x.id===item.id);
-    if(!p) return '';
-    if(!editable){
+  if(!editable){
+    const remaining = [];
+    const completed = [];
+    job.items.forEach(item => {
+      const p = catalog.find(x=>x.id===item.id);
+      if(!p) return;
       const loggedForItem = productionLog
         .filter(e => e.jobId===job.id && e.productId===item.id && !e.isTest && !e.failed && e.actualEnd)
         .reduce((s,e) => s + (e.unitsCompleted||1), 0);
@@ -1243,9 +1261,22 @@ function renderJobItemRows(job, editable){
         ? `<input class="ps-input ps-narrow" type="number" min="0" style="width:60px;display:inline-block;" data-action="job-item-target-qty" data-jobid="${job.id}" data-itemid="${item.id}" value="${item.qty}" />×`
         : `${item.qty}×`;
       const hitTarget = item.qty > 0 && loggedForItem >= item.qty;
-      const doneMark = hitTarget ? `<span style="color:var(--ok);margin-left:6px;" title="Target reached">✓</span>` : '';
-      return `<div>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span>${doneMark}</div>`;
-    }
+      const row = `<div>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span>${hitTarget ? `<span style="color:var(--ok);margin-left:6px;" title="Target reached">✓</span>` : ''}</div>`;
+      (hitTarget ? completed : remaining).push(row);
+    });
+    const remainingBlock = remaining.length>0 ? `
+      <div class="ps-hint" style="text-transform:uppercase;letter-spacing:0.04em;font-size:11px;margin-bottom:6px;">Needs printing (${remaining.length})</div>
+      <div class="ps-joblist-group">${remaining.join('')}</div>
+    ` : '';
+    const completedBlock = completed.length>0 ? `
+      <div class="ps-hint" style="text-transform:uppercase;letter-spacing:0.04em;font-size:11px;margin-bottom:6px;${remaining.length>0?'margin-top:14px;':''}">Completed (${completed.length})</div>
+      <div class="ps-joblist-group" style="opacity:0.6;">${completed.join('')}</div>
+    ` : '';
+    return remainingBlock + completedBlock;
+  }
+  return job.items.map((item, idx) => {
+    const p = catalog.find(x=>x.id===item.id);
+    if(!p) return '';
     return `
       <tr data-jobid="${job.id}" data-itemid="${item.id}">
         <td>
@@ -1864,6 +1895,7 @@ function renderPrinters(){
           const st = stock.find(x=>x.id===targetId);
           if(!st || st.qty<=0) return;
           st.qty -= 1;
+          logStockChange(st, -1, `Loaded onto ${p.name}`);
           const newSpool = {
             id: uid('spool'), label: st.label, material: st.material, colorHex: st.colorHex,
             totalG: st.weightPerSpoolG, remainingG: st.weightPerSpoolG, retired: false,
@@ -2975,6 +3007,21 @@ function renderFilament(){
       <td>${st.qtyOnOrder>0 ? `<button class="ps-btn small" data-action="receive-stock">Receive</button>` : ''}</td>
       <td><button class="ps-btn ghost small" data-action="remove-stock">✕</button></td>
     </tr>
+    ${receivingStockId===st.id ? `
+    <tr data-id="${st.id}-receive-form">
+      <td colspan="10" style="background:var(--panel-2);">
+        <div class="ps-row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;padding:8px 0;">
+          <div class="ps-field" style="margin-bottom:0;">
+            <span class="ps-field-label">How many actually arrived? (ordered ${st.qtyOnOrder})</span>
+            <input class="ps-input ps-narrow" type="number" min="0" max="${st.qtyOnOrder}" id="ps-receive-qty-${st.id}" value="${st.qtyOnOrder}" style="width:80px;" />
+          </div>
+          <button class="ps-btn primary small" data-action="confirm-receive">Confirm</button>
+          <button class="ps-btn ghost small" data-action="cancel-receive">Cancel</button>
+          <div class="ps-hint" style="flex:1;min-width:180px;">If fewer arrived than ordered, the rest stays "On Order" — nothing here just disappears.</div>
+        </div>
+      </td>
+    </tr>
+    ` : ''}
   `).join('');
 
   // ---- Active spools (opened, in use or spare) ----
@@ -3197,6 +3244,29 @@ function renderFilament(){
       <div style="margin-top:14px;">
         <button class="ps-btn" id="ps-add-stock">+ Add stock</button>
       </div>
+      <div style="margin-top:16px;">
+        <button class="ps-btn ghost small" id="ps-toggle-stock-log">${showStockLog?'▾':'▸'} Change log (${stockChangeLog.length})</button>
+        ${showStockLog ? `
+        <div style="overflow-x:auto;margin-top:10px;">
+        ${stockChangeLog.length===0 ? '<div class="ps-hint">No changes logged yet.</div>' : `
+        <table class="ps-table">
+          <thead><tr><th>When</th><th>Label</th><th style="width:70px">Change</th><th>Reason</th><th style="width:90px">Resulting qty</th></tr></thead>
+          <tbody>
+            ${stockChangeLog.slice().sort((a,b)=>new Date(b.at)-new Date(a.at)).map(l => `
+              <tr>
+                <td class="mono">${new Date(l.at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</td>
+                <td>${escapeHtml(l.label)}</td>
+                <td class="mono" style="color:${l.delta>0?'var(--ok)':'var(--danger)'}">${l.delta>0?'+':''}${l.delta}</td>
+                <td>${escapeHtml(l.reason)}</td>
+                <td class="mono">${l.resultingQty}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        `}
+        </div>
+        ` : ''}
+      </div>
     </div>
 
     <div class="ps-panel">
@@ -3237,16 +3307,21 @@ function renderFilament(){
   // ---- Stock handlers ----
   root.querySelectorAll('#ps-stock-body tr').forEach(tr => {
     const id = tr.getAttribute('data-id');
+    if(!id || id.endsWith('-receive-form')) return;
     tr.querySelectorAll('[data-field]').forEach(input => {
       input.addEventListener('change', () => {
         const st = stock.find(x=>x.id===id);
         const field = input.getAttribute('data-field');
         if(field==='weightPerSpoolG' || field==='qty' || field==='qtyOnOrder'){
           const prevOnOrder = st.qtyOnOrder;
+          const prevQty = st.qty;
           st[field] = Math.max(field==='weightPerSpoolG'?1:0, parseInt(input.value)||0);
           if(field==='qtyOnOrder'){
             if(prevOnOrder<=0 && st.qtyOnOrder>0) st.orderedAt = new Date().toISOString();
             if(st.qtyOnOrder<=0) st.orderedAt = null;
+          }
+          if(field==='qty' && st.qty !== prevQty){
+            logStockChange(st, st.qty - prevQty, 'Manual correction');
           }
         } else {
           st[field] = input.value;
@@ -3257,29 +3332,49 @@ function renderFilament(){
     const receiveBtn = tr.querySelector('[data-action="receive-stock"]');
     if(receiveBtn){
       receiveBtn.addEventListener('click', () => {
-        const st = stock.find(x=>x.id===id);
-        const receivedAt = new Date().toISOString();
-        if(st.orderedAt){
-          const leadTimeDays = Math.max(0, (new Date(receivedAt) - new Date(st.orderedAt)) / (24*3600000));
-          filamentOrderHistory.push({
-            manufacturer: st.manufacturer || '(unspecified)',
-            material: st.material || '(unspecified)',
-            orderedAt: st.orderedAt,
-            receivedAt,
-            qty: st.qtyOnOrder,
-            leadTimeDays
-          });
-          saveFilamentOrderHistory();
-        }
-        st.qty += st.qtyOnOrder;
-        st.qtyOnOrder = 0;
-        st.orderedAt = null;
-        saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+        receivingStockId = id;
+        renderFilament();
       });
     }
     tr.querySelector('[data-action="remove-stock"]').addEventListener('click', () => {
       stock = stock.filter(x=>x.id!==id);
       saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+    });
+  });
+  root.querySelectorAll('[data-action="confirm-receive"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const st = stock.find(x=>x.id===receivingStockId);
+      if(!st) return;
+      const qtyInput = document.getElementById(`ps-receive-qty-${st.id}`);
+      const arrivedQty = Math.max(0, Math.min(st.qtyOnOrder, parseInt(qtyInput.value)||0));
+      const receivedAt = new Date().toISOString();
+      if(st.orderedAt && arrivedQty>0){
+        const leadTimeDays = Math.max(0, (new Date(receivedAt) - new Date(st.orderedAt)) / (24*3600000));
+        filamentOrderHistory.push({
+          manufacturer: st.manufacturer || '(unspecified)',
+          material: st.material || '(unspecified)',
+          orderedAt: st.orderedAt,
+          receivedAt,
+          qty: arrivedQty,
+          leadTimeDays
+        });
+        saveFilamentOrderHistory();
+      }
+      st.qty += arrivedQty;
+      logStockChange(st, arrivedQty, arrivedQty < st.qtyOnOrder ? `Received partial order (${arrivedQty} of ${st.qtyOnOrder})` : 'Received full order');
+      st.qtyOnOrder -= arrivedQty;
+      if(st.qtyOnOrder<=0){ st.qtyOnOrder = 0; st.orderedAt = null; }
+      // A partial receipt keeps the remainder on order under its original
+      // orderedAt date — the lead-time clock for what's still coming
+      // shouldn't reset just because part of the shipment showed up.
+      receivingStockId = null;
+      saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+    });
+  });
+  root.querySelectorAll('[data-action="cancel-receive"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      receivingStockId = null;
+      renderFilament();
     });
   });
   document.getElementById('ps-add-stock').addEventListener('click', () => {
@@ -3326,6 +3421,14 @@ function renderFilament(){
       renderFilament();
     });
   }
+
+  const toggleStockLogBtn = document.getElementById('ps-toggle-stock-log');
+  if(toggleStockLogBtn){
+    toggleStockLogBtn.addEventListener('click', () => {
+      showStockLog = !showStockLog;
+      renderFilament();
+    });
+  }
 }
 
 
@@ -3336,6 +3439,8 @@ let expandedBatchPreview = new Set(); // catalog list only: which products show 
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
 let showOrderHistory = false; // Filament tab: whether the order-history table under Reorder Planning is expanded
+let receivingStockId = null; // which stock row is showing the "how many actually arrived?" confirmation
+let showStockLog = false; // Filament tab: whether the stock change log is expanded
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
 
@@ -4851,7 +4956,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs, partDefs, filamentOrderHistory
+    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs, partDefs, filamentOrderHistory, stockChangeLog
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -4881,6 +4986,7 @@ async function importAllData(jsonText){
   if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
   if(Array.isArray(data.jobs)) jobs = data.jobs;
   if(Array.isArray(data.filamentOrderHistory)) filamentOrderHistory = data.filamentOrderHistory;
+  if(Array.isArray(data.stockChangeLog)) stockChangeLog = data.stockChangeLog;
   if(Array.isArray(data.partDefs)){
     partDefs = data.partDefs;
     partDefs.forEach(pd => { if(!Array.isArray(pd.replacementLog)) pd.replacementLog = []; });
@@ -4910,7 +5016,7 @@ async function importAllData(jsonText){
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs(), savePartDefs(), saveFilamentOrderHistory()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs(), savePartDefs(), saveFilamentOrderHistory(), saveStockChangeLog()
   ]);
   syncConsumption();
 
