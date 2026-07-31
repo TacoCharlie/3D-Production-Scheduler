@@ -543,6 +543,7 @@ async function loadState(){
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
   printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
+  printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
 
   try { const sp = await window.storage.get('spools'); spools = sp ? JSON.parse(sp.value) : JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
   catch(e){ spools = JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
@@ -944,9 +945,24 @@ function getElectricityRateForDate(date){
 function getCurrentElectricityRate(){
   return getElectricityRateForDate(new Date());
 }
+// Weighted by hours, so a reading covering more runtime counts more — same
+// principle as the blended electricity rate. Each reading should be its
+// own period's totals (e.g. "This Month" from a monitoring app, or any
+// other span that doesn't overlap the others), not a running lifetime
+// total, or the readings would double-count.
+function computePrinterWattageFromReadings(p){
+  if(!p.wattageReadings || p.wattageReadings.length===0) return null;
+  const totalKWh = p.wattageReadings.reduce((s,r) => s + r.kWh, 0);
+  const totalHours = p.wattageReadings.reduce((s,r) => s + r.hours, 0);
+  if(totalHours <= 0) return null;
+  return (totalKWh / totalHours) * 1000;
+}
 function getPrinterWattage(printerId){
   const p = printers.find(x=>x.id===printerId);
-  return (p && typeof p.wattageW === 'number') ? p.wattageW : settings.printerWattageW;
+  if(!p) return settings.printerWattageW;
+  const fromReadings = computePrinterWattageFromReadings(p);
+  if(fromReadings !== null) return fromReadings;
+  return (typeof p.wattageW === 'number') ? p.wattageW : settings.printerWattageW;
 }
 // The blended rate is all-time, not a rolling window — it's meant to
 // evolve gradually as real usage accumulates across all four TOU buckets,
@@ -1845,6 +1861,7 @@ function renderJobs(){
 let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
 let editingPrinterNameId = null; // which printer's name field is in edit mode
 let editingPrinterWattageId = null; // which printer's wattage field is in edit mode
+let wattageReadingsOpenFor = new Set(); // session-only: which printer cards have the wattage-readings panel expanded
 let editingPartDefId = null; // which maintenance part row is in edit mode
 
 // ---------- rendering: Status tab ----------
@@ -2040,9 +2057,40 @@ function renderPrinters(){
           <button class="ps-btn ghost small" data-action="remove" title="Remove printer">✕</button>
         </div>
         <div class="ps-hint" style="margin-bottom:10px;">
-          ${editingPrinterWattageId===p.id
-            ? `Power draw: <input class="ps-input ps-narrow" type="number" min="0" data-field="wattageW" value="${p.wattageW}" style="width:70px;display:inline-block;" autofocus />W <button class="ps-btn ghost small" data-action="save-printer-wattage">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-wattage">✕</button>`
-            : `Power draw: <b style="color:var(--text);">${p.wattageW}W</b> <button class="ps-btn ghost small" data-action="edit-printer-wattage" style="padding:1px 6px;font-size:10px;" title="Edit measured wattage">✎</button> <span style="opacity:0.75;">— from your monitoring app, feeds the cost calculator</span>`}
+          ${(() => {
+            const derivedW = computePrinterWattageFromReadings(p);
+            const readingCount = (p.wattageReadings||[]).length;
+            const displayLine = derivedW !== null
+              ? `Power draw: <b style="color:var(--text);">${Math.round(derivedW)}W</b> <span style="opacity:0.75;">— averaged from ${readingCount} reading${readingCount!==1?'s':''}</span>`
+              : (editingPrinterWattageId===p.id
+                ? `Power draw: <input class="ps-input ps-narrow" type="number" min="0" data-field="wattageW" value="${p.wattageW}" style="width:70px;display:inline-block;" autofocus />W <button class="ps-btn ghost small" data-action="save-printer-wattage">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-wattage">✕</button>`
+                : `Power draw: <b style="color:var(--text);">${p.wattageW}W</b> <button class="ps-btn ghost small" data-action="edit-printer-wattage" style="padding:1px 6px;font-size:10px;" title="Edit manually">✎</button> <span style="opacity:0.75;">— default estimate, add a reading below for a real number</span>`);
+            return `
+              <div>${displayLine} <button class="ps-btn ghost small" data-action="toggle-wattage-readings" style="padding:1px 6px;font-size:10px;">${wattageReadingsOpenFor.has(p.id)?'Hide':(readingCount>0?'Manage':'Add')} readings</button></div>
+              ${wattageReadingsOpenFor.has(p.id) ? `
+              <div style="margin-top:8px;padding:10px;background:var(--panel-2);border-radius:6px;">
+                <div class="ps-hint" style="margin-bottom:8px;">Paste in whatever your monitoring app shows for a period (e.g. "This Month": kWh and Runtime hours) — no need for a clean isolated print, add a new one anytime you check and the average keeps refining itself.</div>
+                ${readingCount>0 ? p.wattageReadings.map(r => `
+                  <div class="ps-row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+                    <span class="ps-hint">${new Date(r.recordedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})} — ${r.kWh}kWh / ${r.hours}h = ${Math.round((r.kWh/r.hours)*1000)}W</span>
+                    <button class="ps-btn ghost small" data-action="remove-wattage-reading" data-readingid="${r.id}" style="padding:0 6px;">✕</button>
+                  </div>
+                `).join('') : ''}
+                <div class="ps-row" style="gap:8px;align-items:flex-end;margin-top:8px;flex-wrap:wrap;">
+                  <div class="ps-field" style="margin-bottom:0;">
+                    <span class="ps-field-label">kWh</span>
+                    <input class="ps-input ps-narrow" type="number" min="0" step="0.001" id="ps-reading-kwh-${p.id}" style="width:80px;" />
+                  </div>
+                  <div class="ps-field" style="margin-bottom:0;">
+                    <span class="ps-field-label">Runtime (h)</span>
+                    <input class="ps-input ps-narrow" type="number" min="0" step="0.1" id="ps-reading-hours-${p.id}" style="width:80px;" />
+                  </div>
+                  <button class="ps-btn small" data-action="add-wattage-reading">+ Add</button>
+                </div>
+              </div>
+              ` : ''}
+            `;
+          })()}
         </div>
         <div class="ps-field" style="margin-bottom:0;">
           <span class="ps-field-label">Loaded spool</span>
@@ -2240,6 +2288,39 @@ function renderPrinters(){
         renderPrinters();
       });
     }
+    const toggleReadingsBtn = card.querySelector('[data-action="toggle-wattage-readings"]');
+    if(toggleReadingsBtn){
+      toggleReadingsBtn.addEventListener('click', () => {
+        if(wattageReadingsOpenFor.has(id)) wattageReadingsOpenFor.delete(id);
+        else wattageReadingsOpenFor.add(id);
+        renderPrinters();
+      });
+    }
+    const addReadingBtn = card.querySelector('[data-action="add-wattage-reading"]');
+    if(addReadingBtn){
+      addReadingBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        const kwhInput = document.getElementById(`ps-reading-kwh-${id}`);
+        const hoursInput = document.getElementById(`ps-reading-hours-${id}`);
+        const kWh = parseFloat(kwhInput.value)||0;
+        const hours = parseFloat(hoursInput.value)||0;
+        if(kWh<=0 || hours<=0) return;
+        p.wattageReadings.push({id: uid('reading'), kWh, hours, recordedAt: new Date().toISOString()});
+        savePrinters(); renderPrinters();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
+      });
+    }
+    card.querySelectorAll('[data-action="remove-wattage-reading"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        const readingId = btn.getAttribute('data-readingid');
+        p.wattageReadings = p.wattageReadings.filter(r=>r.id!==readingId);
+        savePrinters(); renderPrinters();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
+      });
+    });
     card.querySelector('[data-action="toggle-status"]').addEventListener('click', () => {
       const p = printers.find(x=>x.id===id);
       p.status = p.status === 'active' ? 'down' : 'active';
@@ -5518,6 +5599,7 @@ async function importAllData(jsonText){
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
   printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
+  printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
   printers.forEach(p => {
     if(!p.partInstalls) p.partInstalls = {};
     partDefs.forEach(pd => {
