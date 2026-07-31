@@ -1430,7 +1430,7 @@ function renderJobs(){
   `;
 
   // Queued job actions
-  root.querySelectorAll('[data-jobid]').forEach(card => {
+  root.querySelectorAll('.ps-printer-card[data-jobid]').forEach(card => {
     const jobId = card.getAttribute('data-jobid');
     const job = jobs.find(j=>j.id===jobId);
     if(!job) return;
