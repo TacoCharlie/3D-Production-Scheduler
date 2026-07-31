@@ -1087,7 +1087,16 @@ function computeRunwayStatus(){
   const runwayShort = runwayDays !== null && runwayDays <= alertThresholdDays;
   const daysUntilReorderPoint = runwayDays !== null ? runwayDays - reorderPointDays : null;
   const stockoutDate = runwayDays !== null ? new Date(Date.now() + runwayDays*24*60*60*1000) : null;
-  return { dailyRateG, onHandG, runwayDays, leadTimes, effectiveLeadDays, reorderPointDays, alertThresholdDays, runwayShort, daysUntilReorderPoint, stockoutDate };
+
+  // Once an order's actually been placed, the warning has done its job —
+  // suppress it. No second-guessing whether it'll arrive in time; if you've
+  // ordered, you've ordered.
+  const onOrderRows = stock.filter(st => st.qtyOnOrder > 0 && st.orderedAt);
+  const hasPendingOrder = onOrderRows.length > 0;
+  const totalOnOrderG = onOrderRows.reduce((s,st) => s + st.qtyOnOrder*(st.weightPerSpoolG||0), 0);
+  const showAlert = runwayShort && !hasPendingOrder;
+
+  return { dailyRateG, onHandG, runwayDays, leadTimes, effectiveLeadDays, reorderPointDays, alertThresholdDays, runwayShort, daysUntilReorderPoint, stockoutDate, hasPendingOrder, totalOnOrderG, showAlert };
 }
 
 
@@ -1972,14 +1981,18 @@ function renderStatus(){
 
   const runwayStatus = computeRunwayStatus();
   const alreadyPastOnStatus = runwayStatus.daysUntilReorderPoint !== null && runwayStatus.daysUntilReorderPoint < 0;
-  const statusCriticalMessage = runwayStatus.runwayShort ? (alreadyPastOnStatus
+  const statusCriticalMessage = runwayStatus.showAlert ? (alreadyPastOnStatus
     ? `${runwayStatus.runwayDays.toFixed(1)} day${runwayStatus.runwayDays!==1?'s':''} of filament left — ${Math.abs(runwayStatus.daysUntilReorderPoint).toFixed(1)} day${Math.abs(runwayStatus.daysUntilReorderPoint)!==1?'s':''} past your reorder point already.`
     : `${runwayStatus.runwayDays.toFixed(1)} day${runwayStatus.runwayDays!==1?'s':''} of filament left — you'll hit your reorder point in about ${runwayStatus.daysUntilReorderPoint.toFixed(1)} day${runwayStatus.daysUntilReorderPoint!==1?'s':''}. Ordering now keeps you ahead of it.`) : '';
-  const reorderBanner = runwayStatus.runwayShort ? `
+  const reorderBanner = runwayStatus.showAlert ? `
     <div class="ps-warnbox" style="font-size:16px;font-weight:800;text-align:center;padding:14px;margin-bottom:16px;letter-spacing:0.02em;">
       ⚠ REORDER NOW — ${statusCriticalMessage} Full detail on the Filament tab.
     </div>
-  ` : '';
+  ` : (runwayStatus.runwayShort && runwayStatus.hasPendingOrder ? `
+    <div class="ps-warnbox" style="border-color:var(--ok,#6a6);background:color-mix(in srgb, var(--ok,#6a6) 12%, transparent);text-align:center;padding:12px;margin-bottom:16px;">
+      ✓ Order already placed — ${runwayStatus.totalOnOrderG}g on the way. No action needed.
+    </div>
+  ` : '');
 
   root.innerHTML = reorderBanner + cards;
 }
@@ -3530,18 +3543,21 @@ function renderFilament(){
   const activeSpoolsCount = healthySpools.length + lowSpools.length;
 
   const rs = computeRunwayStatus();
-  const { dailyRateG, leadTimes, effectiveLeadDays, reorderPointDays, runwayShort, daysUntilReorderPoint, stockoutDate } = rs;
+  const { dailyRateG, leadTimes, effectiveLeadDays, reorderPointDays, runwayShort, daysUntilReorderPoint, stockoutDate, hasPendingOrder, totalOnOrderG, showAlert } = rs;
   const runwayDays = rs.runwayDays;
-  // The loud banner is the same thing as "inside the alert window" now —
-  // runwayShort already accounts for the early-warning buffer, so there's
-  // no separate "wait until it's actually overdue" gate anymore. The
-  // message just changes wording depending on whether the real reorder
-  // point is still ahead of you or already behind you.
-  const runwayCritical = runwayShort;
+  // The loud banner only fires when you're inside the alert window and
+  // nothing's on order yet. The moment an order's placed, this goes quiet —
+  // no judgment about whether it'll arrive in time, that's on you to track.
+  const runwayCritical = showAlert;
   const alreadyPastReorderPoint = daysUntilReorderPoint !== null && daysUntilReorderPoint < 0;
   const criticalMessage = runwayDays === null ? '' : (alreadyPastReorderPoint
     ? `${runwayDays.toFixed(1)} day${runwayDays!==1?'s':''} of filament left — ${Math.abs(daysUntilReorderPoint).toFixed(1)} day${Math.abs(daysUntilReorderPoint)!==1?'s':''} past your reorder point already.`
     : `${runwayDays.toFixed(1)} day${runwayDays!==1?'s':''} of filament left — you'll hit your reorder point in about ${daysUntilReorderPoint.toFixed(1)} day${daysUntilReorderPoint!==1?'s':''}. Ordering now keeps you ahead of it.`);
+  const orderCoveredNote = (runwayShort && hasPendingOrder) ? `
+    <div class="ps-warnbox" style="border-color:var(--ok,#6a6);background:color-mix(in srgb, var(--ok,#6a6) 12%, transparent);text-align:center;padding:12px;margin-bottom:12px;">
+      ✓ Order already placed — ${totalOnOrderG}g on the way. No action needed.
+    </div>
+  ` : '';
 
   const runwayWidget = `
     <div class="ps-panel">
@@ -3554,7 +3570,7 @@ function renderFilament(){
         <div class="ps-warnbox" style="font-size:16px;font-weight:800;text-align:center;padding:14px;margin-bottom:12px;letter-spacing:0.02em;">
           ⚠ REORDER NOW — ${criticalMessage}
         </div>
-        ` : ''}
+        ` : orderCoveredNote}
         <div class="ps-summary-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:${runwayShort?'12px':'0'};">
           <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${runwayDays.toFixed(1)}</div><div class="ps-summary-label">Days of filament left</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num">${reorderPointDays.toFixed(1)}</div><div class="ps-summary-label">Order-by threshold (days)</div></div>
@@ -3742,6 +3758,7 @@ function renderFilament(){
         if(st.qty !== prevQty) logStockChange(st, st.qty - prevQty, 'Manual correction');
         editingStockId = null;
         saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+        if(document.getElementById('ps-tab-status')) renderStatus();
       });
     }
     const cancelEditBtn = tr.querySelector('[data-action="cancel-stock-edit"]');
@@ -3794,6 +3811,7 @@ function renderFilament(){
       // shouldn't reset just because part of the shipment showed up.
       receivingStockId = null;
       saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+      if(document.getElementById('ps-tab-status')) renderStatus();
     });
   });
   root.querySelectorAll('[data-action="cancel-receive"]').forEach(btn => {
