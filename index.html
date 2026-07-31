@@ -2114,7 +2114,7 @@ function renderLog(){
         : e.testLabel ? escapeHtml(e.testLabel)
         : '(untitled test)')
       : null;
-    const printerLine = `${e.isTest ? 'TEST ' : ''}${escapeHtml(printer?printer.name:'(deleted printer)')}`;
+    const printerLine = `${e.isTest ? '<span style="color:var(--cutter);">TEST</span> ' : ''}${escapeHtml(printer?printer.name:'(deleted printer)')}`;
     const productLine = e.isTest
       ? `${testDesc}${e.weightGAtLogTime>0 ? ' — '+e.weightGAtLogTime+'g' : ''}`
       : `${e.unitsCompleted>1?e.unitsCompleted+'× ':''}${escapeHtml(product?product.name:'(deleted product)')}`;
