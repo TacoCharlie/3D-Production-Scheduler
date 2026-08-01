@@ -4017,6 +4017,7 @@ let typeErrorMsg = '';
 let editingTypeId = null; // which product type row is in edit mode
 let editingProductId = null; // null = browsing list; '_new' = add-product form; a real id = editing that product
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
+let expandedCostBreakdown = new Set(); // catalog list only: which products show their cost breakdown sub-row
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
 let showOrderHistory = false; // Filament tab: whether the order-history table under Reorder Planning is expanded
@@ -4790,6 +4791,7 @@ function renderCatalogList(root){
       ? ` <button class="ps-tag" data-action="toggle-batch-preview" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool); border:none; cursor:pointer;" title="${isExpanded?'Hide':'Show'} batch details">${isExpanded?'▾':'▸'} ${batchCount}× batch${batchCount!==1?'es':''}</button>`
       : '';
     const cogs = incomplete ? null : computeProductCOGS(p, costPrecomputed);
+    const costExpanded = expandedCostBreakdown.has(p.id);
     const subRows = (isExpanded && batchCount>0) ? p.batchConfigs.map(cfg => `
       <tr class="ps-batch-preview-row" style="opacity:0.75;">
         <td style="padding-left:28px;" class="ps-hint">↳ ${cfg.unitsPerBatch}× batch</td>
@@ -4802,6 +4804,17 @@ function renderCatalogList(root){
         <td></td>
       </tr>
     `).join('') : '';
+    const costBreakdownRow = (costExpanded && cogs) ? `
+      <tr class="ps-batch-preview-row" style="opacity:0.9;">
+        <td colspan="9" style="padding:8px 12px 8px 28px;">
+          <div class="ps-row" style="gap:24px;flex-wrap:wrap;font-size:12.5px;">
+            <span class="ps-hint">Filament: <b style="color:var(--text);">$${cogs.filamentCost.toFixed(2)}</b></span>
+            <span class="ps-hint">Electricity (avg): <b style="color:var(--text);">$${cogs.electricityCostBlended.toFixed(2)}</b> at $${cogs.blendedRate.toFixed(3)}/kWh — all-time blended</span>
+            <span class="ps-hint">Electricity (now): <b style="color:var(--text);">$${cogs.electricityCostNow.toFixed(2)}</b> at $${cogs.nowRate.toFixed(3)}/kWh — ${TOU_BUCKET_LABELS[getTouBucket(new Date())]}</span>
+          </div>
+        </td>
+      </tr>
+    ` : '';
     return `
       <tr data-id="${p.id}">
         <td style="white-space:nowrap;width:1%;">
@@ -4811,13 +4824,14 @@ function renderCatalogList(root){
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${badge}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
         <td class="mono ps-hint">${incomplete?'—':fmtDuration(printMin)}</td>
         <td class="mono ps-hint">${p.weightG>0?p.weightG+'g':'—'}</td>
-        <td class="mono ps-hint" title="${cogs?`Filament $${cogs.filamentCost.toFixed(2)} + electricity $${cogs.electricityCostBlended.toFixed(2)} (blended $${cogs.blendedRate.toFixed(3)}/kWh, all-time weighted average)`:''}">${cogs?'$'+cogs.totalBlended.toFixed(2):'—'}</td>
-        <td class="mono ps-hint" title="${cogs?`Filament $${cogs.filamentCost.toFixed(2)} + electricity $${cogs.electricityCostNow.toFixed(2)} (${TOU_BUCKET_LABELS[getTouBucket(new Date())]} rate, $${cogs.nowRate.toFixed(3)}/kWh, right now)`:''}">${cogs?'$'+cogs.totalNow.toFixed(2):'—'}</td>
+        <td class="mono ps-hint">${cogs?`<button class="ps-btn ghost small" data-action="toggle-cost-breakdown" style="padding:1px 6px;">$${cogs.totalBlended.toFixed(2)} ${costExpanded?'▾':'▸'}</button>`:'—'}</td>
+        <td class="mono ps-hint">${cogs?`<button class="ps-btn ghost small" data-action="toggle-cost-breakdown" style="padding:1px 6px;">$${cogs.totalNow.toFixed(2)} ${costExpanded?'▾':'▸'}</button>`:'—'}</td>
         <td class="ps-hint">${fileCount>0?fileCount+' file'+(fileCount!==1?'s':''):'—'}</td>
         <td class="ps-hint">${batchCount>0?batchCount+' batch'+(batchCount!==1?'es':''):'—'}</td>
         <td><button class="ps-btn small" data-action="edit-product">Edit</button></td>
       </tr>
       ${subRows}
+      ${costBreakdownRow}
     `;
   }).join('');
 
@@ -4863,6 +4877,15 @@ function renderCatalogList(root){
       const productId = btn.closest('tr').getAttribute('data-id');
       if(expandedBatchPreview.has(productId)) expandedBatchPreview.delete(productId);
       else expandedBatchPreview.add(productId);
+      renderCatalog();
+    });
+  });
+  root.querySelectorAll('[data-action="toggle-cost-breakdown"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const productId = btn.closest('tr').getAttribute('data-id');
+      if(expandedCostBreakdown.has(productId)) expandedCostBreakdown.delete(productId);
+      else expandedCostBreakdown.add(productId);
       renderCatalog();
     });
   });
