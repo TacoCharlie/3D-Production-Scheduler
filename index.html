@@ -88,6 +88,9 @@
   .ps-hint { color: var(--muted); font-size:11.5px; margin-top:6px; }
 
   .ps-printer-card { border:1px solid var(--line); border-radius: var(--radius); padding:14px 16px; margin-bottom:12px; background: var(--panel-2); }
+  .ps-printer-section { border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:10px; background: var(--bg); }
+  .ps-printer-section-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .ps-printer-section-head .ps-panel-title { margin:0; flex:1; min-width:140px; }
   .ps-printer-card:last-child { margin-bottom:0; }
   .ps-printer-top { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
   .ps-printer-top input.ps-name { flex:1; min-width:160px; font-size:14px; font-weight:600; }
@@ -2079,19 +2082,23 @@ function renderPrinters(){
           <span class="ps-status-pill ${p.status}" data-action="toggle-status">${p.status === 'active' ? 'Active' : 'Down'}</span>
           <button class="ps-btn ghost small" data-action="remove" title="Remove printer">✕</button>
         </div>
-        <div class="ps-hint" style="margin-bottom:10px;">
+        <div class="ps-printer-section">
           ${(() => {
             const derivedW = computePrinterWattageFromReadings(p);
             const readingCount = (p.wattageReadings||[]).length;
-            const displayLine = derivedW !== null
-              ? `Power draw: <b style="color:var(--text);">${Math.round(derivedW)}W</b> <span style="opacity:0.75;">— averaged from ${readingCount} reading${readingCount!==1?'s':''}</span>`
+            const subLine = derivedW !== null
+              ? `<b style="color:var(--text);">${Math.round(derivedW)}W</b> <span class="ps-hint">— averaged from ${readingCount} reading${readingCount!==1?'s':''}</span>`
               : (editingPrinterWattageId===p.id
-                ? `Power draw: <input class="ps-input ps-narrow" type="number" min="0" data-field="wattageW" value="${p.wattageW}" style="width:70px;display:inline-block;" autofocus />W <button class="ps-btn ghost small" data-action="save-printer-wattage">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-wattage">✕</button>`
-                : `Power draw: <b style="color:var(--text);">${p.wattageW}W</b> <button class="ps-btn ghost small" data-action="edit-printer-wattage" style="padding:1px 6px;font-size:10px;" title="Edit manually">✎</button> <span style="opacity:0.75;">— default estimate, add a reading below for a real number</span>`);
+                ? `<input class="ps-input ps-narrow" type="number" min="0" data-field="wattageW" value="${p.wattageW}" style="width:70px;display:inline-block;" autofocus />W <button class="ps-btn ghost small" data-action="save-printer-wattage">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-wattage">✕</button>`
+                : `<b style="color:var(--text);">${p.wattageW}W</b> <button class="ps-btn ghost small" data-action="edit-printer-wattage" style="padding:1px 6px;font-size:10px;" title="Edit manually">✎</button> <span class="ps-hint">— default estimate</span>`);
             return `
-              <div>${displayLine} <button class="ps-btn ghost small" data-action="toggle-wattage-readings" style="padding:1px 6px;font-size:10px;">${wattageReadingsOpenFor.has(p.id)?'Hide':(readingCount>0?'Manage':'Add')} readings</button></div>
+              <div class="ps-printer-section-head">
+                <div class="ps-panel-title"><span class="dot"></span>Power draw</div>
+                <span>${subLine}</span>
+                <button class="ps-btn primary small" data-action="toggle-wattage-readings">${wattageReadingsOpenFor.has(p.id)?'Close':'+ Add Reading'}</button>
+              </div>
               ${wattageReadingsOpenFor.has(p.id) ? `
-              <div style="margin-top:8px;padding:10px;background:var(--panel-2);border-radius:6px;">
+              <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
                 <div class="ps-hint" style="margin-bottom:8px;">Give the kWh from your monitoring app for a date range — hours come from this printer's own logged prints in that range, not your monitoring app's "Runtime" figure (which often counts idle time, not just active printing). No clean isolated print needed; add a new one anytime and the average keeps refining itself.</div>
                 ${readingCount>0 ? p.wattageReadings.map(r => {
                   const loggedHours = computeLoggedHoursForPrinterInRange(p.id, r.dateFrom, r.dateTo);
@@ -2101,7 +2108,7 @@ function renderPrinters(){
                     <button class="ps-btn ghost small" data-action="remove-wattage-reading" data-readingid="${r.id}" style="padding:0 6px;">✕</button>
                   </div>
                 `;}).join('') : ''}
-                <div class="ps-row" style="gap:8px;align-items:flex-end;margin-top:8px;flex-wrap:wrap;">
+                <div class="ps-row" style="gap:8px;align-items:flex-end;margin-top:10px;flex-wrap:wrap;">
                   <div class="ps-field" style="margin-bottom:0;">
                     <span class="ps-field-label">kWh</span>
                     <input class="ps-input ps-narrow" type="number" min="0" step="0.001" id="ps-reading-kwh-${p.id}" style="width:80px;" />
@@ -2121,13 +2128,13 @@ function renderPrinters(){
             `;
           })()}
         </div>
-        <div class="ps-field" style="margin-bottom:0;">
-          <span class="ps-field-label">Loaded spool</span>
-          <div class="ps-row" style="gap:8px;align-items:center;">
-            <span class="ps-hint" style="flex:1;">${currentSpool ? `${escapeHtml(currentSpool.label)} (${Math.max(0,currentSpool.remainingG)}g left)` : '— none assigned —'}</span>
-            <button class="ps-btn small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
+        <div class="ps-printer-section">
+          <div class="ps-printer-section-head">
+            <div class="ps-panel-title"><span class="dot"></span>Filament</div>
+            <span class="ps-hint">${currentSpool ? `${escapeHtml(currentSpool.label)} (${Math.max(0,currentSpool.remainingG)}g left)` : '— none loaded —'}</span>
+            <button class="ps-btn primary small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
           </div>
-          <div class="ps-hint">Used to flag when the schedule will run this machine out of filament.</div>
+          <div class="ps-hint" style="margin-top:8px;">Used to flag when the schedule will run this machine out of filament.</div>
           ${changePicker}
         </div>
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
