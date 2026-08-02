@@ -1126,6 +1126,32 @@ function computeProductCOGS(product, precomputed){
   };
 }
 
+// Accepts a date and a kWh number per line, in either order, separated by
+// commas/tabs/multiple spaces (however a pasted spreadsheet row tends to
+// come through). Dates can be ISO (2026-07-29) or US slash format
+// (7/29/2026) — whichever the source export uses.
+function parseFlexibleDate(tok){
+  let m = tok.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
+  if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  m = tok.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if(m) return `${m[3]}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+  return null;
+}
+function parseBulkReadingLine(line){
+  const parts = line.split(/[,\t]|\s{2,}/).map(s=>s.trim()).filter(Boolean);
+  const tokens = parts.length>=2 ? parts : line.split(/\s+/).map(s=>s.trim()).filter(Boolean);
+  if(tokens.length<2) return null;
+  let date=null, kWh=null;
+  tokens.forEach(tok => {
+    if(date===null){
+      const asDate = parseFlexibleDate(tok);
+      if(asDate){ date = asDate; return; }
+    }
+    if(kWh===null && /^\d+(\.\d+)?$/.test(tok)){ kWh = parseFloat(tok); }
+  });
+  if(date && kWh!==null && kWh>0) return {date, kWh};
+  return null;
+}
 function fmtTimeOfDay(hhmm){
   const [h,m] = hhmm.split(':').map(Number);
   const d = new Date(2000,0,1,h,m);
@@ -1962,6 +1988,8 @@ let editingPrinterNameId = null; // which printer's name field is in edit mode
 let editingPrinterWattageId = null; // which printer's wattage field is in edit mode
 let wattageReadingsOpenFor = new Set(); // session-only: which printer cards show the existing wattage-readings list (view only, toggled by clicking the section header)
 let wattageAddFormOpenFor = new Set(); // session-only: which printer cards show the "add a reading" form (toggled by the +Add Reading button — separate from just viewing)
+let wattageBulkImportOpenFor = new Set(); // session-only: which printer cards show the paste-multiple-days box
+let bulkImportResultMsg = {}; // printerId -> last import result message (survives the re-render the import itself triggers)
 let filamentDetailsOpenFor = new Set(); // session-only: which printer cards show expanded spool detail (toggled by clicking the Filament section header)
 let editingPartDefId = null; // which maintenance part row is in edit mode
 
@@ -2206,6 +2234,19 @@ function renderPrinters(){
                   <button class="ps-btn small" data-action="add-wattage-reading">+ Add</button>
                   <button class="ps-btn ghost small" data-action="cancel-add-reading">Cancel</button>
                 </div>
+                <div style="margin-top:10px;">
+                  <button class="ps-btn ghost small" data-action="toggle-bulk-import">${wattageBulkImportOpenFor.has(p.id)?'Hide paste box':'Have several days at once? Paste them in →'}</button>
+                </div>
+                ${wattageBulkImportOpenFor.has(p.id) ? `
+                <div style="margin-top:10px;">
+                  <div class="ps-hint" style="margin-bottom:6px;">One day per line: a date and a kWh number, in either order — <code>2026-07-29, 1.333</code> or <code>7/29/2026  1.333</code> both work. Paste straight from a table.</div>
+                  <textarea id="ps-bulk-readings-${p.id}" class="ps-input" rows="5" style="width:100%;font-family:'JetBrains Mono',monospace;font-size:12px;" placeholder="2026-07-29, 1.333&#10;2026-07-30, 1.374&#10;2026-07-31, 1.212"></textarea>
+                  <div class="ps-row" style="gap:8px;margin-top:8px;">
+                    <button class="ps-btn small" data-action="bulk-import-readings">Import all</button>
+                  </div>
+                  <div id="ps-bulk-import-result-${p.id}" class="ps-hint" style="margin-top:6px;">${bulkImportResultMsg[p.id]||''}</div>
+                </div>
+                ` : ''}
               </div>
               ` : ''}
             `;
@@ -2443,6 +2484,44 @@ function renderPrinters(){
       cancelAddReadingBtn.addEventListener('click', () => {
         wattageAddFormOpenFor.delete(id);
         renderPrinters();
+      });
+    }
+    const toggleBulkImportBtn = card.querySelector('[data-action="toggle-bulk-import"]');
+    if(toggleBulkImportBtn){
+      toggleBulkImportBtn.addEventListener('click', () => {
+        if(wattageBulkImportOpenFor.has(id)) wattageBulkImportOpenFor.delete(id);
+        else wattageBulkImportOpenFor.add(id);
+        delete bulkImportResultMsg[id];
+        renderPrinters();
+      });
+    }
+    const bulkImportBtn = card.querySelector('[data-action="bulk-import-readings"]');
+    if(bulkImportBtn){
+      bulkImportBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        const textarea = document.getElementById(`ps-bulk-readings-${id}`);
+        const lines = textarea.value.split('\n').map(l=>l.trim()).filter(Boolean);
+        let added = 0;
+        const skipped = [];
+        lines.forEach(line => {
+          const parsed = parseBulkReadingLine(line);
+          if(parsed){
+            p.wattageReadings.push({id: uid('reading'), kWh: parsed.kWh, dateFrom: parsed.date, dateTo: parsed.date, recordedAt: new Date().toISOString()});
+            added++;
+          } else {
+            skipped.push(line);
+          }
+        });
+        bulkImportResultMsg[id] = added===0
+          ? `<span style="color:var(--danger);">Nothing imported — couldn't parse any of those lines. Expecting one date and one number per line.</span>`
+          : `Added ${added} reading${added!==1?'s':''}.${skipped.length>0?` Couldn't parse ${skipped.length} line${skipped.length!==1?'s':''}: ${skipped.map(escapeHtml).join(' | ')}`:''}`;
+        if(added>0){
+          savePrinters(); renderPrinters();
+          if(document.getElementById('ps-tab-settings')) renderSettings();
+          if(document.getElementById('ps-tab-catalog')) renderCatalog();
+        } else {
+          renderPrinters();
+        }
       });
     }
     const addReadingBtn = card.querySelector('[data-action="add-wattage-reading"]');
