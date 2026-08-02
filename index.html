@@ -3691,7 +3691,7 @@ function renderFilament(){
         ${retired ? '' : (() => {
           const onPrinter = printers.find(pr=>pr.spoolId===s.id);
           return onPrinter
-            ? `<div style="padding:8px 12px;background:color-mix(in srgb, var(--cool, #5aa8c9) 16%, transparent);border-radius:6px;font-weight:700;font-size:14.5px;">⎋ ${escapeHtml(onPrinter.name)}</div>`
+            ? `<div style="font-weight:700;font-size:14.5px;">${escapeHtml(onPrinter.name)}</div>`
             : `<div class="ps-hint">— not currently loaded on a printer — use "Change Spool" on the Printers tab —</div>`;
         })()}
         <div class="ps-spool-bar-track" style="margin-top:10px;"><div class="ps-spool-bar-fill ${low?'low':''}" style="width:${pct}%"></div></div>
