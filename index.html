@@ -1887,7 +1887,9 @@ function renderJobs(){
 let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
 let editingPrinterNameId = null; // which printer's name field is in edit mode
 let editingPrinterWattageId = null; // which printer's wattage field is in edit mode
-let wattageReadingsOpenFor = new Set(); // session-only: which printer cards have the wattage-readings panel expanded
+let wattageReadingsOpenFor = new Set(); // session-only: which printer cards show the existing wattage-readings list (view only, toggled by clicking the section header)
+let wattageAddFormOpenFor = new Set(); // session-only: which printer cards show the "add a reading" form (toggled by the +Add Reading button — separate from just viewing)
+let filamentDetailsOpenFor = new Set(); // session-only: which printer cards show expanded spool detail (toggled by clicking the Filament section header)
 let editingPartDefId = null; // which maintenance part row is in edit mode
 
 // ---------- rendering: Status tab ----------
@@ -2093,13 +2095,15 @@ function renderPrinters(){
                 : `<b style="color:var(--text);">${p.wattageW}W</b> <button class="ps-btn ghost small" data-action="edit-printer-wattage" style="padding:1px 6px;font-size:10px;" title="Edit manually">✎</button> <span class="ps-hint">— default estimate</span>`);
             return `
               <div class="ps-printer-section-head">
-                <div class="ps-panel-title"><span class="dot"></span>Power draw</div>
+                <div class="ps-panel-title" data-action="toggle-wattage-readings" style="cursor:pointer;">
+                  <span class="dot"></span>Power draw
+                  <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${wattageReadingsOpenFor.has(p.id)?'▾':'▸'}</span>
+                </div>
                 <span>${subLine}</span>
-                <button class="ps-btn primary small" data-action="toggle-wattage-readings">${wattageReadingsOpenFor.has(p.id)?'Close':'+ Add Reading'}</button>
+                <button class="ps-btn primary small" data-action="open-add-reading">+ Add Reading</button>
               </div>
               ${wattageReadingsOpenFor.has(p.id) ? `
               <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
-                <div class="ps-hint" style="margin-bottom:8px;">Give the kWh from your monitoring app for a date range — hours come from this printer's own logged prints in that range, not your monitoring app's "Runtime" figure (which often counts idle time, not just active printing). No clean isolated print needed; add a new one anytime and the average keeps refining itself.</div>
                 ${readingCount>0 ? p.wattageReadings.map(r => {
                   const loggedHours = computeLoggedHoursForPrinterInRange(p.id, r.dateFrom, r.dateTo);
                   return `
@@ -2107,8 +2111,13 @@ function renderPrinters(){
                     <span class="ps-hint">${new Date(r.dateFrom+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}–${new Date(r.dateTo+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})} — ${r.kWh}kWh${loggedHours>0 ? ` / ${loggedHours.toFixed(1)}h logged = ${Math.round((r.kWh/loggedHours)*1000)}W` : ` — no logged prints in this range, not counted`}</span>
                     <button class="ps-btn ghost small" data-action="remove-wattage-reading" data-readingid="${r.id}" style="padding:0 6px;">✕</button>
                   </div>
-                `;}).join('') : ''}
-                <div class="ps-row" style="gap:8px;align-items:flex-end;margin-top:10px;flex-wrap:wrap;">
+                `;}).join('') : `<div class="ps-hint">No readings yet — click "+ Add Reading" to start tracking.</div>`}
+              </div>
+              ` : ''}
+              ${wattageAddFormOpenFor.has(p.id) ? `
+              <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
+                <div class="ps-hint" style="margin-bottom:8px;">Give the kWh from your monitoring app for a date range — hours come from this printer's own logged prints in that range, not your monitoring app's "Runtime" figure (which often counts idle time, not just active printing). No clean isolated print needed; add a new one anytime and the average keeps refining itself.</div>
+                <div class="ps-row" style="gap:8px;align-items:flex-end;flex-wrap:wrap;">
                   <div class="ps-field" style="margin-bottom:0;">
                     <span class="ps-field-label">kWh</span>
                     <input class="ps-input ps-narrow" type="number" min="0" step="0.001" id="ps-reading-kwh-${p.id}" style="width:80px;" />
@@ -2122,6 +2131,7 @@ function renderPrinters(){
                     <input class="ps-input ps-narrow" type="date" id="ps-reading-to-${p.id}" style="width:130px;" />
                   </div>
                   <button class="ps-btn small" data-action="add-wattage-reading">+ Add</button>
+                  <button class="ps-btn ghost small" data-action="cancel-add-reading">Cancel</button>
                 </div>
               </div>
               ` : ''}
@@ -2130,11 +2140,26 @@ function renderPrinters(){
         </div>
         <div class="ps-printer-section">
           <div class="ps-printer-section-head">
-            <div class="ps-panel-title"><span class="dot"></span>Filament</div>
+            <div class="ps-panel-title" data-action="toggle-filament-details" style="cursor:pointer;">
+              <span class="dot"></span>Filament
+              <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${filamentDetailsOpenFor.has(p.id)?'▾':'▸'}</span>
+            </div>
             <span class="ps-hint">${currentSpool ? `${escapeHtml(currentSpool.label)} (${Math.max(0,currentSpool.remainingG)}g left)` : '— none loaded —'}</span>
             <button class="ps-btn primary small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
           </div>
-          <div class="ps-hint" style="margin-top:8px;">Used to flag when the schedule will run this machine out of filament.</div>
+          ${filamentDetailsOpenFor.has(p.id) ? `
+          <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
+            ${currentSpool ? `
+              <div class="ps-row" style="gap:16px;flex-wrap:wrap;font-size:12.5px;">
+                <span class="ps-hint">Material: <b style="color:var(--text);">${escapeHtml(currentSpool.material||'—')}</b></span>
+                <span class="ps-hint">Remaining: <b style="color:var(--text);">${Math.max(0,currentSpool.remainingG)}g</b> of ${currentSpool.totalG}g</span>
+                <span class="ps-hint">Loaded: <b style="color:var(--text);">${new Date(currentSpool.loadedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</b></span>
+                ${currentSpool.costPerSpool>0 ? `<span class="ps-hint">Cost basis: <b style="color:var(--text);">$${currentSpool.costPerSpool.toFixed(2)}</b>/spool</span>` : ''}
+              </div>
+            ` : `<div class="ps-hint">No spool loaded on this printer.</div>`}
+            <div class="ps-hint" style="margin-top:8px;">Used to flag when the schedule will run this machine out of filament.</div>
+          </div>
+          ` : ''}
           ${changePicker}
         </div>
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
@@ -2332,6 +2357,21 @@ function renderPrinters(){
         renderPrinters();
       });
     }
+    const openAddReadingBtn = card.querySelector('[data-action="open-add-reading"]');
+    if(openAddReadingBtn){
+      openAddReadingBtn.addEventListener('click', () => {
+        wattageAddFormOpenFor.add(id);
+        wattageReadingsOpenFor.add(id); // show existing readings for context while adding
+        renderPrinters();
+      });
+    }
+    const cancelAddReadingBtn = card.querySelector('[data-action="cancel-add-reading"]');
+    if(cancelAddReadingBtn){
+      cancelAddReadingBtn.addEventListener('click', () => {
+        wattageAddFormOpenFor.delete(id);
+        renderPrinters();
+      });
+    }
     const addReadingBtn = card.querySelector('[data-action="add-wattage-reading"]');
     if(addReadingBtn){
       addReadingBtn.addEventListener('click', () => {
@@ -2359,6 +2399,14 @@ function renderPrinters(){
         if(document.getElementById('ps-tab-catalog')) renderCatalog();
       });
     });
+    const toggleFilamentDetailsBtn = card.querySelector('[data-action="toggle-filament-details"]');
+    if(toggleFilamentDetailsBtn){
+      toggleFilamentDetailsBtn.addEventListener('click', () => {
+        if(filamentDetailsOpenFor.has(id)) filamentDetailsOpenFor.delete(id);
+        else filamentDetailsOpenFor.add(id);
+        renderPrinters();
+      });
+    }
     card.querySelector('[data-action="toggle-status"]').addEventListener('click', () => {
       const p = printers.find(x=>x.id===id);
       p.status = p.status === 'active' ? 'down' : 'active';
