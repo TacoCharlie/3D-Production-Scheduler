@@ -848,7 +848,6 @@ const NOTIFY_MIN_BEFORE = 5;
 function checkFinishNotifications(){
   if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   const now = new Date();
-  let changed = false;
   productionLog.forEach(e => {
     if(e.actualEnd || e.failed || e.notifiedFinishSoon) return;
     const estFinish = new Date(new Date(e.actualStart).getTime() + (e.plannedMin||0)*60000);
@@ -861,16 +860,21 @@ function checkFinishNotifications(){
           body: `${product?product.name:'A print'} on ${printer?printer.name:'a printer'} — est. ${fmtClock(estFinish)}`
         });
       } catch(err){ console.error('notification failed', err); }
+      // Deliberately NOT persisted (no saveLog() here). This flag only
+      // needs to stop this one open tab from re-notifying about the same
+      // print every 20 seconds — it must never trigger a write of the
+      // whole shared production log. A background tab with an older
+      // in-memory snapshot doing that write is exactly what was silently
+      // overwriting newer entries logged elsewhere. Worst case now: a
+      // freshly reloaded tab might re-notify once for something already
+      // seen elsewhere — trivial compared to losing real production data.
       e.notifiedFinishSoon = true;
-      changed = true;
     }
   });
-  if(changed) saveLog();
 }
 
 function checkMaintenanceNotifications(){
   if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-  let changed = false;
   printers.forEach(p => {
     partDefs.forEach(pd => {
       const install = p.partInstalls[pd.id];
@@ -882,12 +886,13 @@ function checkMaintenanceNotifications(){
             body: `${pd.name} on ${p.name} has reached ${fmtHours(pd.lifespanHours)} — time to inspect or replace.`
           });
         } catch(err){ console.error('notification failed', err); }
+        // Same reasoning as above: session-local only, never persisted from
+        // this background check. Persisting real printer/part state still
+        // happens normally through the actual editing flows elsewhere.
         install.notified = true;
-        changed = true;
       }
     });
   });
-  if(changed) savePrinters();
 }
 
 let flashTimer = null;
@@ -2570,6 +2575,7 @@ function renderFailureStatsWidget(){
   `;
 }
 
+let logSubmitWarningHtml = ''; // informational-only warning shown after a print is logged (busy printer / low filament) — never blocks the save itself
 function renderLog(){
   const root = document.getElementById('ps-tab-log');
   const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
@@ -2799,8 +2805,7 @@ function renderLog(){
       <div class="ps-row" style="margin-top:14px;">
         <button class="ps-btn primary" id="ps-log-submit">Log print</button>
       </div>
-      <div id="ps-log-busy-warning"></div>
-      <div id="ps-log-filament-warning"></div>
+      <div id="ps-log-submit-warning">${logSubmitWarningHtml}</div>
       <div class="ps-hint" style="margin-top:12px;">Logging a start time ripples the Live Schedule forward from that printer's real progress. Adding a finish time (now or later, via "Mark finished now") also feeds the average print-time hints you'll see on the Catalog tab.</div>
     </div>
     <div class="ps-panel">
@@ -2924,68 +2929,45 @@ function renderLog(){
     }
   });
 
-  let busyWarningConfirmed = false;
-  let lowFilamentConfirmed = false;
   document.getElementById('ps-log-printer').addEventListener('change', () => {
-    busyWarningConfirmed = false;
-    lowFilamentConfirmed = false;
-    document.getElementById('ps-log-busy-warning').innerHTML = '';
-    document.getElementById('ps-log-filament-warning').innerHTML = '';
+    logSubmitWarningHtml = '';
+    document.getElementById('ps-log-submit-warning').innerHTML = '';
   });
   document.getElementById('ps-log-submit').addEventListener('click', () => {
     const printerIdCheck = document.getElementById('ps-log-printer').value;
-    if(printerIdCheck && !lowFilamentConfirmed){
+    // Both checks below are informational only now — they never block the
+    // actual save. A confirmation click that's easy to miss meant some
+    // prints silently never got logged at all, with nothing telling the
+    // person it hadn't saved. Logging always happens; any warning just
+    // gets attached as a heads-up afterward.
+    let filamentWarningHtml = '';
+    if(printerIdCheck){
       const printerCheck = printers.find(p=>p.id===printerIdCheck);
       const spoolCheck = printerCheck && printerCheck.spoolId ? spools.find(s=>s.id===printerCheck.spoolId && !s.retired) : null;
       if(spoolCheck && spoolCheck.remainingG <= LOG_WARN_FILAMENT_G){
-        document.getElementById('ps-log-filament-warning').innerHTML = `
+        filamentWarningHtml = `
           <div class="ps-warnbox" style="margin-top:10px;">
-            ${escapeHtml(printerCheck.name)}'s loaded spool "${escapeHtml(spoolCheck.label)}" only has <b>${Math.max(0,spoolCheck.remainingG)}g</b> left — this print may not finish on it. Change the spool on the Filament tab, or continue anyway.
-            <div class="ps-row" style="margin-top:8px;gap:6px;">
-              <button class="ps-btn small" id="ps-log-filament-confirm">Log anyway</button>
-              <button class="ps-btn ghost small" id="ps-log-filament-cancel">Cancel</button>
-            </div>
+            Logged — but heads up: ${escapeHtml(printerCheck.name)}'s loaded spool "${escapeHtml(spoolCheck.label)}" only had <b>${Math.max(0,spoolCheck.remainingG)}g</b> left when this was logged — it may not have finished on it. Worth checking, and changing the spool on the Filament tab if needed.
+            <button class="ps-btn ghost small" id="ps-log-filament-dismiss" style="margin-left:8px;">Dismiss</button>
           </div>
         `;
-        document.getElementById('ps-log-filament-confirm').addEventListener('click', () => {
-          lowFilamentConfirmed = true;
-          document.getElementById('ps-log-filament-warning').innerHTML = '';
-          document.getElementById('ps-log-submit').click();
-        });
-        document.getElementById('ps-log-filament-cancel').addEventListener('click', () => {
-          document.getElementById('ps-log-filament-warning').innerHTML = '';
-        });
-        return;
       }
     }
-    if(printerIdCheck && !busyWarningConfirmed){
+    let busyWarningHtml = '';
+    if(printerIdCheck){
       const alreadyActive = productionLog.find(e => e.printerId===printerIdCheck && !e.actualEnd);
       if(alreadyActive){
         const activeProduct = catalog.find(p=>p.id===alreadyActive.productId);
         const activeName = alreadyActive.isTest ? (alreadyActive.testLabel || 'a test print') : (activeProduct ? activeProduct.name : '(deleted product)');
         const printerName = (printers.find(p=>p.id===printerIdCheck)||{}).name || 'This printer';
-        document.getElementById('ps-log-busy-warning').innerHTML = `
+        busyWarningHtml = `
           <div class="ps-warnbox" style="margin-top:10px;">
-            ${escapeHtml(printerName)} still shows <b>${escapeHtml(activeName)}</b> as in progress, started ${fmtLogTime(alreadyActive.actualStart)} — logging this too means the printer will show two active prints at once. Sure that's right?
-            <div class="ps-row" style="margin-top:8px;gap:6px;">
-              <button class="ps-btn small" id="ps-log-busy-confirm">Log anyway</button>
-              <button class="ps-btn ghost small" id="ps-log-busy-cancel">Cancel</button>
-            </div>
+            Logged — but heads up: ${escapeHtml(printerName)} still showed <b>${escapeHtml(activeName)}</b> as in progress (started ${fmtLogTime(alreadyActive.actualStart)}) when this was logged too — it'll now show two active prints at once. Worth checking that's right.
+            <button class="ps-btn ghost small" id="ps-log-busy-dismiss" style="margin-left:8px;">Dismiss</button>
           </div>
         `;
-        document.getElementById('ps-log-busy-confirm').addEventListener('click', () => {
-          busyWarningConfirmed = true;
-          document.getElementById('ps-log-busy-warning').innerHTML = '';
-          document.getElementById('ps-log-submit').click();
-        });
-        document.getElementById('ps-log-busy-cancel').addEventListener('click', () => {
-          document.getElementById('ps-log-busy-warning').innerHTML = '';
-        });
-        return;
       }
     }
-    busyWarningConfirmed = false;
-    lowFilamentConfirmed = false;
     const isTest = document.getElementById('ps-log-istest').checked;
     const printerId = document.getElementById('ps-log-printer').value;
     const startVal = document.getElementById('ps-log-start').value;
@@ -3040,8 +3022,23 @@ function renderLog(){
     // (see below) reverses it. Test prints skip that entirely (consumed:true
     // above), but still draw down the spool like any real print would.
     syncConsumption();
+    logSubmitWarningHtml = filamentWarningHtml + busyWarningHtml;
     renderLog(); regenerateIfActive();
   });
+  const dismissFilamentWarning = document.getElementById('ps-log-filament-dismiss');
+  if(dismissFilamentWarning){
+    dismissFilamentWarning.addEventListener('click', () => {
+      logSubmitWarningHtml = '';
+      document.getElementById('ps-log-submit-warning').innerHTML = '';
+    });
+  }
+  const dismissBusyWarning = document.getElementById('ps-log-busy-dismiss');
+  if(dismissBusyWarning){
+    dismissBusyWarning.addEventListener('click', () => {
+      logSubmitWarningHtml = '';
+      document.getElementById('ps-log-submit-warning').innerHTML = '';
+    });
+  }
 
   root.querySelectorAll('.ps-log-entry').forEach(row => {
     const id = row.getAttribute('data-id');
