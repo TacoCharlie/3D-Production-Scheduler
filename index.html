@@ -2144,7 +2144,7 @@ function renderPrinters(){
               <span class="dot"></span>Filament
               <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${filamentDetailsOpenFor.has(p.id)?'▾':'▸'}</span>
             </div>
-            <span class="ps-hint">${currentSpool ? `${escapeHtml(currentSpool.label)} (${Math.max(0,currentSpool.remainingG)}g left)` : '— none loaded —'}</span>
+            <span>${currentSpool ? `<b style="color:var(--text);">${escapeHtml(currentSpool.label)}</b> <span class="ps-hint">(${Math.max(0,currentSpool.remainingG)}g left)</span>` : '<span class="ps-hint">— none loaded —</span>'}</span>
             <button class="ps-btn primary small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
           </div>
           ${filamentDetailsOpenFor.has(p.id) ? `
@@ -2157,7 +2157,6 @@ function renderPrinters(){
                 ${currentSpool.costPerSpool>0 ? `<span class="ps-hint">Cost basis: <b style="color:var(--text);">$${currentSpool.costPerSpool.toFixed(2)}</b>/spool</span>` : ''}
               </div>
             ` : `<div class="ps-hint">No spool loaded on this printer.</div>`}
-            <div class="ps-hint" style="margin-top:8px;">Used to flag when the schedule will run this machine out of filament.</div>
           </div>
           ` : ''}
           ${changePicker}
@@ -2513,7 +2512,7 @@ let expandedPastWeeks = new Set();
 // History filters. 'range' selects a preset window; 'custom' uses the
 // explicit from/to dates instead. Session-only, resets on reload — matches
 // how the Analytics range filter already behaves.
-let logHistoryRange = '7'; // '7' | '30' | 'all' | 'custom'
+let logHistoryRange = 'today'; // 'today' | '7' | '30' | 'all' | 'custom'
 let logHistoryFrom = '';   // yyyy-mm-dd, used when range==='custom'
 let logHistoryTo = '';     // yyyy-mm-dd, used when range==='custom'
 let logHistoryPrinterId = ''; // '' = all printers
@@ -2528,6 +2527,10 @@ function logHistoryMatchesFilters(e){
   if(logHistoryRange === 'custom'){
     if(logHistoryFrom && start < new Date(logHistoryFrom+'T00:00:00')) return false;
     if(logHistoryTo && start > new Date(logHistoryTo+'T23:59:59')) return false;
+  } else if(logHistoryRange === 'today'){
+    const todayStart = new Date();
+    todayStart.setHours(0,0,0,0);
+    if(start < todayStart) return false;
   } else if(logHistoryRange !== 'all'){
     const days = parseInt(logHistoryRange, 10);
     const cutoff = new Date(Date.now() - days*24*60*60*1000);
@@ -2803,6 +2806,7 @@ function renderLog(){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>History</div>
       <div class="ps-row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        <button class="ps-btn ${logHistoryRange==='today'?'primary':'ghost'} small" data-action="log-range" data-range="today">Today</button>
         <button class="ps-btn ${logHistoryRange==='7'?'primary':'ghost'} small" data-action="log-range" data-range="7">Last 7 days</button>
         <button class="ps-btn ${logHistoryRange==='30'?'primary':'ghost'} small" data-action="log-range" data-range="30">Last 30 days</button>
         <button class="ps-btn ${logHistoryRange==='all'?'primary':'ghost'} small" data-action="log-range" data-range="all">All time</button>
