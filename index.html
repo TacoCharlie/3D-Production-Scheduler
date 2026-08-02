@@ -480,6 +480,29 @@ let jobs = []; // [{id, name, items:[{id,qty}], status:'queued'|'active'|'done',
 let liveSchedule = null;
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
+
+// ---------- multi-device safe saving ----------
+// A tab left open all day (or a second device) holds an aging in-memory
+// snapshot. A naive save writes that whole snapshot back to storage,
+// silently discarding anything a different session saved in the meantime.
+// This does a lightweight three-way merge instead: compare this session's
+// current array to what it last knew was actually in storage, compute only
+// its own adds/updates/deletes, and reapply just those on top of whatever
+// is in storage *right now* — so another device's changes survive.
+function mergeById(latestArr, snapshotArr, localArr){
+  const latestById = new Map(latestArr.map(e => [e.id, e]));
+  const snapshotById = new Map(snapshotArr.map(e => [e.id, e]));
+  const localById = new Map(localArr.map(e => [e.id, e]));
+  snapshotById.forEach((_, id) => { if(!localById.has(id)) latestById.delete(id); });
+  localById.forEach((entry, id) => {
+    const snapEntry = snapshotById.get(id);
+    if(!snapEntry || JSON.stringify(snapEntry) !== JSON.stringify(entry)) latestById.set(id, entry);
+  });
+  return Array.from(latestById.values());
+}
+let productionLogSyncSnapshot = [];
+let spoolsSyncSnapshot = [];
+let printersSyncSnapshot = [];
 function todayISO(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
 async function loadState(){
@@ -547,10 +570,12 @@ async function loadState(){
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
   printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
   printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
+  printersSyncSnapshot = JSON.parse(JSON.stringify(printers));
 
   try { const sp = await window.storage.get('spools'); spools = sp ? JSON.parse(sp.value) : JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
   catch(e){ spools = JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
   spools.forEach(s => { if(typeof s.retired !== 'boolean') s.retired = false; });
+  spoolsSyncSnapshot = JSON.parse(JSON.stringify(spools));
 
   try { const st = await window.storage.get('stock'); stock = st ? JSON.parse(st.value) : JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
   catch(e){ stock = JSON.parse(JSON.stringify(DEFAULT_STOCK)); }
@@ -605,6 +630,7 @@ async function loadState(){
 
   try { const lg = await window.storage.get('productionLog'); productionLog = lg ? JSON.parse(lg.value) : []; }
   catch(e){ productionLog = []; }
+  productionLogSyncSnapshot = JSON.parse(JSON.stringify(productionLog));
   // Test prints used to always get plannedMin:0 even when tied to a real
   // product — backfill the estimate for anything logged before that fix.
   let backfilledTestTime = false;
@@ -652,8 +678,34 @@ function renderTag(typeId){
   return `<span class="ps-tag" style="background:color-mix(in srgb, ${t.color} 22%, transparent); color:${t.color}">${escapeHtml(t.name)}</span>`;
 }
 async function saveSettings(){ try { await window.storage.set('settings', JSON.stringify(settings)); flashSave(); } catch(e){ console.error(e); } }
-async function savePrinters(){ try { await window.storage.set('printers', JSON.stringify(printers)); flashSave(); } catch(e){ console.error(e); } }
-async function saveSpools(){ try { await window.storage.set('spools', JSON.stringify(spools)); flashSave(); } catch(e){ console.error(e); } }
+async function savePrinters(){
+  try {
+    let latest;
+    try { const stored = await window.storage.get('printers'); latest = stored ? JSON.parse(stored.value) : []; }
+    catch(e){ latest = []; }
+    const merged = mergeById(latest, printersSyncSnapshot, printers);
+    await window.storage.set('printers', JSON.stringify(merged));
+    printers = merged;
+    printersSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    flashSave();
+    if(document.getElementById('ps-tab-printers')) renderPrinters();
+    if(document.getElementById('ps-tab-status')) renderStatus();
+  } catch(e){ console.error(e); }
+}
+async function saveSpools(){
+  try {
+    let latest;
+    try { const stored = await window.storage.get('spools'); latest = stored ? JSON.parse(stored.value) : []; }
+    catch(e){ latest = []; }
+    const merged = mergeById(latest, spoolsSyncSnapshot, spools);
+    await window.storage.set('spools', JSON.stringify(merged));
+    spools = merged;
+    spoolsSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    flashSave();
+    if(document.getElementById('ps-tab-filament')) renderFilament();
+    if(document.getElementById('ps-tab-printers')) renderPrinters();
+  } catch(e){ console.error(e); }
+}
 async function saveStock(){ try { await window.storage.set('stock', JSON.stringify(stock)); flashSave(); } catch(e){ console.error(e); } }
 async function saveFilamentOrderHistory(){ try { await window.storage.set('filamentOrderHistory', JSON.stringify(filamentOrderHistory)); flashSave(); } catch(e){ console.error(e); } }
 async function saveStockChangeLog(){ try { await window.storage.set('stockChangeLog', JSON.stringify(stockChangeLog)); flashSave(); } catch(e){ console.error(e); } }
@@ -673,12 +725,28 @@ async function savePartDefs(){ try { await window.storage.set('partDefs', JSON.s
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
 async function saveLog(){
   // In-memory productionLog is already updated by the caller before this
-  // runs, so the dependent views can refresh immediately — they shouldn't
-  // wait on the storage write, which may have real latency depending on
-  // where this is deployed. The persistence itself still happens below.
+  // runs, so the dependent views can refresh immediately with this
+  // session's own change — no need to wait on the merge below for that.
   if(document.getElementById('ps-tab-settings')) renderSettings();
   if(document.getElementById('ps-tab-catalog')) renderCatalog();
-  try { await window.storage.set('productionLog', JSON.stringify(productionLog)); flashSave(); } catch(e){ console.error(e); }
+  try {
+    let latest;
+    try { const stored = await window.storage.get('productionLog'); latest = stored ? JSON.parse(stored.value) : []; }
+    catch(e){ latest = []; }
+    const merged = mergeById(latest, productionLogSyncSnapshot, productionLog);
+    await window.storage.set('productionLog', JSON.stringify(merged));
+    productionLog = merged;
+    productionLogSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    flashSave();
+    // Reconcile every view that reads productionLog, in case the merge
+    // pulled in something logged from another device in the meantime.
+    if(document.getElementById('ps-tab-log')) renderLog();
+    if(document.getElementById('ps-tab-status')) renderStatus();
+    if(document.getElementById('ps-tab-jobs')) renderJobs();
+    if(document.getElementById('ps-tab-analytics')) renderAnalytics();
+    if(document.getElementById('ps-tab-settings')) renderSettings();
+    if(document.getElementById('ps-tab-catalog')) renderCatalog();
+  } catch(e){ console.error(e); }
 }
 // Every log entry claims exactly one unit of its product's queued quantity,
 // exactly once, tracked via entry.consumed. This runs after any log change
