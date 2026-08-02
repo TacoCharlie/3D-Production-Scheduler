@@ -2218,6 +2218,7 @@ function renderPrinters(){
               <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${filamentDetailsOpenFor.has(p.id)?'▾':'▸'}</span>
             </div>
             <span>${currentSpool ? `<b style="color:var(--text);">${escapeHtml(currentSpool.label)}</b> <span class="ps-hint">(${Math.max(0,currentSpool.remainingG)}g left)</span>` : '<span class="ps-hint">— none loaded —</span>'}</span>
+            ${currentSpool ? `<button class="ps-btn ghost small" data-action="unload-spool" title="Free this spool up so it can be loaded on a different printer, without retiring it">Unload</button>` : ''}
             <button class="ps-btn primary small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
           </div>
           ${filamentDetailsOpenFor.has(p.id) ? `
@@ -2493,6 +2494,16 @@ function renderPrinters(){
       else changeSpoolOpenFor.add(id);
       renderPrinters();
     });
+    const unloadSpoolBtn = card.querySelector('[data-action="unload-spool"]');
+    if(unloadSpoolBtn){
+      unloadSpoolBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        p.spoolId = null;
+        savePrinters(); renderPrinters(); renderFilament(); regenerateIfActive();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
+      });
+    }
     card.querySelector('[data-action="reset-hours"]').addEventListener('click', () => {
       const p = printers.find(x=>x.id===id);
       p.hoursResetAt = new Date().toISOString();
