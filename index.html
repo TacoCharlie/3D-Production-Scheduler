@@ -701,7 +701,12 @@ async function doSavePrinters(){
     let latest;
     try { const stored = await window.storage.get('printers'); latest = stored ? JSON.parse(stored.value) : []; }
     catch(e){ latest = []; }
-    const merged = mergeById(latest, printersSyncSnapshot, printers);
+    // A read right after a write isn't guaranteed to reflect that write on
+    // every storage backend. If this fetch came back stale (missing what
+    // we already confirmed saving), reconcile our last known-good state
+    // back in first, so a lagging read can never silently erase it.
+    const reconciledLatest = mergeById(latest, [], printersSyncSnapshot);
+    const merged = mergeById(reconciledLatest, printersSyncSnapshot, printers);
     await window.storage.set('printers', JSON.stringify(merged));
     printers = merged;
     printersSyncSnapshot = JSON.parse(JSON.stringify(merged));
@@ -720,7 +725,8 @@ async function doSaveSpools(){
     let latest;
     try { const stored = await window.storage.get('spools'); latest = stored ? JSON.parse(stored.value) : []; }
     catch(e){ latest = []; }
-    const merged = mergeById(latest, spoolsSyncSnapshot, spools);
+    const reconciledLatest = mergeById(latest, [], spoolsSyncSnapshot);
+    const merged = mergeById(reconciledLatest, spoolsSyncSnapshot, spools);
     await window.storage.set('spools', JSON.stringify(merged));
     spools = merged;
     spoolsSyncSnapshot = JSON.parse(JSON.stringify(merged));
@@ -761,7 +767,8 @@ async function doSaveLog(){
     let latest;
     try { const stored = await window.storage.get('productionLog'); latest = stored ? JSON.parse(stored.value) : []; }
     catch(e){ latest = []; }
-    const merged = mergeById(latest, productionLogSyncSnapshot, productionLog);
+    const reconciledLatest = mergeById(latest, [], productionLogSyncSnapshot);
+    const merged = mergeById(reconciledLatest, productionLogSyncSnapshot, productionLog);
     await window.storage.set('productionLog', JSON.stringify(merged));
     productionLog = merged;
     productionLogSyncSnapshot = JSON.parse(JSON.stringify(merged));
