@@ -678,7 +678,25 @@ function renderTag(typeId){
   return `<span class="ps-tag" style="background:color-mix(in srgb, ${t.color} 22%, transparent); color:${t.color}">${escapeHtml(t.name)}</span>`;
 }
 async function saveSettings(){ try { await window.storage.set('settings', JSON.stringify(settings)); flashSave(); } catch(e){ console.error(e); } }
+// Two saveLog()/saveSpools()/savePrinters() calls firing close together
+// (e.g. finishing one print, then immediately logging another) used to be
+// able to race: each one reads productionLogSyncSnapshot (or the
+// spools/printers equivalent) fresh at merge-time, but that variable is
+// shared and gets updated mid-flight by whichever save happens to finish
+// first. Under real network latency, a slower first call could end up
+// computing its diff against a snapshot the second, faster call had
+// already advanced — silently dropping whichever change didn't fit that
+// stale comparison. Queuing each save so the next one never starts until
+// the previous one has fully completed (fetch, merge, write, snapshot
+// update) removes the race entirely: by the time any call reads the
+// snapshot, it's guaranteed to reflect every prior save, and its own
+// live read of the in-memory array always includes anything mutated since.
+let printersSaveQueue = Promise.resolve();
 async function savePrinters(){
+  printersSaveQueue = printersSaveQueue.then(doSavePrinters).catch(e => console.error(e));
+  return printersSaveQueue;
+}
+async function doSavePrinters(){
   try {
     let latest;
     try { const stored = await window.storage.get('printers'); latest = stored ? JSON.parse(stored.value) : []; }
@@ -692,7 +710,12 @@ async function savePrinters(){
     if(document.getElementById('ps-tab-status')) renderStatus();
   } catch(e){ console.error(e); }
 }
+let spoolsSaveQueue = Promise.resolve();
 async function saveSpools(){
+  spoolsSaveQueue = spoolsSaveQueue.then(doSaveSpools).catch(e => console.error(e));
+  return spoolsSaveQueue;
+}
+async function doSaveSpools(){
   try {
     let latest;
     try { const stored = await window.storage.get('spools'); latest = stored ? JSON.parse(stored.value) : []; }
@@ -723,12 +746,17 @@ function logStockChange(st, delta, reason){
 async function saveSavedShipments(){ try { await window.storage.set('savedShipments', JSON.stringify(savedShipments)); flashSave(); } catch(e){ console.error(e); } }
 async function savePartDefs(){ try { await window.storage.set('partDefs', JSON.stringify(partDefs)); flashSave(); } catch(e){ console.error(e); } }
 async function saveOrder(){ try { await window.storage.set('lastOrder', JSON.stringify({orderQty, priorityOrder})); flashSave(); } catch(e){ console.error(e); } }
+let productionLogSaveQueue = Promise.resolve();
 async function saveLog(){
   // In-memory productionLog is already updated by the caller before this
   // runs, so the dependent views can refresh immediately with this
   // session's own change — no need to wait on the merge below for that.
   if(document.getElementById('ps-tab-settings')) renderSettings();
   if(document.getElementById('ps-tab-catalog')) renderCatalog();
+  productionLogSaveQueue = productionLogSaveQueue.then(doSaveLog).catch(e => console.error(e));
+  return productionLogSaveQueue;
+}
+async function doSaveLog(){
   try {
     let latest;
     try { const stored = await window.storage.get('productionLog'); latest = stored ? JSON.parse(stored.value) : []; }
@@ -2659,6 +2687,15 @@ function renderPrinters(){
 
 // ---------- rendering: Log tab ----------
 let editingLogId = null;
+// The Log form's printer/product/job/batch selections used to silently
+// reset to their first-listed option every time ANY unrelated action
+// re-rendered the tab (e.g. marking a different entry finished) — with no
+// visual indication it happened. That meant a print could get logged
+// against the wrong printer or product without the person realizing,
+// and a "this printer is already printing" warning about some unrelated
+// entry would look like their own just-finished print had reverted. This
+// tracks the actual current selections so a render can restore them.
+let logFormSelection = { printerId: null, productId: null, jobId: null, batchId: null, isTest: false };
 let editingJobId = null; // which active job's "units done" is showing the edit form
 let editingJobItemTarget = null; // "jobId|itemId" of the line item whose target qty is being edited
 let editingJobNameId = null; // which job's name field is in edit mode
@@ -2735,8 +2772,12 @@ function renderFailureStatsWidget(){
 
 function renderLog(){
   const root = document.getElementById('ps-tab-log');
-  const printerOptions = printers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
-  const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  // Fall back to the first item only if nothing was ever selected, or the
+  // previously-selected one no longer exists (deleted printer/product).
+  if(!printers.some(p=>p.id===logFormSelection.printerId)) logFormSelection.printerId = printers[0] ? printers[0].id : null;
+  if(!catalog.some(p=>p.id===logFormSelection.productId)) logFormSelection.productId = catalog[0] ? catalog[0].id : null;
+  const printerOptions = printers.map(p => `<option value="${p.id}" ${p.id===logFormSelection.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
+  const productOptions = catalog.map(p => `<option value="${p.id}" ${p.id===logFormSelection.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
 
   const allEntriesSorted = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
   const entries = allEntriesSorted.filter(e =>
@@ -2915,7 +2956,7 @@ function renderLog(){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Log a Print</div>
       <label class="ps-row" style="gap:6px;margin-bottom:12px;cursor:pointer;">
-        <input type="checkbox" id="ps-log-istest" />
+        <input type="checkbox" id="ps-log-istest" ${logFormSelection.isTest?'checked':''} />
         <span class="ps-hint">Test / R&D print — not for an order, doesn't touch quantities or failure stats</span>
       </label>
       <div class="ps-row" style="align-items:flex-end; flex-wrap:wrap;">
@@ -3037,17 +3078,21 @@ function renderLog(){
   }
 
   const testCheckbox = document.getElementById('ps-log-istest');
-  testCheckbox.addEventListener('change', () => {
-    const isTest = testCheckbox.checked;
+  function applyTestFieldVisibility(isTest){
     document.getElementById('ps-log-product-field').style.display = isTest ? 'none' : '';
     document.getElementById('ps-log-batch-field').style.display = isTest ? 'none' : '';
     document.getElementById('ps-log-job-field').style.display = isTest ? 'none' : '';
     document.getElementById('ps-log-testproduct-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testlabel-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testweight-field').style.display = isTest ? '' : 'none';
+  }
+  applyTestFieldVisibility(testCheckbox.checked);
+  testCheckbox.addEventListener('change', () => {
+    logFormSelection.isTest = testCheckbox.checked;
+    applyTestFieldVisibility(testCheckbox.checked);
   });
 
-  function refreshBatchOptions(){
+  function refreshBatchOptions(preserve){
     const product = catalog.find(x=>x.id===document.getElementById('ps-log-product').value);
     const batchSelect = document.getElementById('ps-log-batch');
     if(!product){ batchSelect.innerHTML = ''; return; }
@@ -3059,12 +3104,17 @@ function renderLog(){
       options.push(`<option value="${cfg.id}">${cfg.unitsPerBatch}× batch — ${fmtDuration(cfg.timeH*60+cfg.timeM)}${cfg.weightG>0?', '+cfg.weightG+'g':''}</option>`);
     });
     batchSelect.innerHTML = options.join('');
+    if(preserve && product.batchConfigs.some(c=>c.id===logFormSelection.batchId)){
+      batchSelect.value = logFormSelection.batchId;
+    } else {
+      logFormSelection.batchId = batchSelect.value;
+    }
   }
-  refreshBatchOptions();
-  document.getElementById('ps-log-product').addEventListener('change', refreshBatchOptions);
-  document.getElementById('ps-log-printer').addEventListener('change', refreshBatchOptions);
+  refreshBatchOptions(true);
+  document.getElementById('ps-log-product').addEventListener('change', () => refreshBatchOptions(false));
+  document.getElementById('ps-log-printer').addEventListener('change', () => refreshBatchOptions(false));
 
-  function refreshJobOptions(){
+  function refreshJobOptions(preserve){
     const productId = document.getElementById('ps-log-product').value;
     const jobSelect = document.getElementById('ps-log-job');
     const candidates = jobs.filter(j => j.status==='active' && j.items.some(it=>it.id===productId));
@@ -3074,10 +3124,27 @@ function renderLog(){
     // Zero extra clicks in the common case — if exactly one active job wants
     // this product, pre-select it. Still fully visible and changeable, never
     // hidden or silently applied.
-    if(candidates.length===1) jobSelect.value = candidates[0].id;
+    if(preserve && candidates.some(j=>j.id===logFormSelection.jobId)){
+      jobSelect.value = logFormSelection.jobId;
+    } else if(candidates.length===1){
+      jobSelect.value = candidates[0].id;
+      logFormSelection.jobId = candidates[0].id;
+    } else {
+      logFormSelection.jobId = jobSelect.value;
+    }
   }
-  refreshJobOptions();
-  document.getElementById('ps-log-product').addEventListener('change', refreshJobOptions);
+  refreshJobOptions(true);
+  document.getElementById('ps-log-product').addEventListener('change', () => refreshJobOptions(false));
+
+  document.getElementById('ps-log-product').addEventListener('change', () => {
+    logFormSelection.productId = document.getElementById('ps-log-product').value;
+  });
+  document.getElementById('ps-log-job').addEventListener('change', () => {
+    logFormSelection.jobId = document.getElementById('ps-log-job').value;
+  });
+  document.getElementById('ps-log-batch').addEventListener('change', () => {
+    logFormSelection.batchId = document.getElementById('ps-log-batch').value;
+  });
 
   const testProductSelect = document.getElementById('ps-log-testproduct');
   testProductSelect.addEventListener('change', () => {
@@ -3090,6 +3157,7 @@ function renderLog(){
   let busyWarningConfirmed = false;
   let lowFilamentConfirmed = false;
   document.getElementById('ps-log-printer').addEventListener('change', () => {
+    logFormSelection.printerId = document.getElementById('ps-log-printer').value;
     busyWarningConfirmed = false;
     lowFilamentConfirmed = false;
     document.getElementById('ps-log-busy-warning').innerHTML = '';
