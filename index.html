@@ -470,6 +470,7 @@ let spools = null;
 let stock = null; // unopened inventory: [{id, label, material, manufacturer, colorHex, weightPerSpoolG, qty, qtyOnOrder, orderedAt}]
 let filamentOrderHistory = null; // completed order cycles: [{manufacturer, material, orderedAt, receivedAt, qty, leadTimeDays}] — used to compute average lead time per manufacturer+material
 let stockChangeLog = null; // audit trail for every change to a stock row's "In Stock" qty: [{id, stockId, label, delta, reason, at, resultingQty}] — so a shelf-count mismatch is traceable instead of a mystery
+let spoolChangeLog = null; // audit trail for every change to a spool's remaining grams — same idea, so an unexplained gram gap is traceable instead of a mystery
 let partDefs = null; // maintenance part types: [{id, name, lifespanHours, replacementLog:[{printerId,at,hoursElapsed}]}]
 let orderQty = {};
 let priorityOrder = [];
@@ -569,6 +570,7 @@ async function loadState(){
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
   printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
+  printers.forEach(p => { if(typeof p.model !== 'string' || !p.model) p.model = p.name; });
   printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
   printersSyncSnapshot = JSON.parse(JSON.stringify(printers));
 
@@ -591,6 +593,9 @@ async function loadState(){
 
   try { const scl = await window.storage.get('stockChangeLog'); stockChangeLog = scl ? JSON.parse(scl.value) : []; }
   catch(e){ stockChangeLog = []; }
+
+  try { const spcl = await window.storage.get('spoolChangeLog'); spoolChangeLog = spcl ? JSON.parse(spcl.value) : []; }
+  catch(e){ spoolChangeLog = []; }
 
   try { const ss = await window.storage.get('savedShipments'); savedShipments = ss ? JSON.parse(ss.value) : []; }
   catch(e){ savedShipments = []; }
@@ -738,6 +743,19 @@ async function doSaveSpools(){
 async function saveStock(){ try { await window.storage.set('stock', JSON.stringify(stock)); flashSave(); } catch(e){ console.error(e); } }
 async function saveFilamentOrderHistory(){ try { await window.storage.set('filamentOrderHistory', JSON.stringify(filamentOrderHistory)); flashSave(); } catch(e){ console.error(e); } }
 async function saveStockChangeLog(){ try { await window.storage.set('stockChangeLog', JSON.stringify(stockChangeLog)); flashSave(); } catch(e){ console.error(e); } }
+async function saveSpoolChangeLog(){ try { await window.storage.set('spoolChangeLog', JSON.stringify(spoolChangeLog)); flashSave(); } catch(e){ console.error(e); } }
+// Records every change to a spool's remaining grams, so an unexplained gap
+// between what's logged against it and what it thinks it has left is
+// traceable after the fact instead of a mystery. Call this at the exact
+// moment remainingG changes, after the new value is already set on s.
+function logSpoolChange(s, delta, reason){
+  if(delta === 0) return;
+  spoolChangeLog.push({
+    id: uid('spoollog'), spoolId: s.id, label: s.label,
+    delta, reason, at: new Date().toISOString(), resultingG: s.remainingG
+  });
+  saveSpoolChangeLog();
+}
 // Records every change to a stock row's "In Stock" count, so a shelf-count
 // mismatch is traceable after the fact instead of a mystery. Call this at
 // the exact moment qty changes, after the new value is already set on st.
@@ -800,7 +818,12 @@ function syncConsumption(){
     if(!e.spoolConsumed){
       if(e.spoolIdAtLogTime){
         const spool = spools.find(s=>s.id===e.spoolIdAtLogTime);
-        if(spool){ spool.remainingG = spool.remainingG - (e.weightGAtLogTime||0); }
+        if(spool){
+          const weightUsed = e.weightGAtLogTime||0;
+          spool.remainingG = spool.remainingG - weightUsed;
+          const product = catalog.find(p=>p.id===e.productId);
+          logSpoolChange(spool, -weightUsed, `Print logged — ${e.isTest ? (e.testLabel||'test print') : (product?product.name:'(deleted product)')}`);
+        }
       }
       e.spoolConsumed = true;
       changed = true;
@@ -831,8 +854,12 @@ function markFailed(entryId, actualWeightG, note){
     if(e.spoolConsumed && e.spoolIdAtLogTime){
       const spool = spools.find(s=>s.id===e.spoolIdAtLogTime);
       if(spool){
-        spool.remainingG += (e.weightGAtLogTime||0); // give back what was originally deducted
+        const originalWeight = e.weightGAtLogTime||0;
+        spool.remainingG += originalWeight; // give back what was originally deducted
         spool.remainingG = spool.remainingG - actualWeightG; // deduct the corrected amount
+        const product = catalog.find(p=>p.id===e.productId);
+        const netDelta = originalWeight - actualWeightG;
+        logSpoolChange(spool, netDelta, `Print failed — corrected from ${originalWeight}g to ${actualWeightG}g (${e.isTest ? (e.testLabel||'test print') : (product?product.name:'(deleted product)')})`);
       }
     }
     e.weightGAtLogTime = actualWeightG;
@@ -2020,6 +2047,7 @@ function renderJobs(){
 
 let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
 let editingPrinterNameId = null; // which printer's name field is in edit mode
+let editingPrinterModelId = null; // which printer's model field is in edit mode
 let editingPrinterWattageId = null; // which printer's wattage field is in edit mode
 let wattageReadingsOpenFor = new Set(); // session-only: which printer cards show the existing wattage-readings list (view only, toggled by clicking the section header)
 let wattageAddFormOpenFor = new Set(); // session-only: which printer cards show the "add a reading" form (toggled by the +Add Reading button — separate from just viewing)
@@ -2219,6 +2247,11 @@ function renderPrinters(){
             : `<b style="flex:1;">${escapeHtml(p.name)}</b> <button class="ps-btn ghost small" data-action="edit-printer-name" title="Rename">✎</button>`}
           <span class="ps-status-pill ${p.status}" data-action="toggle-status">${p.status === 'active' ? 'Active' : 'Down'}</span>
           <button class="ps-btn ghost small" data-action="remove" title="Remove printer">✕</button>
+        </div>
+        <div class="ps-hint" style="margin-bottom:10px;">
+          ${editingPrinterModelId===p.id
+            ? `Model: <input class="ps-input ps-narrow" data-field="model" value="${escapeHtml(p.model)}" style="width:160px;display:inline-block;" autofocus /> <button class="ps-btn ghost small" data-action="save-printer-model">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-model">✕</button>`
+            : `Model: <b style="color:var(--text);">${escapeHtml(p.model)}</b> <button class="ps-btn ghost small" data-action="edit-printer-model" style="padding:1px 6px;font-size:10px;" title="Edit model">✎</button> <span style="opacity:0.75;">— printers sharing the same model name get combined on the Analytics tab</span>`}
         </div>
         <div class="ps-printer-section">
           ${(() => {
@@ -2472,6 +2505,31 @@ function renderPrinters(){
         renderPrinters();
       });
     }
+    const editModelBtn = card.querySelector('[data-action="edit-printer-model"]');
+    if(editModelBtn){
+      editModelBtn.addEventListener('click', () => {
+        editingPrinterModelId = id;
+        renderPrinters();
+      });
+    }
+    const saveModelBtn = card.querySelector('[data-action="save-printer-model"]');
+    if(saveModelBtn){
+      saveModelBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        const input = card.querySelector('[data-field="model"]');
+        p.model = input.value.trim() || p.model;
+        editingPrinterModelId = null;
+        savePrinters(); renderPrinters();
+        if(document.getElementById('ps-tab-analytics')) renderAnalytics();
+      });
+    }
+    const cancelModelBtn = card.querySelector('[data-action="cancel-printer-model"]');
+    if(cancelModelBtn){
+      cancelModelBtn.addEventListener('click', () => {
+        editingPrinterModelId = null;
+        renderPrinters();
+      });
+    }
     const editWattageBtn = card.querySelector('[data-action="edit-printer-wattage"]');
     if(editWattageBtn){
       editWattageBtn.addEventListener('click', () => {
@@ -2694,6 +2752,13 @@ function renderPrinters(){
 
 // ---------- rendering: Log tab ----------
 let editingLogId = null;
+// The Actual Start field defaults to "now," but that value used to get
+// baked into the page once at render time and then just sit there —
+// leave the Log tab open for a few minutes without touching anything else
+// and it'd go stale, silently logging a print several minutes in the past.
+// null here means "keep tracking live now"; a real value means the person
+// deliberately picked a specific time, so stop overwriting it.
+let logStartManualValue = null;
 // The Log form's printer/product/job/batch selections used to silently
 // reset to their first-listed option every time ANY unrelated action
 // re-rendered the tab (e.g. marking a different entry finished) — with no
@@ -3000,7 +3065,7 @@ function renderLog(){
         </div>
         <div class="ps-field" style="flex:1;min-width:180px;margin-bottom:0;">
           <span class="ps-field-label">Actual start</span>
-          <input class="ps-input" type="datetime-local" id="ps-log-start" autocomplete="off" value="${toLocalInputValue(new Date())}" />
+          <input class="ps-input" type="datetime-local" id="ps-log-start" autocomplete="off" value="${logStartManualValue || toLocalInputValue(new Date())}" />
         </div>
         <div class="ps-field" style="flex:1;min-width:180px;margin-bottom:0;">
           <span class="ps-field-label">Actual finish (optional)</span>
@@ -3120,6 +3185,9 @@ function renderLog(){
   refreshBatchOptions(true);
   document.getElementById('ps-log-product').addEventListener('change', () => refreshBatchOptions(false));
   document.getElementById('ps-log-printer').addEventListener('change', () => refreshBatchOptions(false));
+  document.getElementById('ps-log-start').addEventListener('input', () => {
+    logStartManualValue = document.getElementById('ps-log-start').value;
+  });
 
   function refreshJobOptions(preserve){
     const productId = document.getElementById('ps-log-product').value;
@@ -3163,6 +3231,21 @@ function renderLog(){
 
   let busyWarningConfirmed = false;
   let lowFilamentConfirmed = false;
+  // The Actual Start field's value gets baked in the moment this tab
+  // renders — if it's left open for a while before actually submitting,
+  // that timestamp goes stale and silently backdates the print, which can
+  // cascade into false "already printing" overlaps. Keep it visually
+  // ticking forward every 15s as long as the person hasn't deliberately
+  // set a specific time themselves, and always use the real current
+  // moment at submit time regardless of what's still displayed.
+  let logStartFieldTouched = false;
+  const startField = document.getElementById('ps-log-start');
+  startField.addEventListener('input', () => { logStartFieldTouched = true; });
+  const startFieldRefreshInterval = setInterval(() => {
+    const el = document.getElementById('ps-log-start');
+    if(!el || el !== startField){ clearInterval(startFieldRefreshInterval); return; } // tab re-rendered elsewhere, this interval is done
+    if(!logStartFieldTouched) el.value = toLocalInputValue(new Date());
+  }, 15000);
   document.getElementById('ps-log-printer').addEventListener('change', () => {
     logFormSelection.printerId = document.getElementById('ps-log-printer').value;
     busyWarningConfirmed = false;
@@ -3226,7 +3309,11 @@ function renderLog(){
     lowFilamentConfirmed = false;
     const isTest = document.getElementById('ps-log-istest').checked;
     const printerId = document.getElementById('ps-log-printer').value;
-    const startVal = document.getElementById('ps-log-start').value;
+    // Belt-and-suspenders on top of the 15s auto-refresh: no matter how
+    // stale the displayed value might be at the instant of the click,
+    // never submit a backdated start time unless the person actually
+    // typed one in themselves.
+    const startVal = logStartFieldTouched ? document.getElementById('ps-log-start').value : toLocalInputValue(new Date());
     const endVal = document.getElementById('ps-log-end').value;
     const printer = printers.find(p=>p.id===printerId);
 
@@ -3278,6 +3365,7 @@ function renderLog(){
     // (see below) reverses it. Test prints skip that entirely (consumed:true
     // above), but still draw down the spool like any real print would.
     syncConsumption();
+    logStartManualValue = null; // next entry starts fresh, live-tracking "now" again
     renderLog(); regenerateIfActive();
   });
   const dismissFilamentWarning = document.getElementById('ps-log-filament-dismiss');
@@ -3383,7 +3471,11 @@ function renderLog(){
         }
         if(e.spoolConsumed && e.spoolIdAtLogTime){
           const oldSpool = spools.find(s=>s.id===e.spoolIdAtLogTime);
-          if(oldSpool){ oldSpool.remainingG += (e.weightGAtLogTime||0); }
+          if(oldSpool){
+            const weightBack = e.weightGAtLogTime||0;
+            oldSpool.remainingG += weightBack;
+            logSpoolChange(oldSpool, weightBack, `Print edited — previous ${weightBack}g deduction reversed, will be recalculated`);
+          }
         }
         if(e.jobCounted){
           applyJobCredit(e, -(e.unitsCompleted||1));
@@ -3537,7 +3629,12 @@ function renderLog(){
         }
         if(removed && removed.spoolConsumed && removed.spoolIdAtLogTime){
           const spool = spools.find(s=>s.id===removed.spoolIdAtLogTime);
-          if(spool){ spool.remainingG += (removed.weightGAtLogTime||0); saveSpools(); }
+          if(spool){
+            const weightBack = removed.weightGAtLogTime||0;
+            spool.remainingG += weightBack;
+            logSpoolChange(spool, weightBack, `Print deleted — ${weightBack}g deduction reversed`);
+            saveSpools();
+          }
         }
         if(removed && removed.jobCounted){
           applyJobCredit(removed, -(removed.unitsCompleted||1));
@@ -3951,6 +4048,26 @@ function renderFilament(){
         ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number above is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
         ${retirementSummary}
         <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
+        ${(() => {
+          const entries = spoolChangeLog.filter(l => l.spoolId === s.id);
+          if(entries.length===0) return '';
+          const open = spoolChangeLogOpenFor.has(s.id);
+          return `
+            <div style="margin-top:8px;">
+              <button class="ps-btn ghost small" data-action="toggle-spool-changelog" style="padding:1px 6px;font-size:10px;">${open?'▾':'▸'} Change log (${entries.length})</button>
+              ${open ? `
+              <div style="margin-top:8px;">
+                ${entries.slice().sort((a,b)=>new Date(b.at)-new Date(a.at)).map(l => `
+                  <div class="ps-row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12px;">
+                    <span class="ps-hint">${new Date(l.at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})} — ${escapeHtml(l.reason)}</span>
+                    <span class="mono" style="color:${l.delta>0?'var(--ok)':'var(--danger)'};white-space:nowrap;">${l.delta>0?'+':''}${l.delta}g → ${l.resultingG}g</span>
+                  </div>
+                `).join('')}
+              </div>
+              ` : ''}
+            </div>
+          `;
+        })()}
       </div>
     `;
   }
@@ -4253,6 +4370,14 @@ function renderFilament(){
   // ---- Active/retired spool handlers ----
   root.querySelectorAll('.ps-spool-card').forEach(card => {
     const id = card.getAttribute('data-id');
+    const toggleChangeLogBtn = card.querySelector('[data-action="toggle-spool-changelog"]');
+    if(toggleChangeLogBtn){
+      toggleChangeLogBtn.addEventListener('click', () => {
+        if(spoolChangeLogOpenFor.has(id)) spoolChangeLogOpenFor.delete(id);
+        else spoolChangeLogOpenFor.add(id);
+        renderFilament();
+      });
+    }
     const editBtn = card.querySelector('[data-action="edit-spool"]');
     if(editBtn){
       editBtn.addEventListener('click', () => {
@@ -4264,6 +4389,7 @@ function renderFilament(){
     if(saveBtn){
       saveBtn.addEventListener('click', () => {
         const s = spools.find(x=>x.id===id);
+        const prevRemainingG = s.remainingG;
         card.querySelectorAll('[data-field]:not([data-field="assign-printer"])').forEach(input => {
           const field = input.getAttribute('data-field');
           if(field==='remainingG' || field==='totalG'){
@@ -4272,6 +4398,9 @@ function renderFilament(){
             s[field] = input.value;
           }
         });
+        if(s.remainingG !== prevRemainingG){
+          logSpoolChange(s, s.remainingG - prevRemainingG, 'Manual correction');
+        }
         editingSpoolId = null;
         saveSpools(); renderPrinters(); regenerateIfActive();
         renderFilament();
@@ -4336,6 +4465,7 @@ let receivingStockId = null; // which stock row is showing the "how many actuall
 let editingStockId = null; // which stock row is in edit mode (fields are read-only otherwise, to avoid accidental changes)
 let showStockLog = false; // Filament tab: whether the stock change log is expanded
 let editingSpoolId = null; // which active spool card is in edit mode
+let spoolChangeLogOpenFor = new Set(); // session-only: which spool cards show their change log expanded
 let editingBatchId = null;   // within a product's editor: null = not editing a batch; '_new' = add-batch form; a real id = editing that batch
 let editingOverrideId = null; // within a product's editor: null = not editing an override; '_new' = add form; a printerId = editing that printer's override
 
@@ -4395,6 +4525,8 @@ function renderAnalytics(){
       <div class="ps-row" style="gap:6px;flex-wrap:wrap;">${rangeButtons}</div>
     </div>
     ${renderFailureStatsWidget()}
+    ${renderModelComparisonWidget(sinceDate)}
+    ${renderFailureRateTrendWidget()}
     ${renderQuantityByProductWidget(sinceDate)}
     ${renderFinishedJobsWidget(sinceDate)}
     ${renderSpoolOverageWidget(sinceDate)}
@@ -4840,6 +4972,135 @@ function computePrinterEfficiency(sinceDate){
     const efficiency = d.actualTimeMin>0 ? d.expectedMinForGood/d.actualTimeMin : null;
     return {printerId, printerName: printer.name, efficiency, actualTimeMin: d.actualTimeMin, goodUnits: d.goodUnits, productCount: d.productIds.size};
   }).filter(Boolean);
+}
+
+// Groups by printer *model* (a printer's model field, editable on the
+// Printers tab — defaults to its own name, so printers stay ungrouped
+// until you explicitly mark several as sharing a model). Answers "which
+// model is actually worth more" directly, combining failure rate and real
+// machine-minutes per good part in one place, regardless of how many
+// individual units of that model exist.
+function computeModelComparison(sinceDate){
+  const byModel = {};
+  productionLog.forEach(e => {
+    if(e.isTest || !e.actualEnd) return;
+    if(sinceDate && new Date(e.actualEnd) < sinceDate) return;
+    const printer = printers.find(p=>p.id===e.printerId);
+    if(!printer) return;
+    const model = printer.model || printer.name;
+    if(!byModel[model]) byModel[model] = {totalUnits:0, failedUnits:0, totalTimeMin:0, goodUnits:0, printerIds:new Set()};
+    const units = e.unitsCompleted || 1;
+    const durationMin = (new Date(e.actualEnd) - new Date(e.actualStart)) / 60000;
+    byModel[model].totalUnits += units;
+    byModel[model].totalTimeMin += durationMin;
+    byModel[model].printerIds.add(e.printerId);
+    if(e.failed) byModel[model].failedUnits += units;
+    else byModel[model].goodUnits += units;
+  });
+  return Object.entries(byModel).map(([model, d]) => ({
+    model,
+    failureRate: d.totalUnits>0 ? d.failedUnits/d.totalUnits : 0,
+    totalUnits: d.totalUnits, failedUnits: d.failedUnits, goodUnits: d.goodUnits,
+    effMinPerGoodPart: d.goodUnits>0 ? d.totalTimeMin/d.goodUnits : null,
+    printerCount: d.printerIds.size
+  })).sort((a,b) => b.totalUnits - a.totalUnits);
+}
+function renderModelComparisonWidget(sinceDate){
+  const data = computeModelComparison(sinceDate);
+  if(data.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Model Comparison</div>
+        <div class="ps-hint" style="margin-bottom:12px;">Every printer with the same "Model" (set on the Printers tab) gets combined here — so once you have more than one of something, this shows what that model actually costs you, not just one unit of it.</div>
+        <div class="ps-empty">No completed prints in this range yet.</div>
+      </div>
+    `;
+  }
+  const rows = data.map(d => `
+    <div class="ps-row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap;gap:8px;">
+      <div>
+        <div><b>${escapeHtml(d.model)}</b> <span class="ps-hint">${d.printerCount} printer${d.printerCount!==1?'s':''}</span></div>
+        <div class="ps-hint mono">${d.failedUnits} of ${d.totalUnits} failed — ${(d.failureRate*100).toFixed(1)}%</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="mono" style="font-weight:700;">${d.effMinPerGoodPart!==null ? fmtDuration(d.effMinPerGoodPart)+'/part' : 'N/A'}</div>
+        <div class="ps-hint">effective time per good part</div>
+      </div>
+    </div>
+  `).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Model Comparison</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Every printer with the same "Model" (set on the Printers tab) gets combined here — including the failures baked into real elapsed time, not just the successful prints. Lower effective time per part is better.</div>
+      ${rows}
+    </div>
+  `;
+}
+
+// A single aggregate failure rate can hide whether a printer/model is
+// actually trending anywhere, or just bouncing around a stable long-run
+// number. This breaks the same data into rolling weekly windows, per
+// model, so that pattern is actually visible instead of assumed.
+function computeFailureRateTrend(weeksBack){
+  const now = new Date();
+  const buckets = [];
+  for(let i=0;i<weeksBack;i++){
+    const end = new Date(now.getTime() - i*7*24*60*60*1000);
+    const start = new Date(end.getTime() - 7*24*60*60*1000);
+    buckets.push({start, end, byModel: {}});
+  }
+  const models = new Set();
+  productionLog.forEach(e => {
+    if(e.isTest || !e.actualEnd) return;
+    const printer = printers.find(p=>p.id===e.printerId);
+    if(!printer) return;
+    const model = printer.model || printer.name;
+    const endDate = new Date(e.actualEnd);
+    const bucket = buckets.find(b => endDate >= b.start && endDate < b.end);
+    if(!bucket) return;
+    models.add(model);
+    if(!bucket.byModel[model]) bucket.byModel[model] = {total:0, failed:0};
+    const units = e.unitsCompleted || 1;
+    bucket.byModel[model].total += units;
+    if(e.failed) bucket.byModel[model].failed += units;
+  });
+  buckets.reverse(); // oldest first, so the table reads left-to-right chronologically
+  return { buckets, models: Array.from(models).sort() };
+}
+function renderFailureRateTrendWidget(){
+  const { buckets, models } = computeFailureRateTrend(10);
+  const hasAnyData = buckets.some(b => Object.keys(b.byModel).length>0);
+  if(!hasAnyData || models.length===0){
+    return `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
+        <div class="ps-hint" style="margin-bottom:12px;">Failure rate by model, one column per week — shows whether it's actually improving/worsening or just settling around a stable number over time.</div>
+        <div class="ps-empty">Not enough history yet.</div>
+      </div>
+    `;
+  }
+  const header = buckets.map(b => `<th class="mono" style="font-weight:400;white-space:nowrap;">${b.end.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</th>`).join('');
+  const rows = models.map(model => {
+    const cells = buckets.map(b => {
+      const d = b.byModel[model];
+      if(!d || d.total===0) return `<td class="mono ps-hint" style="text-align:center;">—</td>`;
+      const rate = (d.failed/d.total*100);
+      return `<td class="mono" style="text-align:center;" title="${d.failed} of ${d.total} units">${rate.toFixed(0)}%</td>`;
+    }).join('');
+    return `<tr><td style="white-space:nowrap;padding-right:12px;">${escapeHtml(model)}</td>${cells}</tr>`;
+  }).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Failure rate by model, one column per week (labeled by the week's end date) — shows whether it's actually improving/worsening or just settling around a stable number over time. "—" means no completed prints that week.</div>
+      <div style="overflow-x:auto;">
+        <table class="ps-table">
+          <thead><tr><th></th>${header}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 function renderPrinterEfficiencyWidget(sinceDate){
@@ -5914,7 +6175,7 @@ function exportAllData(){
   const snapshot = {
     exportedAt: new Date().toISOString(),
     version: 1,
-    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs, partDefs, filamentOrderHistory, stockChangeLog
+    catalog, types, settings, printers, spools, stock, orderQty, priorityOrder, productionLog, estimateItems, estimateScenarios, jobs, partDefs, filamentOrderHistory, stockChangeLog, spoolChangeLog
   };
   const blob = new Blob([JSON.stringify(snapshot, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -5945,6 +6206,7 @@ async function importAllData(jsonText){
   if(Array.isArray(data.jobs)) jobs = data.jobs;
   if(Array.isArray(data.filamentOrderHistory)) filamentOrderHistory = data.filamentOrderHistory;
   if(Array.isArray(data.stockChangeLog)) stockChangeLog = data.stockChangeLog;
+  if(Array.isArray(data.spoolChangeLog)) spoolChangeLog = data.spoolChangeLog;
   if(Array.isArray(data.partDefs)){
     partDefs = data.partDefs;
     partDefs.forEach(pd => { if(!Array.isArray(pd.replacementLog)) pd.replacementLog = []; });
@@ -5964,6 +6226,7 @@ async function importAllData(jsonText){
   printers.forEach(p => { if(!('spoolId' in p)) p.spoolId = null; });
   printers.forEach(p => { if(!('hoursResetAt' in p)) p.hoursResetAt = null; });
   printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
+  printers.forEach(p => { if(typeof p.model !== 'string' || !p.model) p.model = p.name; });
   printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
   printers.forEach(p => {
     if(!p.partInstalls) p.partInstalls = {};
@@ -5976,7 +6239,7 @@ async function importAllData(jsonText){
   });
 
   await Promise.all([
-    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs(), savePartDefs(), saveFilamentOrderHistory(), saveStockChangeLog()
+    saveCatalog(), saveTypes(), saveSettings(), savePrinters(), saveSpools(), saveStock(), saveOrder(), saveLog(), saveEstimateItems(), saveEstimateScenarios(), saveJobs(), savePartDefs(), saveFilamentOrderHistory(), saveStockChangeLog(), saveSpoolChangeLog()
   ]);
   syncConsumption();
 
@@ -6900,6 +7163,14 @@ async function startApp(){
   checkFinishNotifications();
   checkMaintenanceNotifications();
   setInterval(() => { checkFinishNotifications(); checkMaintenanceNotifications(); renderStatus(); }, 20000);
+  // Pure UI refresh, no data touched, no render triggered — just keeps the
+  // Actual Start field honestly reflecting "now" for as long as the person
+  // leaves the Log tab open without picking a specific time themselves.
+  setInterval(() => {
+    if(logStartManualValue !== null) return;
+    const el = document.getElementById('ps-log-start');
+    if(el) el.value = toLocalInputValue(new Date());
+  }, 10000);
 }
 // In the normal Claude-artifact context (and in a standalone build with no
 // auth configured), start immediately. A standalone build with auth enabled
