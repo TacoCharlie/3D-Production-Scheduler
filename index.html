@@ -590,6 +590,7 @@ async function loadState(){
 
   try { const foh = await window.storage.get('filamentOrderHistory'); filamentOrderHistory = foh ? JSON.parse(foh.value) : []; }
   catch(e){ filamentOrderHistory = []; }
+  filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
 
   try { const scl = await window.storage.get('stockChangeLog'); stockChangeLog = scl ? JSON.parse(scl.value) : []; }
   catch(e){ stockChangeLog = []; }
@@ -2203,7 +2204,16 @@ function renderStatus(){
     </div>
   ` : '');
 
-  root.innerHTML = reorderBanner + cards;
+  const untestedBatch = filamentOrderHistory
+    .filter(o => o.pa === null)
+    .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt))[0];
+  const paReminderBanner = untestedBatch ? `
+    <div class="ps-warnbox" style="text-align:center;padding:12px;margin-bottom:16px;">
+      New filament batch received ${new Date(untestedBatch.receivedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})} (${escapeHtml(untestedBatch.material)}) — test PA on the Bambu and record it on the Filament tab, under Order history.
+    </div>
+  ` : '';
+
+  root.innerHTML = reorderBanner + paReminderBanner + cards;
 }
 
 function renderPrinters(){
@@ -2744,7 +2754,11 @@ function renderPrinters(){
     const newPartInstalls = {};
     partDefs.forEach(pd => { newPartInstalls[pd.id] = {installedAt: new Date().toISOString(), notified:false}; });
     const newId = uid('printer');
-    printers.push({id: newId, name: 'New printer', status:'active', spoolId:null, partInstalls: newPartInstalls});
+    printers.push({
+      id: newId, name: 'New printer', status:'active', spoolId:null, partInstalls: newPartInstalls,
+      hoursResetAt: null, wattageW: settings.printerWattageW, wattageReadings: [],
+      model: 'New printer'
+    });
     editingPrinterNameId = newId;
     savePrinters(); renderPrinters(); regenerateIfActive();
   });
@@ -4159,7 +4173,7 @@ function renderFilament(){
         ${showOrderHistory ? `
         <div style="overflow-x:auto;margin-top:10px;">
         <table class="ps-table">
-          <thead><tr><th>Manufacturer</th><th>Material</th><th>Qty</th><th>Ordered</th><th>Received</th><th style="width:90px">Lead time</th></tr></thead>
+          <thead><tr><th>Manufacturer</th><th>Material</th><th>Qty</th><th>Ordered</th><th>Received</th><th style="width:90px">Lead time</th><th style="width:110px">PA</th></tr></thead>
           <tbody>
             ${filamentOrderHistory.slice().sort((a,b)=>new Date(b.receivedAt)-new Date(a.receivedAt)).map(o => `
               <tr>
@@ -4169,6 +4183,12 @@ function renderFilament(){
                 <td class="mono">${new Date(o.orderedAt).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})}</td>
                 <td class="mono">${new Date(o.receivedAt).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'})}</td>
                 <td class="mono">${o.leadTimeDays.toFixed(1)}d</td>
+                <td>${editingOrderPaId===o.id
+                  ? `<input class="ps-input ps-narrow" type="number" min="0" step="0.001" id="ps-order-pa-input" value="${o.pa!==null?o.pa:''}" style="width:70px;" autofocus /> <button class="ps-btn ghost small" data-action="save-order-pa" data-orderid="${o.id}" style="padding:0 4px;">✓</button> <button class="ps-btn ghost small" data-action="cancel-order-pa" style="padding:0 4px;">✕</button>`
+                  : (o.pa!==null
+                    ? `<span class="mono">${o.pa}</span> <button class="ps-btn ghost small" data-action="edit-order-pa" data-orderid="${o.id}" style="padding:0 4px;">✎</button>`
+                    : `<button class="ps-btn ghost small" data-action="edit-order-pa" data-orderid="${o.id}" style="color:var(--danger);padding:1px 6px;">+ Add</button>`)}
+                </td>
               </tr>
             `).join('')}
           </tbody>
@@ -4333,12 +4353,14 @@ function renderFilament(){
       if(st.orderedAt && arrivedQty>0){
         const leadTimeDays = Math.max(0, (new Date(receivedAt) - new Date(st.orderedAt)) / (24*3600000));
         filamentOrderHistory.push({
+          id: uid('order'),
           manufacturer: st.manufacturer || '(unspecified)',
           material: st.material || '(unspecified)',
           orderedAt: st.orderedAt,
           receivedAt,
           qty: arrivedQty,
-          leadTimeDays
+          leadTimeDays,
+          pa: null // set once the new batch has been PA-tested — see the reminder on Status
         });
         saveFilamentOrderHistory();
       }
@@ -4441,6 +4463,32 @@ function renderFilament(){
       renderFilament();
     });
   }
+  root.querySelectorAll('[data-action="edit-order-pa"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      editingOrderPaId = btn.getAttribute('data-orderid');
+      renderFilament();
+    });
+  });
+  const cancelOrderPaBtn = root.querySelector('[data-action="cancel-order-pa"]');
+  if(cancelOrderPaBtn){
+    cancelOrderPaBtn.addEventListener('click', () => {
+      editingOrderPaId = null;
+      renderFilament();
+    });
+  }
+  const saveOrderPaBtn = root.querySelector('[data-action="save-order-pa"]');
+  if(saveOrderPaBtn){
+    saveOrderPaBtn.addEventListener('click', () => {
+      const orderId = saveOrderPaBtn.getAttribute('data-orderid');
+      const order = filamentOrderHistory.find(o=>o.id===orderId);
+      const input = document.getElementById('ps-order-pa-input');
+      const val = parseFloat(input.value);
+      order.pa = (input.value.trim()==='' || isNaN(val)) ? null : Math.max(0, val);
+      editingOrderPaId = null;
+      saveFilamentOrderHistory(); renderFilament();
+      if(document.getElementById('ps-tab-status')) renderStatus();
+    });
+  }
 
   const toggleStockLogBtn = document.getElementById('ps-toggle-stock-log');
   if(toggleStockLogBtn){
@@ -4461,6 +4509,7 @@ let expandedCostBreakdown = new Set(); // catalog list only: which products show
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
 let showOrderHistory = false; // Filament tab: whether the order-history table under Reorder Planning is expanded
+let editingOrderPaId = null; // which order-history row's PA cell is in edit mode
 let receivingStockId = null; // which stock row is showing the "how many actually arrived?" confirmation
 let editingStockId = null; // which stock row is in edit mode (fields are read-only otherwise, to avoid accidental changes)
 let showStockLog = false; // Filament tab: whether the stock change log is expanded
@@ -6205,6 +6254,7 @@ async function importAllData(jsonText){
   if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
   if(Array.isArray(data.jobs)) jobs = data.jobs;
   if(Array.isArray(data.filamentOrderHistory)) filamentOrderHistory = data.filamentOrderHistory;
+  filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
   if(Array.isArray(data.stockChangeLog)) stockChangeLog = data.stockChangeLog;
   if(Array.isArray(data.spoolChangeLog)) spoolChangeLog = data.spoolChangeLog;
   if(Array.isArray(data.partDefs)){
