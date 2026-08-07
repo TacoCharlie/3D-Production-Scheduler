@@ -4247,9 +4247,14 @@ function renderFilament(){
 
     ${retiredSpools.length>0 ? `
     <div class="ps-panel">
-      <div class="ps-panel-title"><span class="dot"></span>Retired Spools</div>
+      <div class="ps-panel-title" data-action="toggle-retired-spools" style="cursor:pointer;">
+        <span class="dot"></span>Retired Spools
+        <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${showRetiredSpools?'▾':'▸'} (${retiredSpools.length})</span>
+      </div>
+      ${showRetiredSpools ? `
       <div class="ps-hint" style="margin-bottom:12px;">Taken out of rotation via "Change Spool" — kept here just for usage history. Safe to delete once you don't need the record.</div>
       <div id="ps-retired-list">${retiredCards}</div>
+      ` : ''}
     </div>
     ` : ''}
   `;
@@ -4433,6 +4438,13 @@ function renderFilament(){
       renderFilament();
     });
   }
+  const toggleRetiredSpoolsBtn = root.querySelector('[data-action="toggle-retired-spools"]');
+  if(toggleRetiredSpoolsBtn){
+    toggleRetiredSpoolsBtn.addEventListener('click', () => {
+      showRetiredSpools = !showRetiredSpools;
+      renderFilament();
+    });
+  }
   root.querySelectorAll('[data-action="edit-order-pa"]').forEach(btn => {
     btn.addEventListener('click', () => {
       editingOrderPaId = btn.getAttribute('data-orderid');
@@ -4479,6 +4491,7 @@ let expandedCostBreakdown = new Set(); // catalog list only: which products show
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
 let showOrderHistory = false; // Filament tab: whether the order-history table under Reorder Planning is expanded
+let showRetiredSpools = false; // Filament tab: whether the Retired Spools panel is expanded
 let editingOrderPaId = null; // which order-history row's PA cell is in edit mode
 let receivingStockId = null; // which stock row is showing the "how many actually arrived?" confirmation
 let editingStockId = null; // which stock row is in edit mode (fields are read-only otherwise, to avoid accidental changes)
