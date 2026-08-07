@@ -4167,13 +4167,17 @@ function renderFilament(){
         <div class="ps-summary-cell"><div class="ps-summary-num">${(onHandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools on hand right now</div></div>
       </div>
       ${shortG>0 ? `<div class="ps-warnbox">Short by ~${(shortG/refSpoolG).toFixed(1)} spool${(shortG/refSpoolG)!==1?'s':''} for what's already queued — worth ordering now.</div>` : `<div class="ps-hint" style="color:var(--ok, #6a6);">Enough on hand for everything active and queued right now.</div>`}
-      <div class="ps-hint" style="margin-top:14px;">
+      <div style="margin-top:16px;">
+        <div class="ps-panel-title" style="font-size:12px;margin-bottom:10px;"><span class="dot"></span>Where it's located</div>
         ${(() => {
           const parts = [];
-          if(stockSpoolCount>0) parts.push(`${stockSpoolCount} spool${stockSpoolCount!==1?'s':''} in stock`);
-          loadedSpoolLocations.forEach(l => parts.push(`${l.fraction.toFixed(1)} spool on ${escapeHtml(l.name)}`));
-          if(spareSpoolCount>0) parts.push(`${spareSpoolCount} spool${spareSpoolCount!==1?'s':''} spare (not loaded)`);
-          return parts.length>0 ? parts.join(', ') : 'Nothing on hand right now.';
+          if(stockSpoolCount>0) parts.push({value: stockSpoolCount, label: 'In Stock'});
+          loadedSpoolLocations.forEach(l => parts.push({value: l.fraction.toFixed(1), label: l.name}));
+          if(spareSpoolCount>0) parts.push({value: spareSpoolCount, label: 'Spare (not loaded)'});
+          if(parts.length===0) return `<div class="ps-empty">Nothing on hand right now.</div>`;
+          return `<div style="display:flex;gap:1px;flex-wrap:wrap;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
+            ${parts.map(p => `<div class="ps-summary-cell" style="flex:1;min-width:140px;"><div class="ps-summary-num">${p.value}</div><div class="ps-summary-label">${escapeHtml(String(p.label))}</div></div>`).join('')}
+          </div>`;
         })()}
       </div>
       ${filamentOrderHistory.length>0 ? `
