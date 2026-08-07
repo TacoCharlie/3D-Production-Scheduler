@@ -4105,15 +4105,21 @@ function renderFilament(){
   // nothing's on order yet. The moment an order's placed, this goes quiet —
   // no judgment about whether it'll arrive in time, that's on you to track.
   const runwayCritical = showAlert;
-  const alreadyPastReorderPoint = daysUntilReorderPoint !== null && daysUntilReorderPoint < 0;
-  const criticalMessage = runwayDays === null ? '' : (alreadyPastReorderPoint
-    ? `${runwayDays.toFixed(1)} day${runwayDays!==1?'s':''} of filament left — ${Math.abs(daysUntilReorderPoint).toFixed(1)} day${Math.abs(daysUntilReorderPoint)!==1?'s':''} past your reorder point already.`
-    : `${runwayDays.toFixed(1)} day${runwayDays!==1?'s':''} of filament left — you'll hit your reorder point in about ${daysUntilReorderPoint.toFixed(1)} day${daysUntilReorderPoint!==1?'s':''}. Ordering now keeps you ahead of it.`);
-  const orderCoveredNote = (runwayShort && hasPendingOrder) ? `
-    <div class="ps-warnbox" style="border-color:var(--ok,#6a6);background:color-mix(in srgb, var(--ok,#6a6) 12%, transparent);text-align:center;padding:12px;margin-bottom:12px;">
-      ✓ Order already placed — ${totalOnOrderG}g on the way. No action needed.
-    </div>
-  ` : '';
+
+  const orderByDate = new Date(Date.now() + daysUntilReorderPoint*24*60*60*1000);
+  const orderByDateStr = orderByDate.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
+  const daysUntilAbs = Math.abs(daysUntilReorderPoint).toFixed(1);
+  const pastDue = daysUntilReorderPoint < 0;
+  const reorderHeadline = hasPendingOrder
+    ? `<div class="ps-warnbox" style="border-color:var(--ok,#6a6);background:color-mix(in srgb, var(--ok,#6a6) 12%, transparent);text-align:center;padding:16px;margin-bottom:14px;">
+         <div style="font-size:13px;text-transform:uppercase;letter-spacing:0.05em;opacity:0.85;margin-bottom:4px;">Order already placed</div>
+         <div style="font-size:26px;font-weight:800;">Covers you past ${orderByDateStr}</div>
+       </div>`
+    : `<div class="ps-warnbox" style="${runwayCritical?'':'border-color:var(--heat);background:color-mix(in srgb, var(--heat) 14%, transparent);'}text-align:center;padding:16px;margin-bottom:14px;">
+         <div style="font-size:13px;text-transform:uppercase;letter-spacing:0.05em;opacity:0.85;margin-bottom:4px;">${pastDue ? 'Past your reorder date' : 'Reorder by'}</div>
+         <div style="font-size:26px;font-weight:800;${runwayCritical?'color:var(--danger);':''}">${orderByDateStr}</div>
+         <div style="margin-top:4px;opacity:0.85;">${pastDue ? `${daysUntilAbs} day${daysUntilAbs!=1?'s':''} ago` : `${daysUntilAbs} day${daysUntilAbs!=1?'s':''} from today`}</div>
+       </div>`;
 
   const runwayWidget = `
     <div class="ps-panel">
@@ -4122,18 +4128,13 @@ function renderFilament(){
       ${dailyRateG<=0 ? `
         <div class="ps-hint">No production logged in the last 14 days — can't project a runway yet.</div>
       ` : `
-        ${runwayCritical ? `
-        <div class="ps-warnbox" style="font-size:16px;font-weight:800;text-align:center;padding:14px;margin-bottom:12px;letter-spacing:0.02em;">
-          ⚠ REORDER NOW — ${criticalMessage}
-        </div>
-        ` : orderCoveredNote}
-        <div class="ps-summary-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:${runwayShort?'12px':'0'};">
+        ${reorderHeadline}
+        <div class="ps-summary-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:0;">
           <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${runwayDays.toFixed(1)}</div><div class="ps-summary-label">Days of filament left</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${stockoutDate.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div><div class="ps-summary-label">Projected run-out</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num">${dailyRateG.toFixed(0)}g</div><div class="ps-summary-label">Used per day</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num">${reorderPointDays.toFixed(1)}</div><div class="ps-summary-label">Order-by threshold (days)</div><div class="ps-hint" style="margin-top:2px;">reorder once runway drops to this</div></div>
         </div>
-        ${!runwayShort ? `<div class="ps-hint" style="color:var(--ok, #6a6);">Runway has more than ${settings.earlyWarningDays} day${settings.earlyWarningDays!==1?'s':''} of margin over your reorder point — no rush yet, but this narrows fast if usage picks up.</div>` : ''}
       `}
       <div class="ps-hint" style="margin-top:14px;">Lead time estimate, safety buffer, and early warning window are editable on the Settings tab, under Reorder Timing.</div>
     </div>
