@@ -890,6 +890,7 @@ function markTestFailed(entryId){
   const e = productionLog.find(x=>x.id===entryId);
   if(!e || !e.isTest || e.failed) return;
   e.failed = true;
+  if(!e.actualEnd) e.actualEnd = new Date().toISOString(); // failed means stopped, never leave this looking still-active
   saveLog();
 }
 function getOrderEntry(id){ if(!orderQty[id]) orderQty[id] = {qty:0, pin:null, batchConfigId:null}; if(!('batchConfigId' in orderQty[id])) orderQty[id].batchConfigId = null; return orderQty[id]; }
@@ -928,7 +929,7 @@ function splitBatchOutcome(entryId, failCount, failWeightG, note){
     isTest: false,
     testLabel: '',
     actualStart: e.actualStart,
-    actualEnd: e.actualEnd,
+    actualEnd: e.actualEnd || new Date().toISOString(), // a failed unit is stopped, full stop — never leave this null even if the original entry it's split from hasn't finished yet
     plannedMin: e.plannedMin,
     weightGAtLogTime: clampedFailWeight,
     spoolIdAtLogTime: e.spoolIdAtLogTime,
@@ -3294,7 +3295,7 @@ function renderLog(){
       }
     }
     if(printerIdCheck && !busyWarningConfirmed){
-      const alreadyActive = productionLog.find(e => e.printerId===printerIdCheck && !e.actualEnd);
+      const alreadyActive = productionLog.find(e => e.printerId===printerIdCheck && !e.actualEnd && !e.failed);
       if(alreadyActive){
         const activeProduct = catalog.find(p=>p.id===alreadyActive.productId);
         const activeName = alreadyActive.isTest ? (alreadyActive.testLabel || 'a test print') : (activeProduct ? activeProduct.name : '(deleted product)');
