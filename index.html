@@ -4156,7 +4156,8 @@ function renderFilament(){
     })
     .filter(Boolean);
   const loadedSpoolIdsForLocation = new Set(printers.map(p=>p.spoolId).filter(Boolean));
-  const spareSpoolCount = spools.filter(s => !s.retired && !loadedSpoolIdsForLocation.has(s.id)).length;
+  const spareSpools = spools.filter(s => !s.retired && !loadedSpoolIdsForLocation.has(s.id));
+  const spareSpoolEquiv = spareSpools.reduce((sum, sp) => sum + Math.max(0, sp.remainingG) / (sp.totalG||refSpoolG), 0);
 
   const reorderWidget = `
     ${runwayWidget}
@@ -4173,7 +4174,7 @@ function renderFilament(){
           const parts = [];
           if(stockSpoolCount>0) parts.push({value: stockSpoolCount, label: 'In Stock'});
           loadedSpoolLocations.forEach(l => parts.push({value: l.fraction.toFixed(1), label: l.name}));
-          if(spareSpoolCount>0) parts.push({value: spareSpoolCount, label: 'Spare (not loaded)'});
+          if(spareSpools.length>0) parts.push({value: spareSpoolEquiv.toFixed(1), label: `Spare, not loaded (${spareSpools.length} spool${spareSpools.length!==1?'s':''})`});
           if(parts.length===0) return `<div class="ps-empty">Nothing on hand right now.</div>`;
           return `<div style="display:flex;gap:1px;flex-wrap:wrap;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;">
             ${parts.map(p => `<div class="ps-summary-cell" style="flex:1;min-width:140px;"><div class="ps-summary-num">${p.value}</div><div class="ps-summary-label">${escapeHtml(String(p.label))}</div></div>`).join('')}
