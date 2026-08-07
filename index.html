@@ -4142,22 +4142,40 @@ function renderFilament(){
   const demandG = computeFilamentDemandG();
   const onHandG = computeFilamentOnHandG();
   const shortG = Math.max(0, demandG - onHandG);
+  // Not every spool is necessarily the same rated weight, but in practice
+  // they all are — use whatever's actually on record as the reference
+  // rather than hardcoding a number, so this stays correct if that changes.
+  const refSpoolG = (spools.find(s=>!s.retired)||{}).totalG || (stock.find(st=>st.weightPerSpoolG)||{}).weightPerSpoolG || 1000;
+  const stockSpoolCount = stock.reduce((s,st) => s + (st.qty||0), 0);
+  const loadedSpoolLocations = printers
+    .filter(p => p.spoolId)
+    .map(p => {
+      const sp = spools.find(s=>s.id===p.spoolId && !s.retired);
+      if(!sp) return null;
+      return { name: p.name, fraction: Math.max(0, sp.remainingG) / (sp.totalG||refSpoolG) };
+    })
+    .filter(Boolean);
+  const loadedSpoolIdsForLocation = new Set(printers.map(p=>p.spoolId).filter(Boolean));
+  const spareSpoolCount = spools.filter(s => !s.retired && !loadedSpoolIdsForLocation.has(s.id)).length;
 
   const reorderWidget = `
     ${runwayWidget}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Reorder Planning</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Demand is everything remaining on active and queued jobs, checked against what's actually on hand — opened spools plus unopened stock. Doesn't split by material yet, since products don't specify one.</div>
       <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:${shortG>0?'12px':'0'};">
-        <div class="ps-summary-cell"><div class="ps-summary-num">${demandG.toFixed(0)}g</div><div class="ps-summary-label">Needed for active + queued jobs</div></div>
-        <div class="ps-summary-cell"><div class="ps-summary-num">${onHandG.toFixed(0)}g</div><div class="ps-summary-label">On hand right now</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${(demandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools needed for active + queued jobs</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${(onHandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools on hand right now</div></div>
       </div>
-      ${shortG>0 ? `<div class="ps-warnbox">Short by ~${shortG.toFixed(0)}g for what's already queued — worth ordering now.${leadTimes.length>0 ? ' Average lead time by manufacturer below, for reference.' : ''}</div>` : `<div class="ps-hint" style="color:var(--ok, #6a6);">Enough on hand for everything active and queued right now.</div>`}
-      ${leadTimes.length>0 ? `
-      <div style="margin-top:14px;">
-        ${leadTimes.map(lt => `<div class="ps-hint">${escapeHtml(lt.manufacturer)} — ${escapeHtml(lt.material)}: avg lead time ${lt.avgDays.toFixed(1)} day${lt.avgDays!==1?'s':''} (based on ${lt.count} order${lt.count!==1?'s':''})</div>`).join('')}
+      ${shortG>0 ? `<div class="ps-warnbox">Short by ~${(shortG/refSpoolG).toFixed(1)} spool${(shortG/refSpoolG)!==1?'s':''} for what's already queued — worth ordering now.</div>` : `<div class="ps-hint" style="color:var(--ok, #6a6);">Enough on hand for everything active and queued right now.</div>`}
+      <div class="ps-hint" style="margin-top:14px;">
+        ${(() => {
+          const parts = [];
+          if(stockSpoolCount>0) parts.push(`${stockSpoolCount} spool${stockSpoolCount!==1?'s':''} in stock`);
+          loadedSpoolLocations.forEach(l => parts.push(`${l.fraction.toFixed(1)} spool on ${escapeHtml(l.name)}`));
+          if(spareSpoolCount>0) parts.push(`${spareSpoolCount} spool${spareSpoolCount!==1?'s':''} spare (not loaded)`);
+          return parts.length>0 ? parts.join(', ') : 'Nothing on hand right now.';
+        })()}
       </div>
-      ` : ''}
       ${filamentOrderHistory.length>0 ? `
       <div style="margin-top:14px;">
         <button class="ps-btn ghost" id="ps-toggle-order-history">${showOrderHistory?'▾':'▸'} Order history (${filamentOrderHistory.length})</button>
