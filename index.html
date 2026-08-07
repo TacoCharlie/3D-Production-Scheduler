@@ -4128,10 +4128,10 @@ function renderFilament(){
         </div>
         ` : orderCoveredNote}
         <div class="ps-summary-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:${runwayShort?'12px':'0'};">
-          <div class="ps-summary-cell"><div class="ps-summary-num">${dailyRateG.toFixed(0)}g</div><div class="ps-summary-label">Used per day</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${runwayDays.toFixed(1)}</div><div class="ps-summary-label">Days of filament left</div></div>
-          <div class="ps-summary-cell"><div class="ps-summary-num">${reorderPointDays.toFixed(1)}</div><div class="ps-summary-label">Order-by threshold (days)</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${stockoutDate.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div><div class="ps-summary-label">Projected run-out</div></div>
+          <div class="ps-summary-cell"><div class="ps-summary-num">${dailyRateG.toFixed(0)}g</div><div class="ps-summary-label">Used per day</div></div>
+          <div class="ps-summary-cell"><div class="ps-summary-num">${reorderPointDays.toFixed(1)}</div><div class="ps-summary-label">Order-by threshold (days)</div><div class="ps-hint" style="margin-top:2px;">reorder once runway drops to this</div></div>
         </div>
         ${!runwayShort ? `<div class="ps-hint" style="color:var(--ok, #6a6);">Runway has more than ${settings.earlyWarningDays} day${settings.earlyWarningDays!==1?'s':''} of margin over your reorder point — no rush yet, but this narrows fast if usage picks up.</div>` : ''}
       `}
