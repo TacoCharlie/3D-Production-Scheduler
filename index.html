@@ -1625,6 +1625,23 @@ function buildMultiSchedule(queue, activePrinters, settings, mode){
 
 // ---------- rendering: Printers tab ----------
 // ---------- rendering: Jobs tab ----------
+// Jobs of different statuses (queued/active/done) all live in one flat
+// array — moving a job up/down only makes sense relative to its own
+// status group, so this finds its neighbor within that same group and
+// swaps positions in the underlying array, leaving jobs of other
+// statuses undisturbed.
+function moveJobWithinStatus(jobId, direction){
+  const job = jobs.find(j=>j.id===jobId);
+  if(!job) return;
+  const sameStatusIndices = jobs.map((j,i)=>({j,i})).filter(x=>x.j.status===job.status).map(x=>x.i);
+  const posInGroup = sameStatusIndices.findIndex(i => jobs[i].id===jobId);
+  const targetPosInGroup = posInGroup + direction;
+  if(posInGroup===-1 || targetPosInGroup<0 || targetPosInGroup>=sameStatusIndices.length) return;
+  const idxA = sameStatusIndices[posInGroup];
+  const idxB = sameStatusIndices[targetPosInGroup];
+  [jobs[idxA], jobs[idxB]] = [jobs[idxB], jobs[idxA]];
+  saveJobs(); renderJobs();
+}
 function jobTotals(job){
   let totalMin = 0, totalWeight = 0, totalUnits = 0;
   job.items.forEach(item => {
@@ -1819,7 +1836,7 @@ function renderJobs(){
     `;
   }).join('');
 
-  const activeCards = active.map(job => {
+  const activeCards = active.map((job, activeIdx) => {
     const t = jobTotals(job);
     const {done, totalUnits} = jobProgress(job);
     const pct = totalUnits>0 ? Math.min(100, (done/totalUnits)*100) : 0;
@@ -1833,6 +1850,8 @@ function renderJobs(){
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
         <div class="ps-printer-top">
+          <button class="ps-btn ghost small" data-action="job-move-up" ${activeIdx===0?'disabled':''} title="Move up">↑</button>
+          <button class="ps-btn ghost small" data-action="job-move-down" ${activeIdx===active.length-1?'disabled':''} title="Move down">↓</button>
           ${editingJobNameId===job.id
             ? `<input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;font-weight:700;" autofocus /> <button class="ps-btn ghost small" data-action="save-job-name">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-name">✕</button>`
             : `<b style="flex:1.4;">${escapeHtml(job.name)}</b> <button class="ps-btn ghost small" data-action="edit-job-name">✎</button>`}
@@ -1993,6 +2012,18 @@ function renderJobs(){
       deleteBtn.addEventListener('click', () => {
         jobs = jobs.filter(j=>j.id!==jobId);
         saveJobs(); regenerateIfActive();
+      });
+    }
+    const moveUpBtn = card.querySelector('[data-action="job-move-up"]');
+    if(moveUpBtn){
+      moveUpBtn.addEventListener('click', () => {
+        moveJobWithinStatus(jobId, -1);
+      });
+    }
+    const moveDownBtn = card.querySelector('[data-action="job-move-down"]');
+    if(moveDownBtn){
+      moveDownBtn.addEventListener('click', () => {
+        moveJobWithinStatus(jobId, 1);
       });
     }
     const addSelect = card.querySelector('[data-action="job-add-select"]');
