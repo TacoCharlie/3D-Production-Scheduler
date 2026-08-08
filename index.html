@@ -4047,6 +4047,7 @@ function renderFilament(){
           <span class="ps-hint">${escapeHtml(s.material)}</span>
           ${low ? '<span class="ps-badge-low">Low</span>' : ''}
           ${retired ? '<span class="ps-hint">Retired</span>' : `<button class="ps-btn ghost small" data-action="edit-spool">Edit</button>`}
+          ${(!retired && !printers.some(p=>p.spoolId===s.id)) ? `<button class="ps-btn ghost small" data-action="retire-spool" title="Not currently loaded on anything — mark this spool done">Retire</button>` : ''}
           <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
         </div>
     `;
@@ -4405,6 +4406,17 @@ function renderFilament(){
       editBtn.addEventListener('click', () => {
         editingSpoolId = id;
         renderFilament();
+      });
+    }
+    const retireBtn = card.querySelector('[data-action="retire-spool"]');
+    if(retireBtn){
+      retireBtn.addEventListener('click', () => {
+        const s = spools.find(x=>x.id===id);
+        s.retired = true;
+        s.retiredAt = new Date().toISOString();
+        saveSpools(); renderFilament();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
       });
     }
     const saveBtn = card.querySelector('[data-action="save-spool"]');
