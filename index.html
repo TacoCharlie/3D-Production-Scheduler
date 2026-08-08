@@ -12,6 +12,11 @@
 <body>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Archivo+Expanded:wght@600;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+  * { scrollbar-width: thin; scrollbar-color: var(--line) var(--panel-2); }
+  ::-webkit-scrollbar { height: 8px; width: 8px; }
+  ::-webkit-scrollbar-track { background: var(--panel-2); }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
   #ps-root {
     --bg: #1a1815;
@@ -600,8 +605,20 @@ async function loadState(){
   filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
   // Backfill Purchased/Received/Completed for stock rows that already had
   // real order history before these fields existed — that history is
-  // sitting right here, it just was never connected to the stock row.
+  // sitting right here, it just was never connected to the stock row. But
+  // order history only records manufacturer+material, not which specific
+  // stock row it applied to — if more than one row shares that same
+  // manufacturer+material (e.g. two cost lots of the same filament),
+  // there's no way to tell them apart, so it's safer to leave those
+  // blank than silently show the same guessed dates on both.
+  const stockGroupCounts = {};
   stock.forEach(st => {
+    const key = `${st.manufacturer}|||${st.material}`;
+    stockGroupCounts[key] = (stockGroupCounts[key]||0) + 1;
+  });
+  stock.forEach(st => {
+    const key = `${st.manufacturer}|||${st.material}`;
+    if(stockGroupCounts[key] > 1) return; // ambiguous — more than one row could match, don't guess
     const matching = filamentOrderHistory
       .filter(o => o.manufacturer === st.manufacturer && o.material === st.material)
       .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt));
@@ -6444,7 +6461,14 @@ async function importAllData(jsonText){
   if(Array.isArray(data.jobs)) jobs = data.jobs;
   if(Array.isArray(data.filamentOrderHistory)) filamentOrderHistory = data.filamentOrderHistory;
   filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
+  const stockGroupCountsImport = {};
   stock.forEach(st => {
+    const key = `${st.manufacturer}|||${st.material}`;
+    stockGroupCountsImport[key] = (stockGroupCountsImport[key]||0) + 1;
+  });
+  stock.forEach(st => {
+    const key = `${st.manufacturer}|||${st.material}`;
+    if(stockGroupCountsImport[key] > 1) return; // ambiguous — don't guess
     const matching = filamentOrderHistory
       .filter(o => o.manufacturer === st.manufacturer && o.material === st.material)
       .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt));
