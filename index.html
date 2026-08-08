@@ -603,38 +603,19 @@ async function loadState(){
   try { const foh = await window.storage.get('filamentOrderHistory'); filamentOrderHistory = foh ? JSON.parse(foh.value) : []; }
   catch(e){ filamentOrderHistory = []; }
   filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
-  // Backfill Purchased/Received/Completed for stock rows that already had
-  // real order history before these fields existed — that history is
-  // sitting right here, it just was never connected to the stock row. But
-  // order history only records manufacturer+material, not which specific
-  // stock row it applied to — if more than one row shares that same
-  // manufacturer+material (e.g. two cost lots of the same filament),
-  // there's no way to tell them apart, so it's safer to leave those
-  // blank than silently show the same guessed dates on both.
-  const stockGroupCounts = {};
-  stock.forEach(st => {
-    const key = `${st.manufacturer}|||${st.material}`;
-    stockGroupCounts[key] = (stockGroupCounts[key]||0) + 1;
-  });
-  stock.forEach(st => {
-    const key = `${st.manufacturer}|||${st.material}`;
-    if(stockGroupCounts[key] > 1) return; // ambiguous — more than one row could match, don't guess
-    const matching = filamentOrderHistory
-      .filter(o => o.manufacturer === st.manufacturer && o.material === st.material)
-      .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt));
-    if(matching.length>0){
-      const latest = matching[0];
-      if(!st.lastOrderedAt) st.lastOrderedAt = latest.orderedAt;
-      if(!st.lastReceivedAt) st.lastReceivedAt = latest.receivedAt;
-      // Only backfill "completed" if the stock row isn't currently sitting
-      // on an open order — otherwise the most recent history entry might
-      // just be a partial receive that hasn't actually finished yet.
-      if(!st.lastCompletedAt && st.qtyOnOrder<=0) st.lastCompletedAt = latest.receivedAt;
-    }
-  });
 
   try { const scl = await window.storage.get('stockChangeLog'); stockChangeLog = scl ? JSON.parse(scl.value) : []; }
   catch(e){ stockChangeLog = []; }
+  // Backfill Purchased/Received/Completed for stock rows that already had
+  // real activity before these fields existed. The stock change log is
+  // the reliable anchor here — unlike order history, each entry is tied
+  // to a specific stockId, so it's unambiguous even when two rows share
+  // the same manufacturer+material. "Purchased" isn't in the change log
+  // directly, but its timestamp lines up exactly with an order-history
+  // receivedAt (both get stamped at the same moment during a receive),
+  // so that gives an exact cross-reference to the right order.
+  backfillStockDates();
+
 
   try { const spcl = await window.storage.get('spoolChangeLog'); spoolChangeLog = spcl ? JSON.parse(spcl.value) : []; }
   catch(e){ spoolChangeLog = []; }
@@ -801,6 +782,34 @@ function logSpoolChange(s, delta, reason){
 // Records every change to a stock row's "In Stock" count, so a shelf-count
 // mismatch is traceable after the fact instead of a mystery. Call this at
 // the exact moment qty changes, after the new value is already set on st.
+// Fills in Purchased/Received/Completed for stock rows that had real
+// activity before these fields existed. Received/Completed come straight
+// from the stock change log, which is unambiguous — every entry is tied
+// to a specific stockId, unlike order history which only records
+// manufacturer+material. Purchased isn't in the change log directly, but
+// a receive event's timestamp and the matching order-history entry's
+// receivedAt get stamped at the same instant (same click, same handler),
+// so matching them by timestamp finds the right order even when multiple
+// stock rows share the same manufacturer+material.
+function backfillStockDates(){
+  stock.forEach(st => {
+    const receiveEvents = stockChangeLog
+      .filter(l => l.stockId===st.id && /^Received/.test(l.reason))
+      .sort((a,b) => new Date(b.at) - new Date(a.at));
+    if(receiveEvents.length===0) return;
+    const mostRecent = receiveEvents[0];
+    if(!st.lastReceivedAt) st.lastReceivedAt = mostRecent.at;
+    const mostRecentFull = receiveEvents.find(l => l.reason==='Received full order');
+    if(!st.lastCompletedAt && mostRecentFull) st.lastCompletedAt = mostRecentFull.at;
+    if(!st.lastOrderedAt){
+      const matched = filamentOrderHistory.find(o =>
+        o.manufacturer===st.manufacturer && o.material===st.material &&
+        Math.abs(new Date(o.receivedAt) - new Date(mostRecent.at)) < 5000
+      );
+      if(matched) st.lastOrderedAt = matched.orderedAt;
+    }
+  });
+}
 function logStockChange(st, delta, reason){
   if(delta === 0) return;
   stockChangeLog.push({
@@ -6492,25 +6501,8 @@ async function importAllData(jsonText){
   if(Array.isArray(data.jobs)) jobs = data.jobs;
   if(Array.isArray(data.filamentOrderHistory)) filamentOrderHistory = data.filamentOrderHistory;
   filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
-  const stockGroupCountsImport = {};
-  stock.forEach(st => {
-    const key = `${st.manufacturer}|||${st.material}`;
-    stockGroupCountsImport[key] = (stockGroupCountsImport[key]||0) + 1;
-  });
-  stock.forEach(st => {
-    const key = `${st.manufacturer}|||${st.material}`;
-    if(stockGroupCountsImport[key] > 1) return; // ambiguous — don't guess
-    const matching = filamentOrderHistory
-      .filter(o => o.manufacturer === st.manufacturer && o.material === st.material)
-      .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt));
-    if(matching.length>0){
-      const latest = matching[0];
-      if(!st.lastOrderedAt) st.lastOrderedAt = latest.orderedAt;
-      if(!st.lastReceivedAt) st.lastReceivedAt = latest.receivedAt;
-      if(!st.lastCompletedAt && st.qtyOnOrder<=0) st.lastCompletedAt = latest.receivedAt;
-    }
-  });
   if(Array.isArray(data.stockChangeLog)) stockChangeLog = data.stockChangeLog;
+  backfillStockDates();
   if(Array.isArray(data.spoolChangeLog)) spoolChangeLog = data.spoolChangeLog;
   if(Array.isArray(data.partDefs)){
     partDefs = data.partDefs;
