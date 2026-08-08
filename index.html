@@ -598,6 +598,23 @@ async function loadState(){
   try { const foh = await window.storage.get('filamentOrderHistory'); filamentOrderHistory = foh ? JSON.parse(foh.value) : []; }
   catch(e){ filamentOrderHistory = []; }
   filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
+  // Backfill Purchased/Received/Completed for stock rows that already had
+  // real order history before these fields existed — that history is
+  // sitting right here, it just was never connected to the stock row.
+  stock.forEach(st => {
+    const matching = filamentOrderHistory
+      .filter(o => o.manufacturer === st.manufacturer && o.material === st.material)
+      .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt));
+    if(matching.length>0){
+      const latest = matching[0];
+      if(!st.lastOrderedAt) st.lastOrderedAt = latest.orderedAt;
+      if(!st.lastReceivedAt) st.lastReceivedAt = latest.receivedAt;
+      // Only backfill "completed" if the stock row isn't currently sitting
+      // on an open order — otherwise the most recent history entry might
+      // just be a partial receive that hasn't actually finished yet.
+      if(!st.lastCompletedAt && st.qtyOnOrder<=0) st.lastCompletedAt = latest.receivedAt;
+    }
+  });
 
   try { const scl = await window.storage.get('stockChangeLog'); stockChangeLog = scl ? JSON.parse(scl.value) : []; }
   catch(e){ stockChangeLog = []; }
@@ -6294,6 +6311,17 @@ async function importAllData(jsonText){
   if(Array.isArray(data.jobs)) jobs = data.jobs;
   if(Array.isArray(data.filamentOrderHistory)) filamentOrderHistory = data.filamentOrderHistory;
   filamentOrderHistory.forEach(o => { if(!o.id) o.id = uid('order'); if(typeof o.pa === 'undefined') o.pa = null; });
+  stock.forEach(st => {
+    const matching = filamentOrderHistory
+      .filter(o => o.manufacturer === st.manufacturer && o.material === st.material)
+      .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt));
+    if(matching.length>0){
+      const latest = matching[0];
+      if(!st.lastOrderedAt) st.lastOrderedAt = latest.orderedAt;
+      if(!st.lastReceivedAt) st.lastReceivedAt = latest.receivedAt;
+      if(!st.lastCompletedAt && st.qtyOnOrder<=0) st.lastCompletedAt = latest.receivedAt;
+    }
+  });
   if(Array.isArray(data.stockChangeLog)) stockChangeLog = data.stockChangeLog;
   if(Array.isArray(data.spoolChangeLog)) spoolChangeLog = data.spoolChangeLog;
   if(Array.isArray(data.partDefs)){
