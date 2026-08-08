@@ -4233,7 +4233,6 @@ function renderFilament(){
     ${reorderWidget}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Stock — Unopened Inventory</div>
-      <div class="ps-hint" style="margin-bottom:12px;">What you've got sitting in reserve, not loaded on anything yet — plus what's on its way. "In Stock" is available right now; "On Order" is tracked separately and doesn't count as available until you hit Receive.</div>
       ${stock.length===0 ? '<div class="ps-empty">Nothing in stock yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
