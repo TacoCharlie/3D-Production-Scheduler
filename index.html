@@ -3169,6 +3169,7 @@ function renderLog(){
       </div>
       <div id="ps-log-filament-warning"></div>
       <div id="ps-log-busy-warning"></div>
+      <div id="ps-log-jobtarget-warning"></div>
       <div class="ps-hint" style="margin-top:12px;">Logging a start time ripples the Live Schedule forward from that printer's real progress. Adding a finish time (now or later, via "Mark finished now") also feeds the average print-time hints you'll see on the Catalog tab.</div>
     </div>
     <div class="ps-panel">
@@ -3305,12 +3306,18 @@ function renderLog(){
 
   document.getElementById('ps-log-product').addEventListener('change', () => {
     logFormSelection.productId = document.getElementById('ps-log-product').value;
+    jobTargetConfirmed = false;
+    document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
   });
   document.getElementById('ps-log-job').addEventListener('change', () => {
     logFormSelection.jobId = document.getElementById('ps-log-job').value;
+    jobTargetConfirmed = false;
+    document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
   });
   document.getElementById('ps-log-batch').addEventListener('change', () => {
     logFormSelection.batchId = document.getElementById('ps-log-batch').value;
+    jobTargetConfirmed = false;
+    document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
   });
 
   const testProductSelect = document.getElementById('ps-log-testproduct');
@@ -3323,6 +3330,7 @@ function renderLog(){
 
   let busyWarningConfirmed = false;
   let lowFilamentConfirmed = false;
+  let jobTargetConfirmed = false;
   // The Actual Start field's value gets baked in the moment this tab
   // renders — if it's left open for a while before actually submitting,
   // that timestamp goes stale and silently backdates the print, which can
@@ -3342,8 +3350,10 @@ function renderLog(){
     logFormSelection.printerId = document.getElementById('ps-log-printer').value;
     busyWarningConfirmed = false;
     lowFilamentConfirmed = false;
+    jobTargetConfirmed = false;
     document.getElementById('ps-log-busy-warning').innerHTML = '';
     document.getElementById('ps-log-filament-warning').innerHTML = '';
+    document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
   });
   document.getElementById('ps-log-submit').addEventListener('click', () => {
     const printerIdCheck = document.getElementById('ps-log-printer').value;
@@ -3397,8 +3407,52 @@ function renderLog(){
         return;
       }
     }
+    const isTestCheck = document.getElementById('ps-log-istest').checked;
+    if(!isTestCheck && !jobTargetConfirmed){
+      const jobIdCheck = document.getElementById('ps-log-job').value;
+      const productIdCheck = document.getElementById('ps-log-product').value;
+      const jobCheck = jobIdCheck ? jobs.find(j=>j.id===jobIdCheck) : null;
+      const itemCheck = jobCheck ? jobCheck.items.find(it=>it.id===productIdCheck) : null;
+      if(jobCheck && itemCheck && itemCheck.qty>0){
+        const batchConfigIdCheck = document.getElementById('ps-log-batch').value || null;
+        const productCheck = catalog.find(p=>p.id===productIdCheck);
+        const batchConfigCheck = batchConfigIdCheck && productCheck ? productCheck.batchConfigs.find(c=>c.id===batchConfigIdCheck) : null;
+        const prospectiveUnits = batchConfigCheck ? batchConfigCheck.unitsPerBatch : 1;
+        // Matches exactly how the Jobs tab itself counts "X of Y logged" —
+        // finished, non-failed, non-test prints tied to this specific job
+        // and product. This new print doesn't have to be finished yet to
+        // trigger the warning; the point is to catch it before committing
+        // the printer, not after.
+        const alreadyLogged = productionLog
+          .filter(e => e.jobId===jobIdCheck && e.productId===productIdCheck && !e.isTest && !e.failed && e.actualEnd)
+          .reduce((s,e) => s + (e.unitsCompleted||1), 0);
+        const afterThis = alreadyLogged + prospectiveUnits;
+        if(afterThis >= itemCheck.qty){
+          const overBy = afterThis - itemCheck.qty;
+          document.getElementById('ps-log-jobtarget-warning').innerHTML = `
+            <div class="ps-warnbox" style="margin-top:10px;">
+              This brings <b>${escapeHtml(productCheck.name)}</b> on <b>${escapeHtml(jobCheck.name)}</b> to ${afterThis} of ${itemCheck.qty} needed${overBy>0 ? ` — ${overBy} more than the target` : ' — exactly the target, the last one needed'}. Worth reallocating this printer to something else afterward?
+              <div class="ps-row" style="margin-top:8px;gap:6px;">
+                <button class="ps-btn small" id="ps-log-jobtarget-confirm">Log anyway</button>
+                <button class="ps-btn ghost small" id="ps-log-jobtarget-cancel">Cancel</button>
+              </div>
+            </div>
+          `;
+          document.getElementById('ps-log-jobtarget-confirm').addEventListener('click', () => {
+            jobTargetConfirmed = true;
+            document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
+            document.getElementById('ps-log-submit').click();
+          });
+          document.getElementById('ps-log-jobtarget-cancel').addEventListener('click', () => {
+            document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
+          });
+          return;
+        }
+      }
+    }
     busyWarningConfirmed = false;
     lowFilamentConfirmed = false;
+    jobTargetConfirmed = false;
     const isTest = document.getElementById('ps-log-istest').checked;
     const printerId = document.getElementById('ps-log-printer').value;
     // Belt-and-suspenders on top of the 15s auto-refresh: no matter how
