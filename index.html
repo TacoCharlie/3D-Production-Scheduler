@@ -2077,6 +2077,7 @@ let editingPrinterModelId = null; // which printer's model field is in edit mode
 let editingPrinterWattageId = null; // which printer's wattage field is in edit mode
 let wattageReadingsOpenFor = new Set(); // session-only: which printer cards show the existing wattage-readings list (view only, toggled by clicking the section header)
 let wattageAddFormOpenFor = new Set(); // session-only: which printer cards show the "add a reading" form (toggled by the +Add Reading button — separate from just viewing)
+let editingReadingId = null; // which single wattage reading is currently being edited inline
 let wattageBulkImportOpenFor = new Set(); // session-only: which printer cards show the paste-multiple-days box
 let bulkImportResultMsg = {}; // printerId -> last import result message (survives the re-render the import itself triggers)
 let filamentDetailsOpenFor = new Set(); // session-only: which printer cards show expanded spool detail (toggled by clicking the Filament section header)
@@ -2310,10 +2311,32 @@ function renderPrinters(){
               <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
                 ${readingCount>0 ? p.wattageReadings.map(r => {
                   const loggedHours = computeLoggedHoursForPrinterInRange(p.id, r.dateFrom, r.dateTo);
+                  if(editingReadingId === r.id){
+                    return `
+                    <div class="ps-row" style="gap:8px;align-items:flex-end;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap;">
+                      <div class="ps-field" style="margin-bottom:0;">
+                        <span class="ps-field-label">kWh</span>
+                        <input class="ps-input ps-narrow" type="number" min="0" step="0.001" id="ps-edit-reading-kwh-${r.id}" value="${r.kWh}" style="width:80px;" />
+                      </div>
+                      <div class="ps-field" style="margin-bottom:0;">
+                        <span class="ps-field-label">From</span>
+                        <input class="ps-input ps-narrow" type="date" id="ps-edit-reading-from-${r.id}" value="${r.dateFrom}" style="width:130px;" />
+                      </div>
+                      <div class="ps-field" style="margin-bottom:0;">
+                        <span class="ps-field-label">To</span>
+                        <input class="ps-input ps-narrow" type="date" id="ps-edit-reading-to-${r.id}" value="${r.dateTo}" style="width:130px;" />
+                      </div>
+                      <button class="ps-btn small" data-action="save-wattage-reading" data-readingid="${r.id}">✓ Save</button>
+                      <button class="ps-btn ghost small" data-action="cancel-edit-reading">Cancel</button>
+                    </div>
+                  `;}
                   return `
                   <div class="ps-row" style="justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
                     <span class="ps-hint">${new Date(r.dateFrom+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}–${new Date(r.dateTo+'T00:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})} — ${r.kWh}kWh${loggedHours>0 ? ` / ${loggedHours.toFixed(1)}h logged = ${Math.round((r.kWh/loggedHours)*1000)}W` : ` — no logged prints in this range, not counted`}</span>
-                    <button class="ps-btn ghost small" data-action="remove-wattage-reading" data-readingid="${r.id}" style="padding:0 6px;">✕</button>
+                    <span>
+                      <button class="ps-btn ghost small" data-action="edit-wattage-reading" data-readingid="${r.id}" style="padding:0 6px;">✎</button>
+                      <button class="ps-btn ghost small" data-action="remove-wattage-reading" data-readingid="${r.id}" style="padding:0 6px;">✕</button>
+                    </span>
                   </div>
                 `;}).join('') : `<div class="ps-hint">No readings yet — click "+ Add Reading" to start tracking.</div>`}
               </div>
@@ -2674,6 +2697,36 @@ function renderPrinters(){
         const p = printers.find(x=>x.id===id);
         const readingId = btn.getAttribute('data-readingid');
         p.wattageReadings = p.wattageReadings.filter(r=>r.id!==readingId);
+        savePrinters(); renderPrinters();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
+      });
+    });
+    card.querySelectorAll('[data-action="edit-wattage-reading"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        editingReadingId = btn.getAttribute('data-readingid');
+        renderPrinters();
+      });
+    });
+    const cancelEditReadingBtn = card.querySelector('[data-action="cancel-edit-reading"]');
+    if(cancelEditReadingBtn){
+      cancelEditReadingBtn.addEventListener('click', () => {
+        editingReadingId = null;
+        renderPrinters();
+      });
+    }
+    card.querySelectorAll('[data-action="save-wattage-reading"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        const readingId = btn.getAttribute('data-readingid');
+        const r = p.wattageReadings.find(x=>x.id===readingId);
+        if(!r) return;
+        const kWh = parseFloat(document.getElementById(`ps-edit-reading-kwh-${readingId}`).value);
+        const dateFrom = document.getElementById(`ps-edit-reading-from-${readingId}`).value;
+        const dateTo = document.getElementById(`ps-edit-reading-to-${readingId}`).value;
+        if(isNaN(kWh) || kWh<=0 || !dateFrom || !dateTo || dateFrom>dateTo) return;
+        r.kWh = kWh; r.dateFrom = dateFrom; r.dateTo = dateTo;
+        editingReadingId = null;
         savePrinters(); renderPrinters();
         if(document.getElementById('ps-tab-settings')) renderSettings();
         if(document.getElementById('ps-tab-catalog')) renderCatalog();
