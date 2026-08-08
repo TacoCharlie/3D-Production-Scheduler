@@ -149,7 +149,7 @@
   .ps-spool-card:last-child { margin-bottom:0; }
   .ps-spool-top { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
   .ps-spool-top input.ps-name { flex:1.4; min-width:150px; font-size:14px; font-weight:600; }
-  .ps-spool-swatch { width:16px; height:16px; border-radius:50%; border:1px solid var(--line); flex-shrink:0; }
+  .ps-spool-swatch { display:inline-block; width:16px; height:16px; border-radius:50%; border:1px solid var(--line); flex-shrink:0; }
   .ps-spool-bar-track { height:8px; border-radius:6px; background: var(--panel); border:1px solid var(--line); overflow:hidden; margin-top:8px; }
   .ps-spool-bar-fill { height:100%; background: var(--cool); }
   .ps-spool-bar-fill.low { background: var(--danger); }
@@ -586,6 +586,13 @@ async function loadState(){
     if(typeof st.manufacturer !== 'string') st.manufacturer = '';
     if(typeof st.orderedAt === 'undefined') st.orderedAt = null;
     if(typeof st.costPerSpool !== 'number') st.costPerSpool = 0;
+    // orderedAt gets cleared once an order is fully received (it only
+    // exists to drive the active lead-time calculation) — these three
+    // never get cleared, so there's always a real record of when this
+    // material was last purchased/received/fully completed.
+    if(typeof st.lastOrderedAt === 'undefined') st.lastOrderedAt = st.orderedAt || null;
+    if(typeof st.lastReceivedAt === 'undefined') st.lastReceivedAt = null;
+    if(typeof st.lastCompletedAt === 'undefined') st.lastCompletedAt = null;
   });
 
   try { const foh = await window.storage.get('filamentOrderHistory'); filamentOrderHistory = foh ? JSON.parse(foh.value) : []; }
@@ -3934,7 +3941,7 @@ function renderFilament(){
     if(isEditing){
       return `
       <tr data-id="${st.id}" data-editing="1">
-        <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
+        <td></td>
         <td><input class="ps-input ps-name" data-field="label" value="${escapeHtml(st.label)}" placeholder="e.g. PCTG Pro — Natural" /></td>
         <td><input class="ps-input" style="max-width:110px" data-field="manufacturer" value="${escapeHtml(st.manufacturer||'')}" placeholder="Manufacturer" /></td>
         <td><input class="ps-input" data-field="material" value="${escapeHtml(st.material)}" placeholder="Material" /></td>
@@ -3943,6 +3950,9 @@ function renderFilament(){
         <td><input class="ps-input ps-narrow" type="number" min="0" step="0.01" data-field="costPerSpool" value="${st.costPerSpool}" style="width:80px;" placeholder="$" /></td>
         <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" /></td>
         <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" /></td>
+        <td class="ps-hint mono">${st.lastOrderedAt ? new Date(st.lastOrderedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
+        <td class="ps-hint mono">${st.lastReceivedAt ? new Date(st.lastReceivedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
+        <td class="ps-hint mono">${st.lastCompletedAt ? new Date(st.lastCompletedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
         <td></td>
         <td>
           <div class="ps-row" style="gap:6px;">
@@ -3954,7 +3964,7 @@ function renderFilament(){
     }
     return `
     <tr data-id="${st.id}">
-      <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
+      <td></td>
       <td><b>${escapeHtml(st.label)||'(unnamed)'}</b></td>
       <td>${escapeHtml(st.manufacturer||'—')}</td>
       <td>${escapeHtml(st.material||'—')}</td>
@@ -3966,6 +3976,9 @@ function renderFilament(){
         <span class="mono">${st.qtyOnOrder}</span>
         ${st.qtyOnOrder>0 && st.orderedAt ? `<div class="ps-hint" style="margin-top:3px;white-space:nowrap;">ordered ${new Date(st.orderedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</div>` : ''}
       </td>
+      <td class="ps-hint mono">${st.lastOrderedAt ? new Date(st.lastOrderedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
+      <td class="ps-hint mono">${st.lastReceivedAt ? new Date(st.lastReceivedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
+      <td class="ps-hint mono">${st.lastCompletedAt ? new Date(st.lastCompletedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
       <td>${st.qtyOnOrder>0 ? `<button class="ps-btn small" data-action="receive-stock">Receive</button>` : ''}</td>
       <td>
         <div class="ps-row" style="gap:6px;">
@@ -3976,7 +3989,7 @@ function renderFilament(){
     </tr>
     ${receivingStockId===st.id ? `
     <tr data-id="${st.id}-receive-form">
-      <td colspan="11" style="background:var(--panel-2);">
+      <td colspan="14" style="background:var(--panel-2);">
         <div class="ps-row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;padding:8px 0;">
           <div class="ps-field" style="margin-bottom:0;">
             <span class="ps-field-label">How many actually arrived? (ordered ${st.qtyOnOrder})</span>
@@ -4224,7 +4237,7 @@ function renderFilament(){
       ${stock.length===0 ? '<div class="ps-empty">Nothing in stock yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th></th><th>Label</th><th>Manufacturer</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:90px">Cost/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:80px"></th><th></th></tr></thead>
+        <thead><tr><th></th><th>Label</th><th>Manufacturer</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:90px">Cost/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:100px">Purchased</th><th style="width:100px">Received</th><th style="width:100px">Completed</th><th style="width:80px"></th><th></th></tr></thead>
         <tbody id="ps-stock-body">${stockRows}</tbody>
       </table>
       </div>
@@ -4314,7 +4327,7 @@ function renderFilament(){
             st[field] = input.value;
           }
         });
-        if(prevOnOrder<=0 && st.qtyOnOrder>0) st.orderedAt = new Date().toISOString();
+        if(prevOnOrder<=0 && st.qtyOnOrder>0){ st.orderedAt = new Date().toISOString(); st.lastOrderedAt = st.orderedAt; }
         if(st.qtyOnOrder<=0) st.orderedAt = null;
         if(st.qty !== prevQty) logStockChange(st, st.qty - prevQty, 'Manual correction');
         editingStockId = null;
@@ -4367,8 +4380,10 @@ function renderFilament(){
       }
       st.qty += arrivedQty;
       logStockChange(st, arrivedQty, arrivedQty < st.qtyOnOrder ? `Received partial order (${arrivedQty} of ${st.qtyOnOrder})` : 'Received full order');
+      if(arrivedQty>0) st.lastReceivedAt = receivedAt;
+      const fullyComplete = arrivedQty >= st.qtyOnOrder;
       st.qtyOnOrder -= arrivedQty;
-      if(st.qtyOnOrder<=0){ st.qtyOnOrder = 0; st.orderedAt = null; }
+      if(st.qtyOnOrder<=0){ st.qtyOnOrder = 0; st.orderedAt = null; if(fullyComplete && arrivedQty>0) st.lastCompletedAt = receivedAt; }
       // A partial receipt keeps the remainder on order under its original
       // orderedAt date — the lead-time clock for what's still coming
       // shouldn't reset just because part of the shipment showed up.
@@ -6267,6 +6282,11 @@ async function importAllData(jsonText){
   if(Array.isArray(data.printers)) printers = data.printers;
   if(Array.isArray(data.spools)) spools = data.spools;
   if(Array.isArray(data.stock)) stock = data.stock;
+  stock.forEach(st => {
+    if(typeof st.lastOrderedAt === 'undefined') st.lastOrderedAt = st.orderedAt || null;
+    if(typeof st.lastReceivedAt === 'undefined') st.lastReceivedAt = null;
+    if(typeof st.lastCompletedAt === 'undefined') st.lastCompletedAt = null;
+  });
   if(data.orderQty && typeof data.orderQty === 'object') orderQty = data.orderQty;
   if(Array.isArray(data.priorityOrder)) priorityOrder = data.priorityOrder;
   if(Array.isArray(data.productionLog)) productionLog = data.productionLog;
