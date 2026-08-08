@@ -4129,8 +4129,8 @@ function renderFilament(){
       ` : `
         ${reorderHeadline}
         <div class="ps-summary-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:0;">
-          <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${runwayDays.toFixed(1)}</div><div class="ps-summary-label">Days of filament left</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${stockoutDate.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div><div class="ps-summary-label">Projected run-out</div></div>
+          <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${runwayDays.toFixed(1)}</div><div class="ps-summary-label">Days of filament left</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num">${dailyRateG.toFixed(0)}g</div><div class="ps-summary-label">Used per day</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num">${reorderPointDays.toFixed(1)}</div><div class="ps-summary-label">Order-by threshold (days)</div><div class="ps-hint" style="margin-top:2px;">reorder once runway drops to this</div></div>
         </div>
@@ -4164,10 +4164,10 @@ function renderFilament(){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Reorder Planning</div>
       <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:${shortG>0?'12px':'0'};">
-        <div class="ps-summary-cell"><div class="ps-summary-num">${(demandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools needed for active + queued jobs</div></div>
         <div class="ps-summary-cell"><div class="ps-summary-num">${(onHandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools on hand right now</div></div>
+        <div class="ps-summary-cell"><div class="ps-summary-num">${(demandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools needed for active + queued jobs</div></div>
       </div>
-      ${shortG>0 ? `<div class="ps-warnbox">Short by ~${(shortG/refSpoolG).toFixed(1)} spool${(shortG/refSpoolG)!==1?'s':''} for what's already queued — worth ordering now.</div>` : `<div class="ps-hint" style="color:var(--ok, #6a6);">Enough on hand for everything active and queued right now.</div>`}
+      ${shortG>0 ? `<div class="ps-warnbox">Short by ~${(shortG/refSpoolG).toFixed(1)} spool${(shortG/refSpoolG)!==1?'s':''} for what's already queued — worth ordering now.</div>` : ''}
       <div style="margin-top:16px;">
         <div class="ps-panel-title" style="font-size:12px;margin-bottom:10px;"><span class="dot"></span>Where it's located</div>
         ${(() => {
