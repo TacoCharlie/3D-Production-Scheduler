@@ -1266,6 +1266,21 @@ function computeFilamentDemandG(){
   });
   return totalG;
 }
+// For a test/failed print with no real weight entered yet, "max" means
+// the most THIS print could plausibly have used — its own product's rated
+// weight (or a batch's, if one applies) — not the entire spool. A single
+// print, especially one that failed partway through, has nothing to do
+// with how much filament happens to be left on the spool overall.
+function getMaxWeightForProduct(productId, batchConfigId){
+  if(!productId) return 0;
+  const product = catalog.find(p=>p.id===productId);
+  if(!product) return 0;
+  if(batchConfigId){
+    const cfg = product.batchConfigs.find(c=>c.id===batchConfigId);
+    if(cfg) return Math.max(0, Math.round(cfg.weightG||0));
+  }
+  return Math.max(0, Math.round(product.weightG||0));
+}
 function computeFilamentOnHandG(){
   const spoolG = spools.filter(s=>!s.retired).reduce((s,sp) => s + Math.max(0,sp.remainingG), 0);
   const stockG = stock.reduce((s,st) => s + (st.qty||0)*(st.weightPerSpoolG||0), 0);
@@ -3047,7 +3062,7 @@ function renderLog(){
             </div>
             <div class="ps-field" id="ps-edit-testweight-field" style="flex:1;min-width:100px;margin-bottom:0;${isTestEdit?'':'display:none;'}">
               <span class="ps-field-label">Filament (g)</span>
-              <input class="ps-input" type="number" min="0" data-edit-field="testWeight" value="${e.isTest ? (e.weightGAtLogTime||0) : 0}" />
+              <input class="ps-input" type="number" min="0" data-edit-field="testWeight" value="${e.isTest && e.weightGAtLogTime ? e.weightGAtLogTime : getMaxWeightForProduct(e.productId, e.batchConfigId||null)}" />
             </div>
             <div class="ps-field" style="flex:1;min-width:170px;margin-bottom:0;">
               <span class="ps-field-label">Actual start</span>
@@ -3346,6 +3361,17 @@ function renderLog(){
     if(!el || el !== startField){ clearInterval(startFieldRefreshInterval); return; } // tab re-rendered elsewhere, this interval is done
     if(!logStartFieldTouched) el.value = toLocalInputValue(new Date());
   }, 15000);
+  let logTestWeightTouched = false;
+  const testWeightField = document.getElementById('ps-log-testweight');
+  testWeightField.addEventListener('input', () => { logTestWeightTouched = true; });
+  const testProductField = document.getElementById('ps-log-testproduct');
+  if(testProductField){
+    testProductField.addEventListener('change', () => {
+      if(!logTestWeightTouched){
+        document.getElementById('ps-log-testweight').value = getMaxWeightForProduct(testProductField.value, null);
+      }
+    });
+  }
   document.getElementById('ps-log-printer').addEventListener('change', () => {
     logFormSelection.printerId = document.getElementById('ps-log-printer').value;
     busyWarningConfirmed = false;
