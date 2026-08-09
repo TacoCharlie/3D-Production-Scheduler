@@ -3225,7 +3225,7 @@ function renderLog(){
         </div>
         <div class="ps-field" id="ps-log-testweight-field" style="flex:1;min-width:120px;margin-bottom:0;display:none;">
           <span class="ps-field-label">Filament used (g)</span>
-          <input class="ps-input" type="number" min="0" id="ps-log-testweight" value="0" />
+          <input class="ps-input" type="number" min="0" id="ps-log-testweight" value="${getMaxWeightForProduct(logFormSelection.productId, null)}" />
         </div>
         <div class="ps-field" style="flex:1;min-width:180px;margin-bottom:0;">
           <span class="ps-field-label">Actual start</span>
