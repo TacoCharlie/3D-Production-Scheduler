@@ -658,6 +658,9 @@ async function loadState(){
 
   try { const lg = await window.storage.get('productionLog'); productionLog = lg ? JSON.parse(lg.value) : []; }
   catch(e){ productionLog = []; }
+  // Entries credited before jobCreditGiven existed assumed full credit —
+  // matches what the old code actually did, so this is a safe backfill.
+  productionLog.forEach(e => { if(typeof e.jobCreditGiven === 'undefined') e.jobCreditGiven = e.jobCounted ? (e.unitsCompleted||1) : 0; });
   productionLogSyncSnapshot = JSON.parse(JSON.stringify(productionLog));
   // Test prints used to always get plannedMin:0 even when tied to a real
   // product — backfill the estimate for anything logged before that fix.
@@ -895,7 +898,8 @@ function markFailed(entryId, actualWeightG, note){
     getOrderEntry(e.productId).qty += (e.unitsCompleted||1);
   }
   if(e.jobCounted){
-    applyJobCredit(e, -(e.unitsCompleted||1));
+    applyJobCredit(e, -(e.jobCreditGiven!=null ? e.jobCreditGiven : (e.unitsCompleted||1)));
+    e.jobCreditGiven = 0;
     e.jobCounted = false;
   }
   // Correct the spool deduction to reflect what actually got used, not the
@@ -966,7 +970,9 @@ function splitBatchOutcome(entryId, failCount, failWeightG, note){
     getOrderEntry(e.productId).qty += failCount;
   }
   if(e.jobCounted){
-    applyJobCredit(e, -failCount);
+    const reverseAmount = Math.min(failCount, e.jobCreditGiven!=null ? e.jobCreditGiven : failCount);
+    applyJobCredit(e, -reverseAmount);
+    e.jobCreditGiven = Math.max(0, (e.jobCreditGiven!=null ? e.jobCreditGiven : failCount) - reverseAmount);
   }
 
   e.unitsCompleted = successCount;
@@ -1733,9 +1739,54 @@ function applyJobCredit(entry, delta){
 }
 function creditJobIfDue(entry){
   if(entry.jobId && !entry.jobCounted && entry.actualEnd && !entry.failed){
-    applyJobCredit(entry, entry.unitsCompleted||1);
+    const job = jobs.find(j=>j.id===entry.jobId);
+    const item = job ? job.items.find(it=>it.id===entry.productId) : null;
+    let creditAmount = entry.unitsCompleted||1;
+    if(job && item){
+      // Overproducing one line item shouldn't inflate the whole job's
+      // progress bar — only credit this entry up to what THIS specific
+      // item still actually needs, based on everything else already
+      // logged against it. Extra units on an already-satisfied item
+      // don't move the job any closer to done.
+      const alreadyLoggedForItem = productionLog
+        .filter(e => e.id!==entry.id && e.jobId===job.id && e.productId===item.id && !e.isTest && !e.failed && e.actualEnd)
+        .reduce((s,e) => s + (e.unitsCompleted||1), 0);
+      const stillNeededForItem = Math.max(0, item.qty - alreadyLoggedForItem);
+      creditAmount = Math.min(creditAmount, stillNeededForItem);
+    }
+    applyJobCredit(entry, creditAmount);
+    entry.jobCreditGiven = creditAmount;
     entry.jobCounted = true;
   }
+}
+// Recomputes a job's manualDone from scratch, replaying its logged
+// entries in start-time order and re-applying the same per-item cap
+// creditJobIfDue uses going forward. Fixes jobs whose progress got
+// inflated by overproduction before that cap existed.
+function recalculateJobCredit(jobId){
+  const job = jobs.find(j=>j.id===jobId);
+  if(!job) return;
+  const entries = productionLog
+    .filter(e => e.jobId===jobId && !e.isTest && !e.failed && e.actualEnd)
+    .sort((a,b) => new Date(a.actualStart) - new Date(b.actualStart));
+  const loggedSoFarByItem = {};
+  let total = 0;
+  entries.forEach(e => {
+    const item = job.items.find(it=>it.id===e.productId);
+    const units = e.unitsCompleted||1;
+    let credit = units;
+    if(item){
+      const already = loggedSoFarByItem[item.id]||0;
+      credit = Math.max(0, Math.min(units, item.qty - already));
+      loggedSoFarByItem[item.id] = already + units;
+    }
+    e.jobCreditGiven = credit;
+    e.jobCounted = true;
+    total += credit;
+  });
+  const {totalUnits} = jobTotals(job);
+  job.manualDone = Math.max(0, Math.min(totalUnits, total));
+  saveJobs(); saveLog();
 }
 
 function logPartReplacement(printerId, partDefId){
@@ -1880,6 +1931,7 @@ function renderJobs(){
         <div class="ps-row" style="margin-bottom:8px;gap:6px;">
           <span class="ps-hint">${done} of ${totalUnits} unit${totalUnits!==1?'s':''} done (${pct.toFixed(0)}%)</span>
           <button class="ps-btn ghost small" data-action="job-edit-start">Edit</button>
+          <button class="ps-btn ghost small" data-action="job-recalculate" title="Recompute this from your actual logged prints — fixes progress inflated by overproducing a line item past its target">Recalculate</button>
         </div>
         `}
         <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${Math.min(100,timePct)}%;background:var(--cool, #5aa8c9);"></div></div>
@@ -1988,6 +2040,13 @@ function renderJobs(){
     if(editStartBtn){
       editStartBtn.addEventListener('click', () => {
         editingJobId = job.id;
+        renderJobs();
+      });
+    }
+    const recalcBtn = card.querySelector('[data-action="job-recalculate"]');
+    if(recalcBtn){
+      recalcBtn.addEventListener('click', () => {
+        recalculateJobCredit(job.id);
         renderJobs();
       });
     }
@@ -3707,7 +3766,7 @@ function renderLog(){
           }
         }
         if(e.jobCounted){
-          applyJobCredit(e, -(e.unitsCompleted||1));
+          applyJobCredit(e, -(e.jobCreditGiven!=null ? e.jobCreditGiven : (e.unitsCompleted||1)));
         }
 
         let newProductId, newPlannedMin, newWeight, newTestLabel, newUnitsCompleted;
@@ -3745,6 +3804,7 @@ function renderLog(){
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
         e.jobId = newIsTest ? null : (row.querySelector('[data-edit-field="jobId"]').value || null);
         e.jobCounted = false;
+        e.jobCreditGiven = 0;
         e.spoolConsumed = false; // let syncConsumption redo the weight deduction fresh
         e.consumed = (newIsTest || e.failed) ? true : false; // tests and failed entries stay locked; normal ones get (re)claimed by syncConsumption below
         const noteField = row.querySelector('[data-edit-field="failureNote"]');
@@ -3866,7 +3926,7 @@ function renderLog(){
           }
         }
         if(removed && removed.jobCounted){
-          applyJobCredit(removed, -(removed.unitsCompleted||1));
+          applyJobCredit(removed, -(removed.jobCreditGiven!=null ? removed.jobCreditGiven : (removed.unitsCompleted||1)));
         }
         saveLog(); renderLog(); regenerateIfActive();
       });
@@ -6501,6 +6561,7 @@ async function importAllData(jsonText){
   if(data.orderQty && typeof data.orderQty === 'object') orderQty = data.orderQty;
   if(Array.isArray(data.priorityOrder)) priorityOrder = data.priorityOrder;
   if(Array.isArray(data.productionLog)) productionLog = data.productionLog;
+  productionLog.forEach(e => { if(typeof e.jobCreditGiven === 'undefined') e.jobCreditGiven = e.jobCounted ? (e.unitsCompleted||1) : 0; });
   if(Array.isArray(data.estimateItems)) estimateItems = data.estimateItems;
   if(Array.isArray(data.estimateScenarios) && data.estimateScenarios.length>0) estimateScenarios = data.estimateScenarios;
   if(Array.isArray(data.jobs)) jobs = data.jobs;
