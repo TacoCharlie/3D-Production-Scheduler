@@ -5358,7 +5358,12 @@ function computeFailureRateTrend(weeksBack){
   return { buckets, models: Array.from(models).sort() };
 }
 function renderFailureRateTrendWidget(){
-  const { buckets, models } = computeFailureRateTrend(10);
+  let { buckets, models } = computeFailureRateTrend(10);
+  // Weeks before your first logged print are just empty padding — trim
+  // any leading weeks where every model shows nothing, so the table
+  // starts where your real history actually starts.
+  const firstRealIdx = buckets.findIndex(b => Object.values(b.byModel).some(d => d.total>0));
+  if(firstRealIdx > 0) buckets = buckets.slice(firstRealIdx);
   const hasAnyData = buckets.some(b => Object.keys(b.byModel).length>0);
   if(!hasAnyData || models.length===0){
     return `
