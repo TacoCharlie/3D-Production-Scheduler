@@ -1830,13 +1830,8 @@ function renderJobItemRows(job, editable){
       ? `<input class="ps-input ps-narrow" type="number" min="0" data-action="job-item-qty" value="${item.qty}" style="width:60px;" autofocus /> <button class="ps-btn ghost small" data-action="save-job-item-qty" data-jobid="${job.id}" data-itemid="${item.id}" style="padding:1px 8px;">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-item-qty" style="padding:1px 8px;">✕</button>`
       : `${item.qty} <button class="ps-btn ghost small" data-action="edit-job-item-qty" data-jobid="${job.id}" data-itemid="${item.id}" style="padding:1px 6px;font-size:10px;" title="Edit quantity">✎</button>`;
     return `
-      <tr data-jobid="${job.id}" data-itemid="${item.id}">
-        <td>
-          <div class="ps-row" style="gap:6px;">
-            <button class="ps-btn ghost small" data-action="job-item-up" ${idx===0?'disabled':''}>↑</button>
-            <button class="ps-btn ghost small" data-action="job-item-down" ${idx===job.items.length-1?'disabled':''}>↓</button>
-          </div>
-        </td>
+      <tr data-jobid="${job.id}" data-itemid="${item.id}" draggable="true" class="ps-draggable-row">
+        <td class="ps-drag-handle" style="cursor:grab;" title="Drag to reorder">⠿</td>
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
         <td>${qtyCell}</td>
         <td><button class="ps-btn ghost small" data-action="job-item-remove">✕</button></td>
@@ -2226,18 +2221,38 @@ function renderJobs(){
         saveJobs(); renderJobs();
       });
     });
-    card.querySelectorAll('[data-action="job-item-up"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const itemId = btn.closest('tr').getAttribute('data-itemid');
-        const idx = job.items.findIndex(it=>it.id===itemId);
-        if(idx>0){ [job.items[idx],job.items[idx-1]] = [job.items[idx-1],job.items[idx]]; saveJobs(); renderJobs(); }
+    let draggedQueuedItemId = null;
+    card.querySelectorAll('tr.ps-draggable-row[data-itemid]').forEach(row => {
+      row.addEventListener('dragstart', () => {
+        draggedQueuedItemId = row.getAttribute('data-itemid');
+        row.classList.add('ps-dragging');
       });
-    });
-    card.querySelectorAll('[data-action="job-item-down"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const itemId = btn.closest('tr').getAttribute('data-itemid');
-        const idx = job.items.findIndex(it=>it.id===itemId);
-        if(idx<job.items.length-1){ [job.items[idx],job.items[idx+1]] = [job.items[idx+1],job.items[idx]]; saveJobs(); renderJobs(); }
+      row.addEventListener('dragend', () => {
+        row.classList.remove('ps-dragging');
+        card.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+      });
+      row.addEventListener('dragover', (ev) => {
+        ev.preventDefault();
+        const targetId = row.getAttribute('data-itemid');
+        if(!draggedQueuedItemId || draggedQueuedItemId===targetId) return;
+        const rect = row.getBoundingClientRect();
+        const before = (ev.clientY - rect.top) < rect.height/2;
+        card.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+        row.classList.add(before ? 'ps-drag-over-top' : 'ps-drag-over-bottom');
+      });
+      row.addEventListener('drop', (ev) => {
+        ev.preventDefault();
+        const targetId = row.getAttribute('data-itemid');
+        if(!draggedQueuedItemId || draggedQueuedItemId===targetId) return;
+        const rect = row.getBoundingClientRect();
+        const before = (ev.clientY - rect.top) < rect.height/2;
+        const fromIdx = job.items.findIndex(it=>it.id===draggedQueuedItemId);
+        if(fromIdx===-1) return;
+        const [moved] = job.items.splice(fromIdx, 1);
+        let toIdx = job.items.findIndex(it=>it.id===targetId);
+        job.items.splice(before ? toIdx : toIdx+1, 0, moved);
+        draggedQueuedItemId = null;
+        saveJobs(); renderJobs();
       });
     });
   });
@@ -3622,13 +3637,14 @@ function renderLog(){
         const afterThis = alreadyLogged + prospectiveUnits;
         if(afterThis >= itemCheck.qty){
           const overBy = afterThis - itemCheck.qty;
+          const priorHistoryExists = productionLog.some(e => e.jobId===jobIdCheck && e.productId===productIdCheck && !e.isTest);
           document.getElementById('ps-log-jobtarget-warning').innerHTML = `
             <div class="ps-warnbox" style="margin-top:10px;">
               This brings <b>${escapeHtml(productCheck.name)}</b> on <b>${escapeHtml(jobCheck.name)}</b> to ${afterThis} of ${itemCheck.qty} needed${overBy>0 ? ` — ${overBy} more than the target` : ' — exactly the target, the last one needed'}. Worth reallocating this printer to something else afterward?
               <div class="ps-row" style="margin-top:8px;gap:6px;">
                 <button class="ps-btn small" id="ps-log-jobtarget-confirm">Log anyway</button>
                 <button class="ps-btn ghost small" id="ps-log-jobtarget-cancel">Cancel</button>
-                <button class="ps-btn ghost small" id="ps-log-jobtarget-history-btn">View history for ${escapeHtml(productCheck.name)} on ${escapeHtml(jobCheck.name)}</button>
+                ${priorHistoryExists ? `<button class="ps-btn ghost small" id="ps-log-jobtarget-history-btn">View history for ${escapeHtml(productCheck.name)} on ${escapeHtml(jobCheck.name)}</button>` : ''}
               </div>
               <div id="ps-log-jobtarget-history-results"></div>
             </div>
@@ -3641,7 +3657,8 @@ function renderLog(){
           document.getElementById('ps-log-jobtarget-cancel').addEventListener('click', () => {
             document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
           });
-          document.getElementById('ps-log-jobtarget-history-btn').addEventListener('click', () => {
+          const historyBtn = document.getElementById('ps-log-jobtarget-history-btn');
+          if(historyBtn) historyBtn.addEventListener('click', () => {
             const matches = productionLog
               .filter(e => e.productId===productIdCheck && e.jobId===jobIdCheck && !e.isTest)
               .sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
