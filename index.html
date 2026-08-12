@@ -3589,7 +3589,9 @@ function renderLog(){
               <div class="ps-row" style="margin-top:8px;gap:6px;">
                 <button class="ps-btn small" id="ps-log-jobtarget-confirm">Log anyway</button>
                 <button class="ps-btn ghost small" id="ps-log-jobtarget-cancel">Cancel</button>
+                <button class="ps-btn ghost small" id="ps-log-jobtarget-history-btn">View history for ${escapeHtml(productCheck.name)} on ${escapeHtml(jobCheck.name)}</button>
               </div>
+              <div id="ps-log-jobtarget-history-results"></div>
             </div>
           `;
           document.getElementById('ps-log-jobtarget-confirm').addEventListener('click', () => {
@@ -3599,6 +3601,25 @@ function renderLog(){
           });
           document.getElementById('ps-log-jobtarget-cancel').addEventListener('click', () => {
             document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
+          });
+          document.getElementById('ps-log-jobtarget-history-btn').addEventListener('click', () => {
+            const matches = productionLog
+              .filter(e => e.productId===productIdCheck && e.jobId===jobIdCheck && !e.isTest)
+              .sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
+            const resultsEl = document.getElementById('ps-log-jobtarget-history-results');
+            if(matches.length===0){
+              resultsEl.innerHTML = `<div class="ps-hint" style="margin-top:8px;">No prior prints of this yet on this job.</div>`;
+              return;
+            }
+            resultsEl.innerHTML = `
+              <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+                ${matches.map(e => {
+                  const pName = (printers.find(p=>p.id===e.printerId)||{}).name || '(deleted printer)';
+                  const status = e.failed ? '<span style="color:var(--danger)">failed</span>' : (e.actualEnd ? `→ ${fmtLogTime(e.actualEnd)}` : 'still printing');
+                  return `<div class="ps-hint" style="padding:3px 0;">${fmtLogTime(e.actualStart)} — ${escapeHtml(pName)} ${status}</div>`;
+                }).join('')}
+              </div>
+            `;
           });
           return;
         }
