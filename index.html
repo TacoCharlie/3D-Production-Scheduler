@@ -1809,7 +1809,7 @@ function renderJobItemRows(job, editable){
           ? `${item.qty}× <button class="ps-btn ghost small" data-action="edit-job-item-target" data-jobid="${job.id}" data-itemid="${item.id}" style="padding:1px 6px;font-size:10px;" title="Edit target quantity">✎</button>`
           : `${item.qty}×`);
       const hitTarget = item.qty > 0 && loggedForItem >= item.qty;
-      const row = `<div>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span>${hitTarget ? `<span style="color:var(--ok);margin-left:6px;" title="Target reached">✓</span>` : ''}</div>`;
+      const row = `<div class="ps-draggable-row" draggable="true" data-itemid="${item.id}" style="display:flex;align-items:baseline;gap:6px;"><span class="ps-drag-handle" style="cursor:grab;" title="Drag to reorder">⠿</span><span>${qtyDisplay} <b>${escapeHtml(p.name)}</b> <span class="ps-hint">— ${loggedForItem} of ${item.qty} logged</span>${hitTarget ? `<span style="color:var(--ok);margin-left:6px;" title="Target reached">✓</span>` : ''}</span></div>`;
       (hitTarget ? completed : remaining).push(row);
     });
     const remainingBlock = remaining.length>0 ? `
@@ -2014,6 +2014,45 @@ function renderJobs(){
     const jobId = card.getAttribute('data-jobid');
     const job = jobs.find(j=>j.id===jobId);
     if(!job) return;
+
+    let draggedItemId = null;
+    card.querySelectorAll('.ps-joblist-group .ps-draggable-row').forEach(row => {
+      row.addEventListener('dragstart', (ev) => {
+        ev.stopPropagation(); // don't also trigger the whole-card drag reordering active jobs
+        draggedItemId = row.getAttribute('data-itemid');
+        row.classList.add('ps-dragging');
+      });
+      row.addEventListener('dragend', (ev) => {
+        ev.stopPropagation();
+        row.classList.remove('ps-dragging');
+        card.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+      });
+      row.addEventListener('dragover', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const targetId = row.getAttribute('data-itemid');
+        if(!draggedItemId || draggedItemId===targetId) return;
+        const rect = row.getBoundingClientRect();
+        const before = (ev.clientY - rect.top) < rect.height/2;
+        card.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+        row.classList.add(before ? 'ps-drag-over-top' : 'ps-drag-over-bottom');
+      });
+      row.addEventListener('drop', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const targetId = row.getAttribute('data-itemid');
+        if(!draggedItemId || draggedItemId===targetId) return;
+        const rect = row.getBoundingClientRect();
+        const before = (ev.clientY - rect.top) < rect.height/2;
+        const fromIdx = job.items.findIndex(it=>it.id===draggedItemId);
+        if(fromIdx===-1) return;
+        const [moved] = job.items.splice(fromIdx, 1);
+        let toIdx = job.items.findIndex(it=>it.id===targetId);
+        job.items.splice(before ? toIdx : toIdx+1, 0, moved);
+        draggedItemId = null;
+        saveJobs(); renderJobs();
+      });
+    });
 
     const editNameBtn = card.querySelector('[data-action="edit-job-name"]');
     if(editNameBtn){
