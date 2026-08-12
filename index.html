@@ -155,6 +155,10 @@
   .ps-spool-top { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
   .ps-spool-top input.ps-name { flex:1.4; min-width:150px; font-size:14px; font-weight:600; }
   .ps-spool-swatch { display:inline-block; width:16px; height:16px; border-radius:50%; border:1px solid var(--line); flex-shrink:0; }
+  .ps-drag-handle { color: var(--muted); font-size: 16px; user-select: none; }
+  .ps-dragging { opacity: 0.4; }
+  .ps-drag-over-top { box-shadow: inset 0 2px 0 0 var(--heat); }
+  .ps-drag-over-bottom { box-shadow: inset 0 -2px 0 0 var(--heat); }
   .ps-spool-bar-track { height:8px; border-radius:6px; background: var(--panel); border:1px solid var(--line); overflow:hidden; margin-top:8px; }
   .ps-spool-bar-fill { height:100%; background: var(--cool); }
   .ps-spool-bar-fill.low { background: var(--danger); }
@@ -5743,11 +5747,8 @@ function renderCatalogList(root){
       </tr>
     ` : '';
     return `
-      <tr data-id="${p.id}">
-        <td style="white-space:nowrap;width:1%;">
-          <button class="ps-btn ghost small" data-action="catalog-up" ${idx===0?'disabled':''} title="Move up">↑</button>
-          <button class="ps-btn ghost small" data-action="catalog-down" ${idx===catalog.length-1?'disabled':''} title="Move down">↓</button>
-        </td>
+      <tr data-id="${p.id}" draggable="true" class="ps-draggable-row">
+        <td style="white-space:nowrap;width:1%;cursor:grab;" class="ps-drag-handle" title="Drag to reorder">⠿</td>
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${badge}${incomplete?' <span class="ps-hint" style="color:var(--danger)">— no print time</span>':''}</td>
         <td class="mono ps-hint">${incomplete?'—':fmtDuration(printMin)}</td>
         <td class="mono ps-hint">${p.weightG>0?p.weightG+'g':'—'}</td>
@@ -5822,24 +5823,39 @@ function renderCatalogList(root){
       renderCatalog();
     });
   });
-  root.querySelectorAll('[data-action="catalog-up"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.closest('tr').getAttribute('data-id');
-      const idx = catalog.findIndex(p=>p.id===id);
-      if(idx > 0){
-        [catalog[idx-1], catalog[idx]] = [catalog[idx], catalog[idx-1]];
-        saveCatalog(); renderCatalog();
-      }
+  let draggedCatalogId = null;
+  root.querySelectorAll('.ps-draggable-row').forEach(row => {
+    row.addEventListener('dragstart', (ev) => {
+      draggedCatalogId = row.getAttribute('data-id');
+      row.classList.add('ps-dragging');
+      ev.dataTransfer.effectAllowed = 'move';
     });
-  });
-  root.querySelectorAll('[data-action="catalog-down"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.closest('tr').getAttribute('data-id');
-      const idx = catalog.findIndex(p=>p.id===id);
-      if(idx !== -1 && idx < catalog.length-1){
-        [catalog[idx], catalog[idx+1]] = [catalog[idx+1], catalog[idx]];
-        saveCatalog(); renderCatalog();
-      }
+    row.addEventListener('dragend', () => {
+      row.classList.remove('ps-dragging');
+      root.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+    });
+    row.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      if(!draggedCatalogId || draggedCatalogId===row.getAttribute('data-id')) return;
+      const rect = row.getBoundingClientRect();
+      const before = (ev.clientY - rect.top) < rect.height/2;
+      root.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+      row.classList.add(before ? 'ps-drag-over-top' : 'ps-drag-over-bottom');
+    });
+    row.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      const targetId = row.getAttribute('data-id');
+      if(!draggedCatalogId || draggedCatalogId===targetId) return;
+      const rect = row.getBoundingClientRect();
+      const before = (ev.clientY - rect.top) < rect.height/2;
+      const fromIdx = catalog.findIndex(p=>p.id===draggedCatalogId);
+      let toIdx = catalog.findIndex(p=>p.id===targetId);
+      if(fromIdx===-1 || toIdx===-1) return;
+      const [moved] = catalog.splice(fromIdx, 1);
+      toIdx = catalog.findIndex(p=>p.id===targetId); // recompute after removal
+      catalog.splice(before ? toIdx : toIdx+1, 0, moved);
+      draggedCatalogId = null;
+      saveCatalog(); renderCatalog();
     });
   });
 
