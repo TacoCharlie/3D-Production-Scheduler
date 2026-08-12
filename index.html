@@ -1644,23 +1644,6 @@ function buildMultiSchedule(queue, activePrinters, settings, mode){
 
 // ---------- rendering: Printers tab ----------
 // ---------- rendering: Jobs tab ----------
-// Jobs of different statuses (queued/active/done) all live in one flat
-// array — moving a job up/down only makes sense relative to its own
-// status group, so this finds its neighbor within that same group and
-// swaps positions in the underlying array, leaving jobs of other
-// statuses undisturbed.
-function moveJobWithinStatus(jobId, direction){
-  const job = jobs.find(j=>j.id===jobId);
-  if(!job) return;
-  const sameStatusIndices = jobs.map((j,i)=>({j,i})).filter(x=>x.j.status===job.status).map(x=>x.i);
-  const posInGroup = sameStatusIndices.findIndex(i => jobs[i].id===jobId);
-  const targetPosInGroup = posInGroup + direction;
-  if(posInGroup===-1 || targetPosInGroup<0 || targetPosInGroup>=sameStatusIndices.length) return;
-  const idxA = sameStatusIndices[posInGroup];
-  const idxB = sameStatusIndices[targetPosInGroup];
-  [jobs[idxA], jobs[idxB]] = [jobs[idxB], jobs[idxA]];
-  saveJobs(); renderJobs();
-}
 function jobTotals(job){
   let totalMin = 0, totalWeight = 0, totalUnits = 0;
   job.items.forEach(item => {
@@ -1912,10 +1895,9 @@ function renderJobs(){
     const availableProductsActive = catalog.filter(p => !job.items.some(it=>it.id===p.id));
     const addOptionsActive = availableProductsActive.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
     return `
-      <div class="ps-printer-card" data-jobid="${job.id}">
+      <div class="ps-printer-card ps-draggable-job" data-jobid="${job.id}" draggable="true">
         <div class="ps-printer-top">
-          <button class="ps-btn ghost small" data-action="job-move-up" ${activeIdx===0?'disabled':''} title="Move up">↑</button>
-          <button class="ps-btn ghost small" data-action="job-move-down" ${activeIdx===active.length-1?'disabled':''} title="Move down">↓</button>
+          <span class="ps-drag-handle" style="cursor:grab;padding-right:2px;" title="Drag to reorder">⠿</span>
           ${editingJobNameId===job.id
             ? `<input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;font-weight:700;" autofocus /> <button class="ps-btn ghost small" data-action="save-job-name">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-name">✕</button>`
             : `<b style="flex:1.4;">${escapeHtml(job.name)}</b> <button class="ps-btn ghost small" data-action="edit-job-name">✎</button>`}
@@ -1990,6 +1972,44 @@ function renderJobs(){
   `;
 
   // Queued job actions
+  let draggedJobId = null;
+  root.querySelectorAll('.ps-draggable-job').forEach(card => {
+    card.addEventListener('dragstart', () => {
+      draggedJobId = card.getAttribute('data-jobid');
+      card.classList.add('ps-dragging');
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('ps-dragging');
+      root.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+    });
+    card.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      const targetId = card.getAttribute('data-jobid');
+      if(!draggedJobId || draggedJobId===targetId) return;
+      const rect = card.getBoundingClientRect();
+      const before = (ev.clientY - rect.top) < rect.height/2;
+      root.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+      card.classList.add(before ? 'ps-drag-over-top' : 'ps-drag-over-bottom');
+    });
+    card.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      const targetId = card.getAttribute('data-jobid');
+      if(!draggedJobId || draggedJobId===targetId) return;
+      const rect = card.getBoundingClientRect();
+      const before = (ev.clientY - rect.top) < rect.height/2;
+      // Jobs of different statuses share one flat array — only reorder
+      // within the same status group, same as the old up/down buttons did.
+      const draggedJob = jobs.find(j=>j.id===draggedJobId);
+      const targetJob = jobs.find(j=>j.id===targetId);
+      if(!draggedJob || !targetJob || draggedJob.status!==targetJob.status) return;
+      const fromIdx = jobs.findIndex(j=>j.id===draggedJobId);
+      const [moved] = jobs.splice(fromIdx, 1);
+      let toIdx = jobs.findIndex(j=>j.id===targetId);
+      jobs.splice(before ? toIdx : toIdx+1, 0, moved);
+      draggedJobId = null;
+      saveJobs(); renderJobs();
+    });
+  });
   root.querySelectorAll('.ps-printer-card[data-jobid]').forEach(card => {
     const jobId = card.getAttribute('data-jobid');
     const job = jobs.find(j=>j.id===jobId);
@@ -2084,18 +2104,6 @@ function renderJobs(){
       deleteBtn.addEventListener('click', () => {
         jobs = jobs.filter(j=>j.id!==jobId);
         saveJobs(); regenerateIfActive();
-      });
-    }
-    const moveUpBtn = card.querySelector('[data-action="job-move-up"]');
-    if(moveUpBtn){
-      moveUpBtn.addEventListener('click', () => {
-        moveJobWithinStatus(jobId, -1);
-      });
-    }
-    const moveDownBtn = card.querySelector('[data-action="job-move-down"]');
-    if(moveDownBtn){
-      moveDownBtn.addEventListener('click', () => {
-        moveJobWithinStatus(jobId, 1);
       });
     }
     const addSelect = card.querySelector('[data-action="job-add-select"]');
@@ -3952,13 +3960,8 @@ function renderEstimate(){
     const printMin = p.timeH*60 + p.timeM;
     const incomplete = printMin<=0;
     return `
-      <tr data-id="${item.id}">
-        <td>
-          <div class="ps-row" style="gap:6px;">
-            <button class="ps-btn ghost small" data-action="up" ${idx===0?'disabled':''}>↑</button>
-            <button class="ps-btn ghost small" data-action="down" ${idx===estimateItems.length-1?'disabled':''}>↓</button>
-          </div>
-        </td>
+      <tr data-id="${item.id}" draggable="true" class="ps-draggable-row">
+        <td class="ps-drag-handle" style="cursor:grab;" title="Drag to reorder">⠿</td>
         <td>
           ${renderTag(p.type)}
           &nbsp;${escapeHtml(p.name)}
@@ -4042,10 +4045,40 @@ function renderEstimate(){
       estimateItems = estimateItems.filter(it=>it.id!==id);
       saveEstimateItems(); renderEstimate();
     });
-    const upBtn = tr.querySelector('[data-action="up"]');
-    const downBtn = tr.querySelector('[data-action="down"]');
-    if(upBtn) upBtn.addEventListener('click', () => moveEstimateItem(id, -1));
-    if(downBtn) downBtn.addEventListener('click', () => moveEstimateItem(id, 1));
+  });
+  let draggedEstimateId = null;
+  root.querySelectorAll('#ps-estimate-body .ps-draggable-row').forEach(row => {
+    row.addEventListener('dragstart', () => {
+      draggedEstimateId = row.getAttribute('data-id');
+      row.classList.add('ps-dragging');
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('ps-dragging');
+      root.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+    });
+    row.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      const targetId = row.getAttribute('data-id');
+      if(!draggedEstimateId || draggedEstimateId===targetId) return;
+      const rect = row.getBoundingClientRect();
+      const before = (ev.clientY - rect.top) < rect.height/2;
+      root.querySelectorAll('.ps-drag-over-top, .ps-drag-over-bottom').forEach(r => r.classList.remove('ps-drag-over-top','ps-drag-over-bottom'));
+      row.classList.add(before ? 'ps-drag-over-top' : 'ps-drag-over-bottom');
+    });
+    row.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      const targetId = row.getAttribute('data-id');
+      if(!draggedEstimateId || draggedEstimateId===targetId) return;
+      const rect = row.getBoundingClientRect();
+      const before = (ev.clientY - rect.top) < rect.height/2;
+      const fromIdx = estimateItems.findIndex(it=>it.id===draggedEstimateId);
+      if(fromIdx===-1) return;
+      const [moved] = estimateItems.splice(fromIdx, 1);
+      let toIdx = estimateItems.findIndex(it=>it.id===targetId);
+      estimateItems.splice(before ? toIdx : toIdx+1, 0, moved);
+      draggedEstimateId = null;
+      saveEstimateItems(); renderEstimate();
+    });
   });
 
   document.getElementById('ps-estimate-add-btn').addEventListener('click', () => {
@@ -4103,14 +4136,6 @@ function renderEstimate(){
       if(document.getElementById('ps-tab-jobs')) renderJobs();
     });
   }
-}
-
-function moveEstimateItem(id, dir){
-  const idx = estimateItems.findIndex(it=>it.id===id);
-  const newIdx = idx+dir;
-  if(newIdx<0 || newIdx>=estimateItems.length) return;
-  [estimateItems[idx], estimateItems[newIdx]] = [estimateItems[newIdx], estimateItems[idx]];
-  saveEstimateItems(); renderEstimate();
 }
 
 function runEstimate(){
