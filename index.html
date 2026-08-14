@@ -1746,18 +1746,17 @@ function creditJobIfDue(entry){
     entry.jobCounted = true;
   }
 }
-// Recomputes a job's manualDone from scratch, replaying its logged
-// entries in start-time order and re-applying the same per-item cap
-// creditJobIfDue uses going forward. Fixes jobs whose progress got
-// inflated by overproduction before that cap existed.
-function recalculateJobCredit(jobId){
-  const job = jobs.find(j=>j.id===jobId);
-  if(!job) return;
+// Replays a job's real logged entries in start-time order, applying the
+// same per-item cap creditJobIfDue uses going forward. Pure/read-only —
+// used both to detect drift (job.manualDone vs. what the ledger actually
+// supports) and, via recalculateJobCredit below, to actually fix it.
+function computeJobCreditPlan(job){
   const entries = productionLog
-    .filter(e => e.jobId===jobId && !e.isTest && !e.failed && e.actualEnd)
+    .filter(e => e.jobId===job.id && !e.isTest && !e.failed && e.actualEnd)
     .sort((a,b) => new Date(a.actualStart) - new Date(b.actualStart));
   const loggedSoFarByItem = {};
   let total = 0;
+  const creditByEntryId = {};
   entries.forEach(e => {
     const item = job.items.find(it=>it.id===e.productId);
     const units = e.unitsCompleted||1;
@@ -1767,9 +1766,22 @@ function recalculateJobCredit(jobId){
       credit = Math.max(0, Math.min(units, item.qty - already));
       loggedSoFarByItem[item.id] = already + units;
     }
-    e.jobCreditGiven = credit;
-    e.jobCounted = true;
+    creditByEntryId[e.id] = credit;
     total += credit;
+  });
+  return { total, creditByEntryId, entries };
+}
+// Recomputes a job's manualDone from scratch, replaying its logged
+// entries in start-time order and re-applying the same per-item cap
+// creditJobIfDue uses going forward. Fixes jobs whose progress got
+// inflated by overproduction before that cap existed.
+function recalculateJobCredit(jobId){
+  const job = jobs.find(j=>j.id===jobId);
+  if(!job) return;
+  const { total, creditByEntryId, entries } = computeJobCreditPlan(job);
+  entries.forEach(e => {
+    e.jobCreditGiven = creditByEntryId[e.id];
+    e.jobCounted = true;
   });
   const {totalUnits} = jobTotals(job);
   job.manualDone = Math.max(0, Math.min(totalUnits, total));
@@ -1889,6 +1901,12 @@ function renderJobs(){
     const isEditing = editingJobId === job.id;
     const availableProductsActive = catalog.filter(p => !job.items.some(it=>it.id===p.id));
     const addOptionsActive = availableProductsActive.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    // Detect drift between manualDone and what the real logged entries
+    // actually support — same computation Recalculate applies, just
+    // read-only here so it can be flagged before you'd otherwise only
+    // notice by doing the math yourself.
+    const trueDone = computeJobCreditPlan(job).total;
+    const isDrifted = trueDone !== done;
     return `
       <div class="ps-printer-card ps-draggable-job" data-jobid="${job.id}" draggable="true">
         <div class="ps-printer-top">
@@ -1900,6 +1918,7 @@ function renderJobs(){
           <button class="ps-btn small" data-action="job-done">Mark Done</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
+        ${isDrifted ? `<div class="ps-hint" style="color:var(--danger);margin-bottom:6px;">⚠ Progress shows ${done}, but your logged prints actually support ${trueDone} — click Recalculate below to fix.</div>` : ''}
         <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${pct}%;"></div></div>
         ${isEditing ? `
         <div class="ps-row" style="margin-bottom:8px;gap:6px;">
@@ -1912,7 +1931,7 @@ function renderJobs(){
         <div class="ps-row" style="margin-bottom:8px;gap:6px;">
           <span class="ps-hint">${done} of ${totalUnits} unit${totalUnits!==1?'s':''} done (${pct.toFixed(0)}%)</span>
           <button class="ps-btn ghost small" data-action="job-edit-start">Edit</button>
-          <button class="ps-btn ghost small" data-action="job-recalculate" title="Recompute this from your actual logged prints — fixes progress inflated by overproducing a line item past its target">Recalculate</button>
+          <button class="ps-btn ${isDrifted?'':'ghost'} small" data-action="job-recalculate" title="Recompute this from your actual logged prints — fixes progress inflated by overproducing a line item past its target">Recalculate</button>
         </div>
         `}
         <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${Math.min(100,timePct)}%;background:var(--cool, #5aa8c9);"></div></div>
