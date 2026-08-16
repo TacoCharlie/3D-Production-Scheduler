@@ -3093,6 +3093,9 @@ let expandedPastWeeks = new Set();
 // explicit from/to dates instead. Session-only, resets on reload — matches
 // how the Analytics range filter already behaves.
 let logHistoryRange = 'today'; // 'today' | '7' | '30' | 'all' | 'custom'
+let exportPrinterId = ''; // Log tab: dedicated CSV export panel's printer selection, independent of the History filters above it
+let exportFrom = null;
+let exportTo = null;
 let logHistoryFrom = '';   // yyyy-mm-dd, used when range==='custom'
 let logHistoryTo = '';     // yyyy-mm-dd, used when range==='custom'
 let logHistoryPrinterId = ''; // '' = all printers
@@ -3435,6 +3438,28 @@ function renderLog(){
       </div>
       ${entries.length===0 ? '<div class="ps-empty">Nothing matches the current filters.</div>' : rows}
     </div>
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Export Print History</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Separate from the filters above — pick a printer (or all of them) and an optional date range, and download every matching print as a CSV file.</div>
+      <div class="ps-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;">
+        <div class="ps-field" style="flex:1;min-width:180px;margin-bottom:0;">
+          <span class="ps-field-label">Printer</span>
+          <select class="ps-select" id="ps-export-printer">
+            <option value="">All printers</option>
+            ${printers.map(p => `<option value="${p.id}" ${exportPrinterId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">From (optional)</span>
+          <input class="ps-input" type="date" id="ps-export-from" value="${exportFrom||''}" />
+        </div>
+        <div class="ps-field" style="margin-bottom:0;">
+          <span class="ps-field-label">To (optional)</span>
+          <input class="ps-input" type="date" id="ps-export-to" value="${exportTo||''}" />
+        </div>
+        <button class="ps-btn" id="ps-export-csv-btn">Export CSV</button>
+      </div>
+    </div>
   `;
 
   root.querySelectorAll('[data-action="log-range"]').forEach(btn => {
@@ -3457,6 +3482,55 @@ function renderLog(){
       renderLog();
     });
   }
+
+  document.getElementById('ps-export-printer').addEventListener('change', (ev) => { exportPrinterId = ev.target.value; });
+  document.getElementById('ps-export-from').addEventListener('change', (ev) => { exportFrom = ev.target.value || null; });
+  document.getElementById('ps-export-to').addEventListener('change', (ev) => { exportTo = ev.target.value || null; });
+  document.getElementById('ps-export-csv-btn').addEventListener('click', () => {
+    const fromDate = exportFrom ? new Date(exportFrom+'T00:00:00') : null;
+    const toDate = exportTo ? new Date(exportTo+'T23:59:59') : null;
+    const matching = productionLog
+      .filter(e => {
+        if(exportPrinterId && e.printerId!==exportPrinterId) return false;
+        const start = new Date(e.actualStart);
+        if(fromDate && start < fromDate) return false;
+        if(toDate && start > toDate) return false;
+        return true;
+      })
+      .sort((a,b) => new Date(a.actualStart) - new Date(b.actualStart));
+    if(matching.length===0){
+      alert('No prints match that printer/date range.');
+      return;
+    }
+    const csvEscape = (v) => {
+      const s = String(v==null ? '' : v);
+      return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+    };
+    const header = ['Date Started','Date Finished','Printer','Product','Job','Units','Weight (g)','Duration (min)','Status'];
+    const lines = [header.map(csvEscape).join(',')];
+    matching.forEach(e => {
+      const printerName = (printers.find(p=>p.id===e.printerId)||{}).name || '(deleted printer)';
+      const productName = e.isTest ? (e.testLabel||'(test print)') : ((catalog.find(p=>p.id===e.productId)||{}).name || '(deleted product)');
+      const jobName = e.jobId ? ((jobs.find(j=>j.id===e.jobId)||{}).name || '(deleted job)') : '';
+      const durationMin = e.actualEnd ? Math.round((new Date(e.actualEnd)-new Date(e.actualStart))/60000) : '';
+      const status = e.failed ? 'Failed' : (e.actualEnd ? 'Finished' : 'In progress');
+      lines.push([
+        e.actualStart, e.actualEnd||'', printerName, productName, jobName,
+        e.unitsCompleted||1, e.weightGAtLogTime||0, durationMin, status + (e.isTest?' (test)':'')
+      ].map(csvEscape).join(','));
+    });
+    const csvText = lines.join('\n');
+    const blob = new Blob([csvText], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const printerLabel = exportPrinterId ? (printers.find(p=>p.id===exportPrinterId)||{}).name || 'printer' : 'all-printers';
+    a.download = `print-history-${printerLabel.replace(/[^a-z0-9]+/gi,'-')}-${todayISO()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
 
   const testCheckbox = document.getElementById('ps-log-istest');
   function applyTestFieldVisibility(isTest){
