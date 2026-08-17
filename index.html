@@ -2502,8 +2502,8 @@ function renderPrinters(){
         </div>
         <div class="ps-hint" style="margin-bottom:10px;">
           ${editingPrinterModelId===p.id
-            ? `Model: <input class="ps-input ps-narrow" data-field="model" value="${escapeHtml(p.model)}" style="width:160px;display:inline-block;" autofocus /> <button class="ps-btn ghost small" data-action="save-printer-model">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-model">✕</button>`
-            : `Model: <b style="color:var(--text);">${escapeHtml(p.model)}</b> <button class="ps-btn ghost small" data-action="edit-printer-model" style="padding:1px 6px;font-size:10px;" title="Edit model">✎</button> <span style="opacity:0.75;">— printers sharing the same model name get combined on the Analytics tab</span>`}
+            ? `Printer: <input class="ps-input ps-narrow" data-field="model" value="${escapeHtml(p.model)}" style="width:160px;display:inline-block;" autofocus /> <button class="ps-btn ghost small" data-action="save-printer-model">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-model">✕</button>`
+            : `Printer: <b style="color:var(--text);">${escapeHtml(p.model)}</b> <button class="ps-btn ghost small" data-action="edit-printer-model" style="padding:1px 6px;font-size:10px;" title="Edit printer type">✎</button> <span style="opacity:0.75;">— printers sharing the same value here get combined on the Analytics tab</span>`}
         </div>
         <div class="ps-printer-section">
           ${(() => {
@@ -5559,8 +5559,8 @@ function renderModelComparisonWidget(sinceDate){
   if(data.length===0){
     return `
       <div class="ps-panel">
-        <div class="ps-panel-title"><span class="dot"></span>Model Comparison</div>
-        <div class="ps-hint" style="margin-bottom:12px;">Every printer with the same "Model" (set on the Printers tab) gets combined here — so once you have more than one of something, this shows what that model actually costs you, not just one unit of it.</div>
+        <div class="ps-panel-title"><span class="dot"></span>Printer Comparison</div>
+        <div class="ps-hint" style="margin-bottom:12px;">Every printer with the same "Printer" value (set on the Printers tab) gets combined here — so once you have more than one of something, this shows what that printer actually costs you, not just one unit of it.</div>
         <div class="ps-empty">No completed prints in this range yet.</div>
       </div>
     `;
@@ -5579,8 +5579,8 @@ function renderModelComparisonWidget(sinceDate){
   `).join('');
   return `
     <div class="ps-panel">
-      <div class="ps-panel-title"><span class="dot"></span>Model Comparison</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Every printer with the same "Model" (set on the Printers tab) gets combined here — including the failures baked into real elapsed time, not just the successful prints. Lower effective time per part is better.</div>
+      <div class="ps-panel-title"><span class="dot"></span>Printer Comparison</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Every printer with the same "Printer" value (set on the Printers tab) gets combined here — including the failures baked into real elapsed time, not just the successful prints. Lower effective time per part is better.</div>
       ${rows}
     </div>
   `;
@@ -5628,7 +5628,7 @@ function renderFailureRateTrendWidget(){
     return `
       <div class="ps-panel">
         <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
-        <div class="ps-hint" style="margin-bottom:12px;">Failure rate by model, one column per week — shows whether it's actually improving/worsening or just settling around a stable number over time.</div>
+        <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per week, shows whether it's actually improving/worsening or just settling around a stable number.</div>
         <div class="ps-empty">Not enough history yet.</div>
       </div>
     `;
@@ -5646,7 +5646,7 @@ function renderFailureRateTrendWidget(){
   return `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Failure rate by model, one column per week (labeled by the week's end date) — shows whether it's actually improving/worsening or just settling around a stable number over time. "—" means no completed prints that week.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per week (labeled by the week's end date), shows whether it's actually improving/worsening or just settling around a stable number. "—" means no completed prints that week.</div>
       <div style="overflow-x:auto;">
         <table class="ps-table">
           <thead><tr><th></th>${header}</tr></thead>
