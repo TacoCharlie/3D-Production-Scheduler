@@ -1961,6 +1961,7 @@ function renderJobs(){
           <button class="ps-btn ghost small" data-action="toggle-done-job" style="margin-right:4px;">${isExpanded?'▾':'▸'}</button>
           <span class="ps-hint" style="flex:1.4;">${escapeHtml(job.name)}</span>
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''}</span>
+          <button class="ps-btn ghost small" data-action="job-reopen" title="Move back to Active so you can add to it or log more against it">Reopen</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
         ${isExpanded ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">${renderJobItemRows(job, false)}</div>` : ''}
@@ -2162,6 +2163,14 @@ function renderJobs(){
         if(expandedDoneJobs.has(jobId)) expandedDoneJobs.delete(jobId);
         else expandedDoneJobs.add(jobId);
         renderJobs();
+      });
+    }
+    const reopenBtn = card.querySelector('[data-action="job-reopen"]');
+    if(reopenBtn){
+      reopenBtn.addEventListener('click', () => {
+        job.status = 'active';
+        job.doneAt = null;
+        saveJobs(); renderJobs(); regenerateIfActive();
       });
     }
     const deleteBtn = card.querySelector('[data-action="job-delete"]');
