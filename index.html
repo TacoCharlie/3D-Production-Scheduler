@@ -1907,17 +1907,20 @@ function renderJobs(){
     // notice by doing the math yourself.
     const trueDone = computeJobCreditPlan(job).total;
     const isDrifted = trueDone !== done;
+    const isCollapsed = collapsedActiveJobs.has(job.id);
     return `
       <div class="ps-printer-card ps-draggable-job" data-jobid="${job.id}" draggable="true">
         <div class="ps-printer-top">
           <span class="ps-drag-handle" style="cursor:grab;padding-right:2px;" title="Drag to reorder">⠿</span>
+          <button class="ps-btn ghost small" data-action="toggle-active-job" style="padding:1px 6px;" title="${isCollapsed?'Expand':'Collapse'}">${isCollapsed?'▸':'▾'}</button>
           ${editingJobNameId===job.id
             ? `<input class="ps-input ps-name" data-action="job-rename" value="${escapeHtml(job.name)}" style="flex:1.4;font-weight:700;" autofocus /> <button class="ps-btn ghost small" data-action="save-job-name">✓</button> <button class="ps-btn ghost small" data-action="cancel-job-name">✕</button>`
             : `<b style="flex:1.4;">${escapeHtml(job.name)}</b> <button class="ps-btn ghost small" data-action="edit-job-name">✎</button>`}
-          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
+          <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}${isCollapsed?` · ${done} of ${totalUnits} done (${pct.toFixed(0)}%)`:''}</span>
           <button class="ps-btn small" data-action="job-done">Mark Done</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
+        ${isCollapsed ? '' : `
         ${isDrifted ? `<div class="ps-hint" style="color:var(--danger);margin-bottom:6px;">⚠ Progress shows ${done}, but your logged prints actually support ${trueDone} — click Recalculate below to fix.</div>` : ''}
         <div class="ps-hprogress-track" style="margin-bottom:4px;"><div class="ps-hprogress-fill" style="width:${pct}%;"></div></div>
         ${isEditing ? `
@@ -1944,6 +1947,7 @@ function renderJobs(){
           </select>
           <button class="ps-btn small" data-action="job-add-item-active" ${availableProductsActive.length===0?'disabled':''}>+ Add product</button>
         </div>
+        `}
       </div>
     `;
   }).join('');
@@ -2072,6 +2076,14 @@ function renderJobs(){
     if(editNameBtn){
       editNameBtn.addEventListener('click', () => {
         editingJobNameId = jobId;
+        renderJobs();
+      });
+    }
+    const toggleActiveBtn = card.querySelector('[data-action="toggle-active-job"]');
+    if(toggleActiveBtn){
+      toggleActiveBtn.addEventListener('click', () => {
+        if(collapsedActiveJobs.has(jobId)) collapsedActiveJobs.delete(jobId);
+        else collapsedActiveJobs.add(jobId);
         renderJobs();
       });
     }
@@ -5006,6 +5018,7 @@ let editingProductId = null; // null = browsing list; '_new' = add-product form;
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let expandedCostBreakdown = new Set(); // catalog list only: which products show their cost breakdown sub-row
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
+let collapsedActiveJobs = new Set(); // Jobs tab: which Active cards have been manually collapsed (defaults to expanded)
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
 let showOrderHistory = false; // Filament tab: whether the order-history table under Reorder Planning is expanded
 let showRetiredSpools = false; // Filament tab: whether the Retired Spools panel is expanded
