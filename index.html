@@ -3097,6 +3097,12 @@ let logStartManualValue = null;
 // entry would look like their own just-finished print had reverted. This
 // tracks the actual current selections so a render can restore them.
 let logFormSelection = { printerId: null, productId: null, jobId: null, batchId: null, isTest: false };
+// Log a Print form: optional "split this batch across jobs" editor. Off by
+// default — a plain single Job dropdown is what's rendered unless this is
+// explicitly turned on for a batch with more than one unit. logSplitRows is
+// [{jobId, qty}]; only used while logSplitEnabled is true.
+let logSplitEnabled = false;
+let logSplitRows = [];
 let editingJobId = null; // which active job's "units done" is showing the edit form
 let editingJobItemTarget = null; // "jobId|itemId" of the line item whose target qty is being edited
 let editingJobNameId = null; // which job's name field is in edit mode
@@ -3174,6 +3180,39 @@ function renderFailureStatsWidget(){
   `;
 }
 
+// Splits `total` across `qtys` (parallel array of positive integer weights)
+// proportionally, rounding with largest-remainder so the parts always sum
+// back to exactly `total` — used to divide a split batch's weight/time
+// between the several job-entries it gets logged as, so filament/schedule
+// totals stay exactly right even though the physical print is now
+// represented as more than one entry.
+function allocateProportional(total, qtys){
+  const sumQty = qtys.reduce((a,b)=>a+b,0);
+  if(sumQty<=0) return qtys.map(()=>0);
+  const raw = qtys.map(q => total * q / sumQty);
+  const floors = raw.map(Math.floor);
+  let remainder = Math.round(total - floors.reduce((a,b)=>a+b,0));
+  const order = raw.map((r,i)=>({i, frac:r-floors[i]})).sort((a,b)=>b.frac-a.frac);
+  const result = floors.slice();
+  for(let k=0;k<remainder && k<order.length;k++){ result[order[k].i]++; }
+  return result;
+}
+// Returns the current split-editor rows in a valid, submit-ready shape
+// (jobId set, qty a positive integer, at least 2 real rows, summing exactly
+// to unitsCompleted) — or null if the split isn't usable yet. Callers must
+// treat null as "block submission", not "fall back to a single job" — a
+// silent fallback here could mis-attribute units to whatever job happened
+// to be in the hidden single-Job field.
+function getValidSplitRows(unitsCompleted){
+  if(!logSplitEnabled) return null;
+  const rows = (logSplitRows||[])
+    .map(r => ({jobId: r.jobId||'', qty: Math.max(0, parseInt(r.qty,10)||0)}))
+    .filter(r => r.jobId && r.qty>0);
+  if(rows.length<2) return null;
+  const sum = rows.reduce((s,r)=>s+r.qty,0);
+  if(sum !== unitsCompleted) return null;
+  return rows;
+}
 function renderLog(){
   const root = document.getElementById('ps-tab-log');
   // Fall back to the first item only if nothing was ever selected, or the
@@ -3333,6 +3372,11 @@ function renderLog(){
       : `${e.unitsCompleted>1?e.unitsCompleted+'× ':''}${escapeHtml(product?product.name:'(deleted product)')}`;
     const jobForEntry = (!e.isTest && e.jobId) ? jobs.find(j=>j.id===e.jobId) : null;
     const jobLine = (!e.isTest && e.jobId) ? `<div class="ps-hint mono">Job: ${jobForEntry ? escapeHtml(jobForEntry.name) : '(deleted job)'}</div>` : '';
+    const splitSiblings = e.batchGroupId ? productionLog.filter(x => x.batchGroupId===e.batchGroupId && x.id!==e.id) : [];
+    const splitLine = splitSiblings.length>0 ? `<div class="ps-hint">Split batch — also logged: ${splitSiblings.map(s => {
+      const sJob = s.jobId ? jobs.find(j=>j.id===s.jobId) : null;
+      return `${s.unitsCompleted||1}× → ${sJob?escapeHtml(sJob.name):'(no job)'}`;
+    }).join(', ')}</div>` : '';
     const failureNoteLine = (e.failed && e.failureNote) ? `<div class="ps-hint" style="color:var(--danger);">Note: ${escapeHtml(e.failureNote)}</div>` : '';
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
@@ -3341,6 +3385,7 @@ function renderLog(){
           <div>${productLine}</div>
           <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
           ${jobLine}
+          ${splitLine}
           ${failureNoteLine}
         </div>
         <div class="ps-row" style="gap:6px;">
@@ -3355,6 +3400,23 @@ function renderLog(){
       </div>
     `;
   }).join('');
+
+  // Whether the currently-selected batch can be split across jobs at all —
+  // only makes sense for a batch of 2+ units, and never for a test print
+  // (test prints don't carry a job at all). If the selection changed since
+  // the split editor was opened and it's no longer eligible, drop out of
+  // split mode rather than leave a stale editor showing.
+  const productForSplit = catalog.find(p=>p.id===logFormSelection.productId);
+  const selectedBatchConfigForSplit = (productForSplit && logFormSelection.batchId)
+    ? (productForSplit.batchConfigs||[]).find(c=>c.id===logFormSelection.batchId) : null;
+  const splitEligible = !!(selectedBatchConfigForSplit && selectedBatchConfigForSplit.unitsPerBatch > 1) && !logFormSelection.isTest;
+  if(!splitEligible && logSplitEnabled){ logSplitEnabled = false; logSplitRows = []; }
+  const splitUnitsTotal = selectedBatchConfigForSplit ? selectedBatchConfigForSplit.unitsPerBatch : 1;
+  if(splitEligible && logSplitEnabled && logSplitRows.length===0){
+    const half = Math.ceil(splitUnitsTotal/2);
+    logSplitRows = [{jobId: logFormSelection.jobId||'', qty: half}, {jobId:'', qty: splitUnitsTotal-half}];
+  }
+  const jobCandidatesForSplit = jobs.filter(j => j.status==='active' && j.items.some(it=>it.id===logFormSelection.productId));
 
   root.innerHTML = `
     <div class="ps-panel">
@@ -3376,9 +3438,10 @@ function renderLog(){
           <span class="ps-field-label">Batch</span>
           <select class="ps-select" id="ps-log-batch"></select>
         </div>
-        <div class="ps-field" id="ps-log-job-field" style="flex:1;min-width:160px;margin-bottom:0;">
+        <div class="ps-field" id="ps-log-job-field" style="flex:1;min-width:160px;margin-bottom:0;${splitEligible && logSplitEnabled ? 'display:none;' : ''}">
           <span class="ps-field-label">Job</span>
           <select class="ps-select" id="ps-log-job"></select>
+          <div class="ps-hint" id="ps-log-split-toggle-wrap" style="margin-top:4px;${splitEligible?'':'display:none;'}"><span id="ps-log-split-on" style="color:var(--cool);cursor:pointer;font-weight:600;">↳ split this batch across jobs</span></div>
         </div>
         <div class="ps-field" id="ps-log-testproduct-field" style="flex:1;min-width:160px;margin-bottom:0;display:none;">
           <span class="ps-field-label">Product (optional)</span>
@@ -3404,6 +3467,31 @@ function renderLog(){
           <input class="ps-input" type="datetime-local" id="ps-log-end" />
         </div>
       </div>
+      ${splitEligible && logSplitEnabled ? `
+      <div id="ps-log-split-editor" style="margin-top:4px;margin-bottom:14px;padding:14px;border:1px solid var(--line);border-radius:4px;background:var(--panel-2);">
+        <div class="ps-row" style="justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span class="ps-field-label" style="margin:0;">Job + quantity — ${splitUnitsTotal} units to divide</span>
+          <span id="ps-log-split-off" style="color:var(--cool);cursor:pointer;font-weight:600;font-size:12px;">✕ cancel split</span>
+        </div>
+        ${logSplitRows.map((row,i) => `
+          <div class="ps-row" style="gap:10px;align-items:flex-end;margin-bottom:8px;">
+            <div class="ps-field" style="flex:2;min-width:160px;margin-bottom:0;">
+              <select class="ps-select" data-split-field="jobId" data-idx="${i}">
+                <option value="">— choose job —</option>
+                ${jobCandidatesForSplit.map(j=>`<option value="${j.id}" ${row.jobId===j.id?'selected':''}>${escapeHtml(j.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="ps-field" style="flex:0 0 90px;margin-bottom:0;">
+              <input class="ps-input" type="number" min="1" data-split-field="qty" data-idx="${i}" value="${row.qty}" />
+            </div>
+            <span class="ps-hint" style="margin:0 0 8px;white-space:nowrap;">units</span>
+            ${logSplitRows.length>1 ? `<button class="ps-btn ghost small" data-action="split-remove-row" data-idx="${i}" style="margin-bottom:8px;">✕</button>` : ''}
+          </div>
+        `).join('')}
+        <button class="ps-btn small" id="ps-log-split-add" type="button">+ Add another job</button>
+        <div class="ps-hint" id="ps-log-split-total" style="margin-top:8px;"></div>
+      </div>
+      ` : ''}
       <div class="ps-row" style="margin-top:14px;">
         <button class="ps-btn primary" id="ps-log-submit">Log print</button>
       </div>
@@ -3557,7 +3645,10 @@ function renderLog(){
   function applyTestFieldVisibility(isTest){
     document.getElementById('ps-log-product-field').style.display = isTest ? 'none' : '';
     document.getElementById('ps-log-batch-field').style.display = isTest ? 'none' : '';
-    document.getElementById('ps-log-job-field').style.display = isTest ? 'none' : '';
+    // Also stay hidden (not just on isTest) while the split-across-jobs
+    // editor has taken its place — otherwise this unconditional reset
+    // clobbers the display:none the initial render set for that case.
+    document.getElementById('ps-log-job-field').style.display = (isTest || (splitEligible && logSplitEnabled)) ? 'none' : '';
     document.getElementById('ps-log-testproduct-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testlabel-field').style.display = isTest ? '' : 'none';
     document.getElementById('ps-log-testweight-field').style.display = isTest ? '' : 'none';
@@ -3592,6 +3683,26 @@ function renderLog(){
   document.getElementById('ps-log-start').addEventListener('input', () => {
     logStartManualValue = document.getElementById('ps-log-start').value;
   });
+
+  // The "split this batch across jobs" link's eligibility depends on
+  // whatever batch is currently selected, which product/printer/batch
+  // changes update without doing a full renderLog() (to avoid losing focus
+  // on unrelated fields) — so its visibility needs its own lightweight
+  // refresh rather than waiting for the next full render.
+  function refreshSplitToggleVisibility(){
+    const wrap = document.getElementById('ps-log-split-toggle-wrap');
+    if(!wrap) return;
+    const product = catalog.find(p=>p.id===document.getElementById('ps-log-product').value);
+    const batchId = document.getElementById('ps-log-batch').value;
+    const bc = (product && batchId) ? (product.batchConfigs||[]).find(c=>c.id===batchId) : null;
+    const eligible = !!(bc && bc.unitsPerBatch > 1) && !document.getElementById('ps-log-istest').checked;
+    wrap.style.display = eligible ? '' : 'none';
+  }
+  refreshSplitToggleVisibility();
+  ['ps-log-product','ps-log-batch','ps-log-printer'].forEach(id => {
+    document.getElementById(id).addEventListener('change', refreshSplitToggleVisibility);
+  });
+  testCheckbox.addEventListener('change', refreshSplitToggleVisibility);
 
   function refreshJobOptions(preserve){
     const productId = document.getElementById('ps-log-product').value;
@@ -3630,6 +3741,77 @@ function renderLog(){
     jobTargetConfirmed = false;
     document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
   });
+
+  // The split-across-jobs editor is keyed to one specific batch's unit
+  // count. If the product, batch, printer (which can silently reset the
+  // batch selection back to "Single unit"), or test-print checkbox changes
+  // while it's open, drop out of split mode and do a full re-render rather
+  // than leaving a stale editor showing units that no longer apply.
+  ['ps-log-product','ps-log-batch','ps-log-printer'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => {
+      if(logSplitEnabled){ logSplitEnabled = false; logSplitRows = []; renderLog(); }
+    });
+  });
+  testCheckbox.addEventListener('change', () => {
+    if(testCheckbox.checked && logSplitEnabled){ logSplitEnabled = false; logSplitRows = []; renderLog(); }
+  });
+
+  const splitOnLink = document.getElementById('ps-log-split-on');
+  if(splitOnLink) splitOnLink.addEventListener('click', () => {
+    logSplitEnabled = true;
+    logSplitRows = []; // re-init with fresh defaults on the next render
+    renderLog();
+  });
+  const splitOffLink = document.getElementById('ps-log-split-off');
+  if(splitOffLink){
+    splitOffLink.addEventListener('click', () => {
+      logSplitEnabled = false;
+      logSplitRows = [];
+      renderLog();
+    });
+    function refreshSplitTotalHint(){
+      const el = document.getElementById('ps-log-split-total');
+      if(!el) return;
+      const sum = logSplitRows.reduce((s,r)=> s + Math.max(0, parseInt(r.qty,10)||0), 0);
+      const validRowCount = logSplitRows.filter(r => r.jobId && (parseInt(r.qty,10)||0)>0).length;
+      if(sum === splitUnitsTotal && validRowCount>=2 && validRowCount===logSplitRows.length){
+        el.innerHTML = `<span style="color:var(--ok);">${sum} of ${splitUnitsTotal} units assigned ✓</span>`;
+      } else {
+        el.innerHTML = `<span style="color:var(--danger);">${sum} of ${splitUnitsTotal} units assigned — must total ${splitUnitsTotal} across at least 2 jobs</span>`;
+      }
+    }
+    document.querySelectorAll('[data-split-field="jobId"]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const idx = parseInt(sel.getAttribute('data-idx'),10);
+        logSplitRows[idx].jobId = sel.value;
+        jobTargetConfirmed = false;
+        document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
+        refreshSplitTotalHint();
+      });
+    });
+    document.querySelectorAll('[data-split-field="qty"]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const idx = parseInt(inp.getAttribute('data-idx'),10);
+        logSplitRows[idx].qty = Math.max(0, parseInt(inp.value,10)||0);
+        jobTargetConfirmed = false;
+        document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
+        refreshSplitTotalHint();
+      });
+    });
+    document.querySelectorAll('[data-action="split-remove-row"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-idx'),10);
+        logSplitRows.splice(idx,1);
+        renderLog();
+      });
+    });
+    const splitAddBtn = document.getElementById('ps-log-split-add');
+    if(splitAddBtn) splitAddBtn.addEventListener('click', () => {
+      logSplitRows.push({jobId:'', qty:0});
+      renderLog();
+    });
+    refreshSplitTotalHint();
+  }
 
   const testProductSelect = document.getElementById('ps-log-testproduct');
   testProductSelect.addEventListener('change', () => {
@@ -3731,15 +3913,86 @@ function renderLog(){
     }
     const isTestCheck = document.getElementById('ps-log-istest').checked;
     if(!isTestCheck && !jobTargetConfirmed){
-      const jobIdCheck = document.getElementById('ps-log-job').value;
       const productIdCheck = document.getElementById('ps-log-product').value;
+      const productCheck = catalog.find(p=>p.id===productIdCheck);
+      const batchConfigIdCheck = document.getElementById('ps-log-batch').value || null;
+      const batchConfigCheck = batchConfigIdCheck && productCheck ? productCheck.batchConfigs.find(c=>c.id===batchConfigIdCheck) : null;
+      const totalUnitsCheck = batchConfigCheck ? batchConfigCheck.unitsPerBatch : 1;
+      const validSplitCheck = getValidSplitRows(totalUnitsCheck);
+
+      if(validSplitCheck){
+        // Split across jobs: check every row's job+product target the same
+        // way as the single-job path below, and combine any violations into
+        // one warning instead of firing separately per row.
+        const violations = [];
+        validSplitCheck.forEach(credit => {
+          const jobCheck = jobs.find(j=>j.id===credit.jobId);
+          const itemCheck = jobCheck ? jobCheck.items.find(it=>it.id===productIdCheck) : null;
+          if(!(jobCheck && itemCheck && itemCheck.qty>0)) return;
+          const alreadyLogged = productionLog
+            .filter(e => e.jobId===credit.jobId && e.productId===productIdCheck && !e.isTest && !e.failed && e.actualEnd)
+            .reduce((s,e) => s + (e.unitsCompleted||1), 0);
+          const afterThis = alreadyLogged + credit.qty;
+          if(afterThis >= itemCheck.qty){
+            const overBy = afterThis - itemCheck.qty;
+            const priorHistoryExists = productionLog.some(e => e.jobId===credit.jobId && e.productId===productIdCheck && !e.isTest);
+            violations.push({jobId: credit.jobId, jobName: jobCheck.name, afterThis, target: itemCheck.qty, overBy, priorHistoryExists});
+          }
+        });
+        if(violations.length>0){
+          document.getElementById('ps-log-jobtarget-warning').innerHTML = `
+            <div class="ps-warnbox" style="margin-top:10px;">
+              ${violations.map((v,vi) => `
+                <div style="${vi>0?'margin-top:10px;padding-top:10px;border-top:1px solid var(--line);':''}">
+                  This brings <b>${escapeHtml(productCheck.name)}</b> on <b>${escapeHtml(v.jobName)}</b> to ${v.afterThis} of ${v.target} needed${v.overBy>0 ? ` — ${v.overBy} more than the target` : ' — exactly the target, the last one needed'}.
+                  ${v.priorHistoryExists ? `<div style="margin-top:4px;"><button class="ps-btn ghost small" data-action="split-jobtarget-history" data-jobid="${v.jobId}">View history for ${escapeHtml(productCheck.name)} on ${escapeHtml(v.jobName)}</button></div><div class="ps-jobtarget-history-results" data-jobid="${v.jobId}"></div>` : ''}
+                </div>
+              `).join('')}
+              <div class="ps-hint" style="margin-top:8px;">Worth reallocating this printer to something else afterward?</div>
+              <div class="ps-row" style="margin-top:8px;gap:6px;">
+                <button class="ps-btn small" id="ps-log-jobtarget-confirm">Log anyway</button>
+                <button class="ps-btn ghost small" id="ps-log-jobtarget-cancel">Cancel</button>
+              </div>
+            </div>
+          `;
+          document.getElementById('ps-log-jobtarget-confirm').addEventListener('click', () => {
+            jobTargetConfirmed = true;
+            document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
+            document.getElementById('ps-log-submit').click();
+          });
+          document.getElementById('ps-log-jobtarget-cancel').addEventListener('click', () => {
+            document.getElementById('ps-log-jobtarget-warning').innerHTML = '';
+          });
+          document.querySelectorAll('[data-action="split-jobtarget-history"]').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const jid = btn.getAttribute('data-jobid');
+              const matches = productionLog
+                .filter(e => e.productId===productIdCheck && e.jobId===jid && !e.isTest)
+                .sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
+              const resultsEl = document.querySelector(`.ps-jobtarget-history-results[data-jobid="${jid}"]`);
+              if(matches.length===0){
+                resultsEl.innerHTML = `<div class="ps-hint" style="margin-top:8px;">No prior prints of this yet on this job.</div>`;
+                return;
+              }
+              resultsEl.innerHTML = `
+                <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+                  ${matches.map(e => {
+                    const pName = (printers.find(p=>p.id===e.printerId)||{}).name || '(deleted printer)';
+                    const status = e.failed ? '<span style="color:var(--danger)">failed</span>' : (e.actualEnd ? `→ ${fmtLogTime(e.actualEnd)}` : 'still printing');
+                    return `<div class="ps-hint" style="padding:3px 0;">${fmtLogTime(e.actualStart)} — ${escapeHtml(pName)} ${status}</div>`;
+                  }).join('')}
+                </div>
+              `;
+            });
+          });
+          return;
+        }
+      } else {
+      const jobIdCheck = document.getElementById('ps-log-job').value;
       const jobCheck = jobIdCheck ? jobs.find(j=>j.id===jobIdCheck) : null;
       const itemCheck = jobCheck ? jobCheck.items.find(it=>it.id===productIdCheck) : null;
       if(jobCheck && itemCheck && itemCheck.qty>0){
-        const batchConfigIdCheck = document.getElementById('ps-log-batch').value || null;
-        const productCheck = catalog.find(p=>p.id===productIdCheck);
-        const batchConfigCheck = batchConfigIdCheck && productCheck ? productCheck.batchConfigs.find(c=>c.id===batchConfigIdCheck) : null;
-        const prospectiveUnits = batchConfigCheck ? batchConfigCheck.unitsPerBatch : 1;
+        const prospectiveUnits = totalUnitsCheck;
         // Matches exactly how the Jobs tab itself counts "X of Y logged" —
         // finished, non-failed, non-test prints tied to this specific job
         // and product. This new print doesn't have to be finished yet to
@@ -3794,6 +4047,7 @@ function renderLog(){
           return;
         }
       }
+      }
     }
     busyWarningConfirmed = false;
     lowFilamentConfirmed = false;
@@ -3835,22 +4089,66 @@ function renderLog(){
       const plannedMin = batchConfig ? (batchConfig.timeH*60+batchConfig.timeM) : (resolved.timeH*60+resolved.timeM);
       const weightAtLog = batchConfig ? (batchConfig.weightG||0) : (resolved.weightG||0);
       const unitsCompleted = batchConfig ? batchConfig.unitsPerBatch : 1;
-      const selectedJobId = document.getElementById('ps-log-job').value || null;
-      const newEntry = {
-        id: uid('log'),
-        printerId, productId,
-        actualStart: new Date(startVal).toISOString(),
-        actualEnd: endVal ? new Date(endVal).toISOString() : null,
-        plannedMin,
-        weightGAtLogTime: weightAtLog,
-        spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
-        unitsCompleted,
-        jobId: selectedJobId,
-        jobCounted: false
-      };
-      creditJobIfDue(newEntry);
-      productionLog.push(newEntry);
+
+      const validSplitSubmit = getValidSplitRows(unitsCompleted);
+      if(logSplitEnabled && !validSplitSubmit){
+        // Split toggle is on but the rows aren't valid yet — block rather
+        // than silently falling back to whatever's in the hidden single-Job
+        // field, which could mis-attribute units to the wrong job.
+        const el = document.getElementById('ps-log-split-total');
+        if(el) el.innerHTML = `<span style="color:var(--danger);">Assign all ${unitsCompleted} units across at least 2 jobs (quantities must add up to ${unitsCompleted}) before logging.</span>`;
+        return;
+      }
+
+      if(validSplitSubmit){
+        // One physical batch, logged as one entry per job it's split across
+        // — each a normal entry with its own single jobId and its share of
+        // the units, sharing a batchGroupId so the Log tab can show them as
+        // one print. Weight and time are divided proportionally (largest-
+        // remainder rounding) so the totals across the group still add up
+        // to exactly what the batch actually used, with nothing double- or
+        // under-counted.
+        const qtys = validSplitSubmit.map(r=>r.qty);
+        const weightParts = allocateProportional(weightAtLog, qtys);
+        const timeParts = allocateProportional(plannedMin, qtys);
+        const batchGroupId = uid('batchgroup');
+        validSplitSubmit.forEach((row, i) => {
+          const splitEntry = {
+            id: uid('log'),
+            printerId, productId,
+            actualStart: new Date(startVal).toISOString(),
+            actualEnd: endVal ? new Date(endVal).toISOString() : null,
+            plannedMin: timeParts[i],
+            weightGAtLogTime: weightParts[i],
+            spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
+            unitsCompleted: row.qty,
+            jobId: row.jobId,
+            jobCounted: false,
+            batchGroupId
+          };
+          creditJobIfDue(splitEntry);
+          productionLog.push(splitEntry);
+        });
+      } else {
+        const selectedJobId = document.getElementById('ps-log-job').value || null;
+        const newEntry = {
+          id: uid('log'),
+          printerId, productId,
+          actualStart: new Date(startVal).toISOString(),
+          actualEnd: endVal ? new Date(endVal).toISOString() : null,
+          plannedMin,
+          weightGAtLogTime: weightAtLog,
+          spoolIdAtLogTime: printer ? (printer.spoolId||null) : null,
+          unitsCompleted,
+          jobId: selectedJobId,
+          jobCounted: false
+        };
+        creditJobIfDue(newEntry);
+        productionLog.push(newEntry);
+      }
     }
+    logSplitEnabled = false;
+    logSplitRows = [];
     // Logging a print permanently claims one unit from the queue — it doesn't
     // come back on its own the next day. Deleting or re-pointing this entry
     // (see below) reverses it. Test prints skip that entirely (consumed:true
