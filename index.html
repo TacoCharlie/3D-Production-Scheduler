@@ -64,6 +64,22 @@
   table.ps-table th { text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:0.5px; color: var(--muted); font-weight:600; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
   table.ps-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
   table.ps-table tr:last-child td { border-bottom: none; }
+  /* Stock table only: fixed layout so the narrow numeric/date columns
+     actually stay narrow instead of the browser widening them to fit an
+     unbroken header word like "MANUFACTURER" or "COMPLETED". */
+  table#ps-stock-table { table-layout: fixed; }
+  table#ps-stock-table th { white-space: nowrap; overflow: hidden; }
+  table#ps-stock-table th[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 2px; }
+  /* Every data cell stays single-line except the Label column, which is
+     meant to wrap across 2-3 lines — without this, narrow date/number
+     columns can wrap awkwardly (e.g. "Aug 6" breaking after "Aug"). */
+  /* The rest of the app's dense tabular areas (.ps-log-entry, .ps-hint)
+     already run smaller than the browser-default 16px this table was
+     inheriting — matching that here is what actually makes 13 columns
+     fit without scrolling, not just narrower px targets on an oversized
+     font. */
+  table#ps-stock-table td { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  table#ps-stock-table td:nth-child(2) { white-space: normal; overflow: visible; text-overflow: clip; }
 
   .ps-input, .ps-select {
     background: var(--panel-2); border:1px solid var(--line); color: var(--text);
@@ -4860,11 +4876,11 @@ function renderFilament(){
     <tr data-id="${st.id}">
       <td></td>
       <td><b>${escapeHtml(st.label)||'(unnamed)'}</b></td>
-      <td>${escapeHtml(st.manufacturer||'—')}</td>
-      <td>${escapeHtml(st.material||'—')}</td>
+      <td title="${escapeHtml(st.manufacturer||'')}">${escapeHtml(st.manufacturer||'—')}</td>
+      <td title="${escapeHtml(st.material||'')}">${escapeHtml(st.material||'—')}</td>
       <td><span class="ps-spool-swatch" style="background:${escapeHtml(st.colorHex||'#999')}"></span></td>
       <td class="mono">${st.weightPerSpoolG}g</td>
-      <td class="mono">${st.costPerSpool>0 ? '$'+st.costPerSpool.toFixed(2) : '—'}</td>
+      <td class="mono" title="${st.costPerSpool>0 ? '$'+st.costPerSpool.toFixed(2) : ''}">${st.costPerSpool>0 ? '$'+st.costPerSpool.toFixed(2) : '—'}</td>
       <td class="mono">${st.qty}</td>
       <td class="mono">${st.qtyOnOrder}</td>
       <td class="ps-hint mono">${st.lastOrderedAt ? new Date(st.lastOrderedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
@@ -5139,8 +5155,8 @@ function renderFilament(){
       ${stockDatalists}
       ${stock.length===0 ? '<div class="ps-empty">Nothing in stock yet.</div>' : `
       <div style="overflow-x:auto;">
-      <table class="ps-table">
-        <thead><tr><th></th><th style="min-width:180px;">Label</th><th>Manufacturer</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:90px">Cost/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:100px">Purchased</th><th style="width:100px">Received</th><th style="width:100px">Completed</th><th style="width:80px"></th><th style="width:190px"></th></tr></thead>
+      <table class="ps-table" id="ps-stock-table">
+        <thead><tr><th style="width:0;"></th><th style="width:84px;">Label</th><th style="width:72px;" title="Manufacturer">Mfr.</th><th style="width:52px;" title="Material">Mat.</th><th style="width:48px;">Color</th><th style="width:64px">g/spool</th><th style="width:72px" title="Cost per spool">$/spool</th><th style="width:50px;white-space:normal;">In Stock</th><th style="width:50px;white-space:normal;">On Order</th><th style="width:68px" title="Date last purchased">Ordered</th><th style="width:64px" title="Date received">Rec'd</th><th style="width:64px" title="Fully used up">Done</th><th style="width:72px"></th><th style="width:182px"></th></tr></thead>
         <tbody id="ps-stock-body">${stockRows}</tbody>
       </table>
       </div>
