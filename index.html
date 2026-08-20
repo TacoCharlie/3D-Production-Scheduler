@@ -1213,10 +1213,22 @@ function getPrinterWattage(printerId){
 // current-moment rate when there's no completed-print history yet.
 function computeBlendedElectricityRate(){
   let totalKWh = 0, totalCost = 0;
+  // getPrinterWattage() re-scans the entire production log (once per
+  // wattage reading on that printer) every time it's called — fine as a
+  // one-off, but this loop used to call it once per log entry, turning an
+  // O(n) pass into an O(n * readings * n) one. Every entry for the same
+  // printer resolves to the exact same wattage within a single call to
+  // this function (productionLog doesn't change mid-loop), so memoize it
+  // per printerId here instead of recomputing it from scratch each time.
+  const wattageCache = {};
+  const wattageFor = (printerId) => {
+    if(!(printerId in wattageCache)) wattageCache[printerId] = getPrinterWattage(printerId);
+    return wattageCache[printerId];
+  };
   productionLog.forEach(e => {
     if(!e.actualStart || !e.actualEnd) return; // needs a real, finished duration
     const hours = Math.max(0, (new Date(e.actualEnd) - new Date(e.actualStart)) / 3600000);
-    const kW = getPrinterWattage(e.printerId) / 1000;
+    const kW = wattageFor(e.printerId) / 1000;
     const kWh = hours * kW;
     if(kWh <= 0) return;
     const rate = getElectricityRateForDate(new Date(e.actualStart));
