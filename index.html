@@ -102,6 +102,7 @@
   .ps-status-pill { font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-weight:700; padding:6px 12px; border-radius:20px; cursor:pointer; border:1px solid transparent; white-space:nowrap; }
   .ps-status-pill.active { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); border-color: var(--ok); }
   .ps-status-pill.down { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); border-color: var(--danger); }
+  .ps-status-pill.retired { background: color-mix(in srgb, var(--muted) 20%, transparent); color: var(--muted); border-color: var(--muted); cursor:default; }
 
   .ps-summary-grid { display:grid; grid-template-columns: repeat(4,1fr); gap:1px; background: var(--line); border:1px solid var(--line); border-radius: var(--radius); overflow:hidden; margin-bottom:18px; }
   .ps-summary-cell { background: var(--panel); padding: 14px 16px; }
@@ -581,6 +582,7 @@ async function loadState(){
   printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
   printers.forEach(p => { if(typeof p.model !== 'string' || !p.model) p.model = p.name; });
   printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
+  printers.forEach(p => { if(typeof p.retired !== 'boolean') p.retired = false; });
   printersSyncSnapshot = JSON.parse(JSON.stringify(printers));
 
   try { const sp = await window.storage.get('spools'); spools = sp ? JSON.parse(sp.value) : JSON.parse(JSON.stringify(DEFAULT_SPOOLS)); }
@@ -1228,7 +1230,7 @@ function computeFleetAverageWattageW(){
     const weightedW = printerIds.reduce((s,id) => s + hoursByPrinter[id] * getPrinterWattage(id), 0);
     if(totalHours > 0) return weightedW / totalHours;
   }
-  const active = printers.filter(p => p.status==='active');
+  const active = printers.filter(p => p.status==='active' && !p.retired);
   if(active.length > 0) return active.reduce((s,p) => s + getPrinterWattage(p.id), 0) / active.length;
   return settings.printerWattageW;
 }
@@ -2309,6 +2311,7 @@ function renderJobs(){
 }
 
 let changeSpoolOpenFor = new Set(); // session-only: which printer cards have the Change Spool picker open
+let showRetiredPrinters = false; // Printers tab: whether the Retired Printers panel is expanded
 let editingPrinterNameId = null; // which printer's name field is in edit mode
 let editingPrinterModelId = null; // which printer's model field is in edit mode
 let editingPrinterWattageId = null; // which printer's wattage field is in edit mode
@@ -2324,7 +2327,7 @@ let editingPartDefId = null; // which maintenance part row is in edit mode
 function renderStatus(){
   const root = document.getElementById('ps-tab-status');
   if(!root) return;
-  const activePrinters = printers.filter(p => p.status === 'active');
+  const activePrinters = printers.filter(p => p.status === 'active' && !p.retired);
   const now = new Date();
 
   if(activePrinters.length === 0){
@@ -2481,7 +2484,7 @@ function renderStatus(){
 
 function renderPrinters(){
   const root = document.getElementById('ps-tab-printers');
-  const cards = printers.map(p => {
+  const printerCardHtml = (p) => {
     const currentSpool = spools.find(s=>s.id===p.spoolId);
     const availableStock = stock.filter(st=>st.qty>0);
     // A spare is an already-opened spool not currently loaded on any
@@ -2518,8 +2521,13 @@ function renderPrinters(){
           ${editingPrinterNameId===p.id
             ? `<input class="ps-input ps-name" data-field="name" value="${escapeHtml(p.name)}" autofocus /> <button class="ps-btn ghost small" data-action="save-printer-name">✓</button> <button class="ps-btn ghost small" data-action="cancel-printer-name">✕</button>`
             : `<b style="flex:1;">${escapeHtml(p.name)}</b> <button class="ps-btn ghost small" data-action="edit-printer-name" title="Rename">✎</button>`}
-          <span class="ps-status-pill ${p.status}" data-action="toggle-status">${p.status === 'active' ? 'Active' : 'Down'}</span>
-          <button class="ps-btn ghost small" data-action="remove" title="Remove printer">✕</button>
+          ${p.retired
+            ? `<span class="ps-status-pill retired">Retired</span>`
+            : `<span class="ps-status-pill ${p.status}" data-action="toggle-status">${p.status === 'active' ? 'Active' : 'Down'}</span>`}
+          ${p.retired
+            ? `<button class="ps-btn ghost small" data-action="unretire" title="Bring this printer back into the fleet">Restore</button>`
+            : `<button class="ps-btn ghost small" data-action="retire" title="Retire this printer — pulls it out of the fleet (scheduling, Log a Print, etc.) but keeps its history">Retire</button>`}
+          <button class="ps-btn ghost small" data-action="remove" title="Permanently delete this printer and its history">✕</button>
         </div>
         <div class="ps-hint" style="margin-bottom:10px;">
           ${editingPrinterModelId===p.id
@@ -2542,7 +2550,7 @@ function renderPrinters(){
                   <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${wattageReadingsOpenFor.has(p.id)?'▾':'▸'}</span>
                 </div>
                 <span>${subLine}</span>
-                <button class="ps-btn primary small" data-action="open-add-reading">+ Add Reading</button>
+                ${!p.retired ? `<button class="ps-btn primary small" data-action="open-add-reading">+ Add Reading</button>` : ''}
               </div>
               ${wattageReadingsOpenFor.has(p.id) ? `
               <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
@@ -2621,9 +2629,9 @@ function renderPrinters(){
               <span class="dot"></span>Filament
               <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${filamentDetailsOpenFor.has(p.id)?'▾':'▸'}</span>
             </div>
-            <span>${currentSpool ? `<b style="color:var(--text);">${escapeHtml(currentSpool.label)}</b> <span class="ps-hint">(${Math.max(0,currentSpool.remainingG)}g left)</span>` : '<span class="ps-hint">— none loaded —</span>'}</span>
-            ${currentSpool ? `<button class="ps-btn ghost small" data-action="unload-spool" title="Free this spool up so it can be loaded on a different printer, without retiring it">Unload</button>` : ''}
-            <button class="ps-btn primary small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>
+            <span>${currentSpool ? `<b style="color:var(--text);">${escapeHtml(currentSpool.label)}</b> <span class="ps-hint">(${Math.max(0,currentSpool.remainingG)}g left)</span>` : `<span class="ps-hint">${p.retired?'— retired, not tracked —':'— none loaded —'}</span>`}</span>
+            ${(!p.retired && currentSpool) ? `<button class="ps-btn ghost small" data-action="unload-spool" title="Free this spool up so it can be loaded on a different printer, without retiring it">Unload</button>` : ''}
+            ${!p.retired ? `<button class="ps-btn primary small" data-action="toggle-change-spool">${changeOpen?'Close':'Change Spool'}</button>` : ''}
           </div>
           ${filamentDetailsOpenFor.has(p.id) ? `
           <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line);">
@@ -2642,7 +2650,7 @@ function renderPrinters(){
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
           <div class="ps-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
             <div class="ps-hint">Lifetime: <b style="color:var(--text);">${fmtHours(printerHours(p.id))}</b>${p.hoursResetAt ? ` · since reset: <b style="color:var(--text);">${fmtHours(printerHours(p.id, new Date(p.hoursResetAt)))}</b> (${fmtDateHead(new Date(p.hoursResetAt))})` : ''}</div>
-            <button class="ps-btn ghost small" data-action="reset-hours">Reset hours counter</button>
+            ${!p.retired ? `<button class="ps-btn ghost small" data-action="reset-hours">Reset hours counter</button>` : ''}
           </div>
         </div>
         ${partDefs.length>0 ? `
@@ -2657,7 +2665,7 @@ function renderPrinters(){
               <div style="margin-bottom:10px;">
                 <div class="ps-row" style="justify-content:space-between;">
                   <span class="ps-hint">${escapeHtml(pd.name)} — <b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b> / ${fmtHours(pd.lifespanHours)}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}</span>
-                  <button class="ps-btn ghost small" data-action="log-part-replacement" data-partid="${pd.id}">Log Replacement</button>
+                  ${!p.retired ? `<button class="ps-btn ghost small" data-action="log-part-replacement" data-partid="${pd.id}">Log Replacement</button>` : ''}
                 </div>
                 <div class="ps-hprogress-track" style="height:6px;margin:4px 0 0;"><div class="ps-hprogress-fill ${due?'overdue':''}" style="width:${pct}%;"></div></div>
               </div>
@@ -2667,7 +2675,10 @@ function renderPrinters(){
         ` : ''}
       </div>
     `;
-  }).join('');
+  };
+  const cards = printers.filter(p=>!p.retired).map(printerCardHtml).join('');
+  const retiredPrinters = printers.filter(p=>p.retired);
+  const retiredCards = retiredPrinters.map(printerCardHtml).join('');
 
   const partDefRows = partDefs.map(pd => {
     if(editingPartDefId === pd.id){
@@ -2717,12 +2728,24 @@ function renderPrinters(){
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Printers</div>
-      <div id="ps-printers-list">${cards}</div>
+      ${cards ? `<div id="ps-printers-list">${cards}</div>` : '<div class="ps-empty">No active printers — add one below, or restore one from Retired Printers.</div>'}
       <div style="margin-top:14px;">
         <button class="ps-btn" id="ps-add-printer">+ Add printer</button>
       </div>
-      <div class="ps-hint" style="margin-top:12px;">Mark a printer "Down" to pull it out of the rotation entirely — its share of the queue gets redistributed to the active printers. To tell the Live Schedule what a printer's actually doing right now, log its prints on the Log tab. Use "Change Spool" when you actually swap the physical spool — it retires the old one and pulls a fresh one from Stock.</div>
+      <div class="ps-hint" style="margin-top:12px;">Mark a printer "Down" for a temporary outage — it's pulled out of the rotation and its share of the queue redistributes to the active printers, but it stays in this list and still shows up when logging prints. "Retire" is for a printer that's gone for good — it moves down to Retired Printers below, drops out of every picker (Log a Print, scheduling, pinning), and unloads whatever spool it had, but keeps its full history. To tell the Live Schedule what a printer's actually doing right now, log its prints on the Log tab. Use "Change Spool" when you actually swap the physical spool — it retires the old spool (not the printer) and pulls a fresh one from Stock.</div>
     </div>
+    ${retiredPrinters.length>0 ? `
+    <div class="ps-panel">
+      <div class="ps-panel-title" data-action="toggle-retired-printers" style="cursor:pointer;">
+        <span class="dot"></span>Retired Printers
+        <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${showRetiredPrinters?'▾':'▸'} (${retiredPrinters.length})</span>
+      </div>
+      ${showRetiredPrinters ? `
+      <div class="ps-hint" style="margin-bottom:12px;">Pulled out of the fleet — kept here for their history (lifetime hours, wattage readings, maintenance log). Past logged prints still reference them normally. Hit "Restore" to bring one back into rotation.</div>
+      <div id="ps-retired-printers-list">${retiredCards}</div>
+      ` : ''}
+    </div>
+    ` : ''}
   `;
 
   root.querySelectorAll('#ps-parts-body tr').forEach(tr => {
@@ -2977,20 +3000,50 @@ function renderPrinters(){
         renderPrinters();
       });
     }
-    card.querySelector('[data-action="toggle-status"]').addEventListener('click', () => {
-      const p = printers.find(x=>x.id===id);
-      p.status = p.status === 'active' ? 'down' : 'active';
-      savePrinters(); renderPrinters(); regenerateIfActive();
-    });
+    const toggleStatusBtn = card.querySelector('[data-action="toggle-status"]');
+    if(toggleStatusBtn){
+      toggleStatusBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        p.status = p.status === 'active' ? 'down' : 'active';
+        savePrinters(); renderPrinters(); regenerateIfActive();
+      });
+    }
     card.querySelector('[data-action="remove"]').addEventListener('click', () => {
       printers = printers.filter(x=>x.id!==id);
       savePrinters(); renderPrinters(); regenerateIfActive();
     });
-    card.querySelector('[data-action="toggle-change-spool"]').addEventListener('click', () => {
-      if(changeSpoolOpenFor.has(id)) changeSpoolOpenFor.delete(id);
-      else changeSpoolOpenFor.add(id);
-      renderPrinters();
-    });
+    const retireBtn = card.querySelector('[data-action="retire"]');
+    if(retireBtn){
+      retireBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        p.retired = true;
+        // Can't stay "loaded" on a printer that's out of the fleet — free
+        // the spool back up as a spare rather than leaving it stranded.
+        p.spoolId = null;
+        changeSpoolOpenFor.delete(id);
+        savePrinters(); renderPrinters(); renderFilament(); regenerateIfActive();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
+      });
+    }
+    const unretireBtn = card.querySelector('[data-action="unretire"]');
+    if(unretireBtn){
+      unretireBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        p.retired = false;
+        savePrinters(); renderPrinters(); regenerateIfActive();
+        if(document.getElementById('ps-tab-settings')) renderSettings();
+        if(document.getElementById('ps-tab-catalog')) renderCatalog();
+      });
+    }
+    const toggleChangeSpoolBtn = card.querySelector('[data-action="toggle-change-spool"]');
+    if(toggleChangeSpoolBtn){
+      toggleChangeSpoolBtn.addEventListener('click', () => {
+        if(changeSpoolOpenFor.has(id)) changeSpoolOpenFor.delete(id);
+        else changeSpoolOpenFor.add(id);
+        renderPrinters();
+      });
+    }
     const unloadSpoolBtn = card.querySelector('[data-action="unload-spool"]');
     if(unloadSpoolBtn){
       unloadSpoolBtn.addEventListener('click', () => {
@@ -3001,11 +3054,14 @@ function renderPrinters(){
         if(document.getElementById('ps-tab-catalog')) renderCatalog();
       });
     }
-    card.querySelector('[data-action="reset-hours"]').addEventListener('click', () => {
-      const p = printers.find(x=>x.id===id);
-      p.hoursResetAt = new Date().toISOString();
-      savePrinters(); renderPrinters();
-    });
+    const resetHoursBtn = card.querySelector('[data-action="reset-hours"]');
+    if(resetHoursBtn){
+      resetHoursBtn.addEventListener('click', () => {
+        const p = printers.find(x=>x.id===id);
+        p.hoursResetAt = new Date().toISOString();
+        savePrinters(); renderPrinters();
+      });
+    }
     card.querySelectorAll('[data-action="log-part-replacement"]').forEach(btn => {
       btn.addEventListener('click', () => {
         const partId = btn.getAttribute('data-partid');
@@ -3072,11 +3128,18 @@ function renderPrinters(){
     printers.push({
       id: newId, name: 'New printer', status:'active', spoolId:null, partInstalls: newPartInstalls,
       hoursResetAt: null, wattageW: settings.printerWattageW, wattageReadings: [],
-      model: 'New printer'
+      model: 'New printer', retired: false
     });
     editingPrinterNameId = newId;
     savePrinters(); renderPrinters(); regenerateIfActive();
   });
+  const toggleRetiredPrintersBtn = root.querySelector('[data-action="toggle-retired-printers"]');
+  if(toggleRetiredPrintersBtn){
+    toggleRetiredPrintersBtn.addEventListener('click', () => {
+      showRetiredPrinters = !showRetiredPrinters;
+      renderPrinters();
+    });
+  }
 }
 
 // ---------- rendering: Log tab ----------
@@ -3217,9 +3280,12 @@ function renderLog(){
   const root = document.getElementById('ps-tab-log');
   // Fall back to the first item only if nothing was ever selected, or the
   // previously-selected one no longer exists (deleted printer/product).
-  if(!printers.some(p=>p.id===logFormSelection.printerId)) logFormSelection.printerId = printers[0] ? printers[0].id : null;
+  if(!printers.some(p=>p.id===logFormSelection.printerId && !p.retired)){
+    const firstAvailablePrinter = printers.find(p=>!p.retired);
+    logFormSelection.printerId = firstAvailablePrinter ? firstAvailablePrinter.id : null;
+  }
   if(!catalog.some(p=>p.id===logFormSelection.productId)) logFormSelection.productId = catalog[0] ? catalog[0].id : null;
-  const printerOptions = printers.map(p => `<option value="${p.id}" ${p.id===logFormSelection.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
+  const printerOptions = printers.filter(p=>!p.retired).map(p => `<option value="${p.id}" ${p.id===logFormSelection.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
   const productOptions = catalog.map(p => `<option value="${p.id}" ${p.id===logFormSelection.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
 
   const allEntriesSorted = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
@@ -3289,7 +3355,7 @@ function renderLog(){
     }
 
     if(e.id === editingLogId){
-      const pOpts = printers.map(p => `<option value="${p.id}" ${p.id===e.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
+      const pOpts = printers.map(p => `<option value="${p.id}" ${p.id===e.printerId?'selected':''}>${escapeHtml(p.name)}${p.retired?' (retired)':(p.status==='down'?' (down)':'')}</option>`).join('');
       const dOpts = catalog.map(p => `<option value="${p.id}" ${p.id===e.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
       const testDOpts = `<option value="">— not a specific product —</option>` + catalog.map(p => `<option value="${p.id}" ${e.productId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
       const isTestEdit = !!e.isTest;
@@ -3526,7 +3592,7 @@ function renderLog(){
           <span class="ps-field-label">Printer</span>
           <select class="ps-select" id="ps-log-filter-printer">
             <option value="">All printers</option>
-            ${printers.map(p => `<option value="${p.id}" ${logHistoryPrinterId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            ${printers.map(p => `<option value="${p.id}" ${logHistoryPrinterId===p.id?'selected':''}>${escapeHtml(p.name)}${p.retired?' (retired)':''}</option>`).join('')}
           </select>
         </div>
         <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
@@ -3555,7 +3621,7 @@ function renderLog(){
           <span class="ps-field-label">Printer</span>
           <select class="ps-select" id="ps-export-printer">
             <option value="">All printers</option>
-            ${printers.map(p => `<option value="${p.id}" ${exportPrinterId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            ${printers.map(p => `<option value="${p.id}" ${exportPrinterId===p.id?'selected':''}>${escapeHtml(p.name)}${p.retired?' (retired)':''}</option>`).join('')}
           </select>
         </div>
         <div class="ps-field" style="margin-bottom:0;">
@@ -4463,7 +4529,7 @@ function renderEstimate(){
       </tr>`;
   }).join('');
 
-  const scenarioChips = Array.from({length: Math.max(printers.length,1)}, (_,i) => i+1).map(n => {
+  const scenarioChips = Array.from({length: Math.max(printers.filter(p=>!p.retired).length,1)}, (_,i) => i+1).map(n => {
     const on = estimateScenarios.includes(n);
     return `<span class="ps-daycheck ${on?'on':''}" data-n="${n}">${on?'✓':'+'} ${n} printer${n!==1?'s':''}</span>`;
   }).join('');
@@ -4492,7 +4558,7 @@ function renderEstimate(){
 
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Printer Counts to Compare</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Based on your ${printers.length} configured printer${printers.length!==1?'s':''} — check which counts you want compared.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Based on your ${printers.filter(p=>!p.retired).length} configured printer${printers.filter(p=>!p.retired).length!==1?'s':''} — check which counts you want compared.</div>
       <div class="ps-row" style="gap:8px;flex-wrap:wrap;" id="ps-scenario-chips">${scenarioChips}</div>
     </div>
 
@@ -4652,7 +4718,7 @@ function runEstimate(){
     outEl.innerHTML = `<div class="ps-empty">Add at least one product with a quantity above 0 to calculate.</div>`;
     return;
   }
-  if(estimateScenarios.filter(n => n <= Math.max(printers.length,1)).length===0){
+  if(estimateScenarios.filter(n => n <= Math.max(printers.filter(p=>!p.retired).length,1)).length===0){
     outEl.innerHTML = `<div class="ps-warnbox">Check at least one printer count to compare.</div>`;
     return;
   }
@@ -4672,7 +4738,7 @@ function runEstimate(){
   const stockOnHand = spools.reduce((s,sp)=>s+sp.remainingG, 0);
   const stockDelta = stockOnHand - totalWeight;
 
-  const scenarios = estimateScenarios.filter(n => n <= Math.max(printers.length,1)).map(n => {
+  const scenarios = estimateScenarios.filter(n => n <= Math.max(printers.filter(p=>!p.retired).length,1)).map(n => {
     const simPrinters = Array.from({length:n}, (_,i) => ({id:'sim'+i, name:'Printer '+(i+1), status:'active'}));
     const result = buildMultiSchedule(queue, simPrinters, settings, 'theoretical');
     let lastEnd = null;
@@ -6576,11 +6642,11 @@ function renderProductEditor(root){
       <button class="ps-btn" id="ps-editor-gcode-trigger">Import from G-code…</button>
       <div id="ps-editor-pending-file" style="margin-top:10px; ${p.pendingFile ? '' : 'display:none;'}">
         <div class="ps-hint" style="margin-bottom:6px;">G-code is sliced for one specific printer — file ready to attach: <b id="ps-editor-pending-filename">${p.pendingFile ? escapeHtml(p.pendingFile.name) : ''}</b></div>
-        ${window.uploadProjectFile ? (printers.length>0 ? `
+        ${window.uploadProjectFile ? (printers.filter(pr=>!pr.retired).length>0 ? `
         <div class="ps-field" style="max-width:260px;margin-bottom:0;">
           <span class="ps-field-label">Which printer is this for?</span>
           <select class="ps-select" id="ps-editor-pending-target">
-            ${printers.map(pr=>`<option value="${pr.id}">${escapeHtml(pr.name)}</option>`).join('')}
+            ${printers.filter(pr=>!pr.retired).map(pr=>`<option value="${pr.id}">${escapeHtml(pr.name)}</option>`).join('')}
           </select>
         </div>
         ` : `<div class="ps-hint">Add a printer on the Printers tab first, then come back to attach this file to it.</div>`) : `<div class="ps-hint">File attachment needs the deployed site — the numbers above are filled in now, but you'll need to attach the file itself once this is live.</div>`}
@@ -6622,7 +6688,10 @@ function renderProductEditor(root){
 }
 
 function renderProductFilesSection(p){
-  const targets = [{id:'_any', name:'Default (any printer)'}, ...printers.map(pr => ({id: pr.id, name: pr.name}))];
+  // A retired printer shouldn't be offered as a slot for a brand new file,
+  // but if one already has a file assigned from before it retired, that
+  // stays visible here rather than silently vanishing.
+  const targets = [{id:'_any', name:'Default (any printer)'}, ...printers.filter(pr => !pr.retired || (p.projectFiles && p.projectFiles[pr.id])).map(pr => ({id: pr.id, name: pr.name}))];
   const rows = targets.map(target => {
     const entry = p.projectFiles && p.projectFiles[target.id];
     let action;
@@ -6688,7 +6757,7 @@ function renderPrinterOverridesSection(p){
       </div>
     `;
   }).join('');
-  const availablePrinters = printers.filter(pr => !overrideIds.includes(pr.id));
+  const availablePrinters = printers.filter(pr => !overrideIds.includes(pr.id) && !pr.retired);
   return `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Printer-Specific Times</div>
@@ -6706,7 +6775,7 @@ function renderPrinterOverrideEditor(p){
   const overrideIds = Object.keys(p.printerOverrides||{});
   const printerId = isNewOverride ? null : editingOverrideId;
   const ov = isNewOverride ? {timeH:p.timeH, timeM:p.timeM, weightG:p.weightG} : p.printerOverrides[printerId];
-  const availablePrinters = printers.filter(pr => !overrideIds.includes(pr.id));
+  const availablePrinters = printers.filter(pr => !overrideIds.includes(pr.id) && !pr.retired);
   const printerOptions = isNewOverride
     ? availablePrinters.map(pr=>`<option value="${pr.id}">${escapeHtml(pr.name)}</option>`).join('')
     : `<option value="${printerId}">${escapeHtml((printers.find(pr=>pr.id===printerId)||{}).name || '(deleted printer)')}</option>`;
@@ -6745,7 +6814,7 @@ function renderBatchEditor(p){
   const cfg = isNewBatch ? {id:null, unitsPerBatch:2, timeH:0, timeM:0, weightG:0, projectFiles:{}} : p.batchConfigs.find(c=>c.id===editingBatchId);
   if(!cfg){ editingBatchId = null; return renderProductBatchesSection(p); }
 
-  const targets = [{id:'_any', name:'Default (any printer)'}, ...printers.map(pr => ({id: pr.id, name: pr.name}))];
+  const targets = [{id:'_any', name:'Default (any printer)'}, ...printers.filter(pr => !pr.retired || (cfg.projectFiles && cfg.projectFiles[pr.id])).map(pr => ({id: pr.id, name: pr.name}))];
   const fileRows = targets.map(target => {
     const entry = cfg.projectFiles && cfg.projectFiles[target.id];
     let action;
@@ -7196,6 +7265,7 @@ async function importAllData(jsonText){
   printers.forEach(p => { if(typeof p.wattageW !== 'number') p.wattageW = settings.printerWattageW; });
   printers.forEach(p => { if(typeof p.model !== 'string' || !p.model) p.model = p.name; });
   printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
+  printers.forEach(p => { if(typeof p.retired !== 'boolean') p.retired = false; });
   printers.forEach(p => {
     if(!p.partInstalls) p.partInstalls = {};
     partDefs.forEach(pd => {
@@ -7603,8 +7673,8 @@ function renderSchedule(){
     const printMin = p.timeH*60 + p.timeM;
     const incomplete = printMin<=0;
     const logged = loggedTodayCount(id);
-    const pinOptions = `<option value="">Any (auto)</option>` + printers.map(pr =>
-      `<option value="${pr.id}" ${entry.pin===pr.id?'selected':''}>${escapeHtml(pr.name)}${pr.status==='down'?' (down)':''}</option>`
+    const pinOptions = `<option value="">Any (auto)</option>` + printers.filter(pr => !pr.retired || entry.pin===pr.id).map(pr =>
+      `<option value="${pr.id}" ${entry.pin===pr.id?'selected':''}>${escapeHtml(pr.name)}${pr.retired?' (retired)':pr.status==='down'?' (down)':''}</option>`
     ).join('');
     const hasBatches = p.batchConfigs && p.batchConfigs.length>0;
     const selectedBatch = hasBatches ? p.batchConfigs.find(c=>c.id===entry.batchConfigId) : null;
@@ -7644,8 +7714,9 @@ function renderSchedule(){
       </tr>`;
   }).join('');
 
-  const activeCount = printers.filter(p=>p.status==='active').length;
-  const downCount = printers.length - activeCount;
+  const nonRetiredPrinters = printers.filter(p=>!p.retired);
+  const activeCount = nonRetiredPrinters.filter(p=>p.status==='active').length;
+  const downCount = nonRetiredPrinters.length - activeCount;
 
   root.innerHTML = `
     <div class="ps-panel">
@@ -7783,7 +7854,7 @@ function onGenerate(){
     return;
   }
 
-  const activePrinters = printers.filter(p=>p.status==='active');
+  const activePrinters = printers.filter(p=>p.status==='active' && !p.retired);
   if(activePrinters.length===0){
     outputEl.innerHTML = `<div class="ps-warnbox">No active printers. Mark at least one printer as Active on the Printers tab.</div>`;
     liveSchedule = null;
