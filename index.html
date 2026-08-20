@@ -3021,9 +3021,11 @@ function renderPrinters(){
         // the spool back up as a spare rather than leaving it stranded.
         p.spoolId = null;
         changeSpoolOpenFor.delete(id);
-        savePrinters(); renderPrinters(); renderFilament(); regenerateIfActive();
+        // regenerateIfActive() already re-renders Printers, Filament, and
+        // Catalog (among everything else) — calling them again here just
+        // doubles that work synchronously before the browser can paint.
+        savePrinters(); regenerateIfActive();
         if(document.getElementById('ps-tab-settings')) renderSettings();
-        if(document.getElementById('ps-tab-catalog')) renderCatalog();
       });
     }
     const unretireBtn = card.querySelector('[data-action="unretire"]');
@@ -3031,9 +3033,8 @@ function renderPrinters(){
       unretireBtn.addEventListener('click', () => {
         const p = printers.find(x=>x.id===id);
         p.retired = false;
-        savePrinters(); renderPrinters(); regenerateIfActive();
+        savePrinters(); regenerateIfActive();
         if(document.getElementById('ps-tab-settings')) renderSettings();
-        if(document.getElementById('ps-tab-catalog')) renderCatalog();
       });
     }
     const toggleChangeSpoolBtn = card.querySelector('[data-action="toggle-change-spool"]');
