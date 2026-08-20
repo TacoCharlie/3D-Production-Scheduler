@@ -4721,28 +4721,67 @@ function renderFilament(){
   const root = document.getElementById('ps-tab-filament');
 
   // ---- Stock (unopened inventory) ----
+  // Everything already typed in for an existing row, offered back so a
+  // reorder of the same material never means retyping it (or, worse,
+  // eyeballing a new hex because the exact one used last time is forgotten
+  // — see the Reorder button below, which sidesteps this entirely by
+  // copying a row outright).
+  const distinctLabels = [...new Set(stock.map(s=>s.label).filter(Boolean))];
+  const distinctManufacturers = [...new Set(stock.map(s=>s.manufacturer).filter(Boolean))];
+  const distinctMaterials = [...new Set(stock.map(s=>s.material).filter(Boolean))];
+  const distinctColors = [];
+  stock.forEach(s => {
+    if(s.colorHex && !distinctColors.some(c=>c.hex===s.colorHex)) distinctColors.push({hex: s.colorHex, label: s.label});
+  });
+
   const stockRows = stock.map(st => {
     const isEditing = editingStockId === st.id;
     if(isEditing){
       return `
       <tr data-id="${st.id}" data-editing="1">
-        <td></td>
-        <td><input class="ps-input ps-name" data-field="label" value="${escapeHtml(st.label)}" placeholder="e.g. PCTG Pro — Natural" /></td>
-        <td><input class="ps-input" style="max-width:110px" data-field="manufacturer" value="${escapeHtml(st.manufacturer||'')}" placeholder="Manufacturer" /></td>
-        <td><input class="ps-input" data-field="material" value="${escapeHtml(st.material)}" placeholder="Material" /></td>
-        <td><input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" /></td>
-        <td><input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" /></td>
-        <td><input class="ps-input ps-narrow" type="number" min="0" step="0.01" data-field="costPerSpool" value="${st.costPerSpool}" style="width:80px;" placeholder="$" /></td>
-        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" /></td>
-        <td><input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" /></td>
-        <td class="ps-hint mono">${st.lastOrderedAt ? new Date(st.lastOrderedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
-        <td class="ps-hint mono">${st.lastReceivedAt ? new Date(st.lastReceivedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
-        <td class="ps-hint mono">${st.lastCompletedAt ? new Date(st.lastCompletedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : '—'}</td>
-        <td></td>
-        <td>
-          <div class="ps-row" style="gap:6px;">
-            <button class="ps-btn primary small" data-action="save-stock">Save</button>
-            <button class="ps-btn ghost small" data-action="cancel-stock-edit">Cancel</button>
+        <td colspan="14" style="background:var(--panel-2);">
+          <div class="ps-row" style="gap:10px;align-items:flex-end;flex-wrap:wrap;padding:10px 0;">
+            <div class="ps-field" style="margin-bottom:0;flex:1;min-width:180px;">
+              <span class="ps-field-label">Label</span>
+              <input class="ps-input ps-name" data-field="label" list="ps-stock-label-list" value="${escapeHtml(st.label)}" placeholder="e.g. PCTG Pro — Natural" />
+            </div>
+            <div class="ps-field" style="margin-bottom:0;min-width:140px;">
+              <span class="ps-field-label">Manufacturer</span>
+              <input class="ps-input" data-field="manufacturer" list="ps-stock-manufacturer-list" value="${escapeHtml(st.manufacturer||'')}" placeholder="Manufacturer" />
+            </div>
+            <div class="ps-field" style="margin-bottom:0;min-width:120px;">
+              <span class="ps-field-label">Material</span>
+              <input class="ps-input" data-field="material" list="ps-stock-material-list" value="${escapeHtml(st.material)}" placeholder="Material" />
+            </div>
+            <div class="ps-field" style="margin-bottom:0;">
+              <span class="ps-field-label">Color</span>
+              <div class="ps-row" style="gap:6px;align-items:center;">
+                <input class="ps-input" type="color" style="max-width:44px;padding:2px;" data-field="colorHex" value="${st.colorHex||'#cccccc'}" />
+                ${distinctColors.length>0 ? `<div class="ps-row" style="gap:4px;flex-wrap:wrap;max-width:160px;">
+                  ${distinctColors.map(c => `<span class="ps-spool-swatch" style="background:${escapeHtml(c.hex)};cursor:pointer;" data-action="pick-stock-color" data-hex="${escapeHtml(c.hex)}" title="${escapeHtml(c.label)} (${escapeHtml(c.hex)})"></span>`).join('')}
+                </div>` : ''}
+              </div>
+            </div>
+            <div class="ps-field" style="margin-bottom:0;">
+              <span class="ps-field-label">g/spool</span>
+              <input class="ps-input ps-narrow" type="number" min="1" data-field="weightPerSpoolG" value="${st.weightPerSpoolG}" style="width:80px;" />
+            </div>
+            <div class="ps-field" style="margin-bottom:0;">
+              <span class="ps-field-label">Cost/spool</span>
+              <input class="ps-input ps-narrow" type="number" min="0" step="0.01" data-field="costPerSpool" value="${st.costPerSpool}" style="width:80px;" placeholder="$" />
+            </div>
+            <div class="ps-field" style="margin-bottom:0;">
+              <span class="ps-field-label">In Stock</span>
+              <input class="ps-input ps-narrow" type="number" min="0" data-field="qty" value="${st.qty}" style="width:70px;" />
+            </div>
+            <div class="ps-field" style="margin-bottom:0;">
+              <span class="ps-field-label">On Order</span>
+              <input class="ps-input ps-narrow" type="number" min="0" data-field="qtyOnOrder" value="${st.qtyOnOrder}" style="width:70px;" />
+            </div>
+            <div class="ps-row" style="gap:6px;margin-bottom:0;">
+              <button class="ps-btn primary small" data-action="save-stock">Save</button>
+              <button class="ps-btn ghost small" data-action="cancel-stock-edit">Cancel</button>
+            </div>
           </div>
         </td>
       </tr>`;
@@ -4767,6 +4806,7 @@ function renderFilament(){
       <td>${st.qtyOnOrder>0 ? `<button class="ps-btn small" data-action="receive-stock">Receive</button>` : ''}</td>
       <td>
         <div class="ps-row" style="gap:6px;">
+          <button class="ps-btn ghost small" data-action="reorder-stock" title="Add a new stock row pre-filled with this same material — for placing another order of it">Reorder</button>
           <button class="ps-btn ghost small" data-action="edit-stock">Edit</button>
           <button class="ps-btn ghost small" data-action="remove-stock">✕</button>
         </div>
@@ -4789,6 +4829,12 @@ function renderFilament(){
     ` : ''}
   `;
   }).join('');
+
+  const stockDatalists = `
+    <datalist id="ps-stock-label-list">${distinctLabels.map(v=>`<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>
+    <datalist id="ps-stock-manufacturer-list">${distinctManufacturers.map(v=>`<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>
+    <datalist id="ps-stock-material-list">${distinctMaterials.map(v=>`<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>
+  `;
 
   // ---- Active spools (opened, in use or spare) ----
   const activeSpools = spools.filter(s => !s.retired);
@@ -5018,10 +5064,11 @@ function renderFilament(){
     ${reorderWidget}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Stock — Unopened Inventory</div>
+      ${stockDatalists}
       ${stock.length===0 ? '<div class="ps-empty">Nothing in stock yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th></th><th style="min-width:180px;">Label</th><th>Manufacturer</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:90px">Cost/spool</th><th style="width:70px">In Stock</th><th style="width:70px">On Order</th><th style="width:100px">Purchased</th><th style="width:100px">Received</th><th style="width:100px">Completed</th><th style="width:80px"></th><th></th></tr></thead>
+        <thead><tr><th></th><th style="min-width:180px;">Label</th><th>Manufacturer</th><th>Material</th><th>Color</th><th style="width:90px">g/spool</th><th style="width:90px">Cost/spool</th><th style="width:70px">In Stock</th><th style="width:120px">On Order</th><th style="width:100px">Purchased</th><th style="width:100px">Received</th><th style="width:100px">Completed</th><th style="width:80px"></th><th style="width:190px"></th></tr></thead>
         <tbody id="ps-stock-body">${stockRows}</tbody>
       </table>
       </div>
@@ -5140,6 +5187,33 @@ function renderFilament(){
         saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
       });
     }
+    const reorderBtn = tr.querySelector('[data-action="reorder-stock"]');
+    if(reorderBtn){
+      reorderBtn.addEventListener('click', () => {
+        const src = stock.find(x=>x.id===id);
+        if(!src) return;
+        // Same material, a fresh order lifecycle — label/manufacturer/
+        // material/color/weight/cost carry over exactly (no retyping, no
+        // re-guessing the hex), but qty/on-order/dates start clean since
+        // this is a new stock row with its own Purchased/Received/
+        // Completed history from here.
+        const newStock = {
+          id: uid('stock'), label: src.label, manufacturer: src.manufacturer,
+          material: src.material, colorHex: src.colorHex,
+          weightPerSpoolG: src.weightPerSpoolG, costPerSpool: src.costPerSpool,
+          qty: 0, qtyOnOrder: 0, orderedAt: null
+        };
+        stock.push(newStock);
+        editingStockId = newStock.id;
+        saveStock(); renderFilament(); if(document.getElementById('ps-tab-printers')) renderPrinters();
+      });
+    }
+    tr.querySelectorAll('[data-action="pick-stock-color"]').forEach(swatch => {
+      swatch.addEventListener('click', () => {
+        const colorInput = tr.querySelector('[data-field="colorHex"]');
+        if(colorInput) colorInput.value = swatch.getAttribute('data-hex');
+      });
+    });
   });
   root.querySelectorAll('[data-action="confirm-receive"]').forEach(btn => {
     btn.addEventListener('click', () => {
