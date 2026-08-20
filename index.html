@@ -5052,7 +5052,11 @@ function renderFilament(){
 
   const demandG = computeFilamentDemandG();
   const onHandG = computeFilamentOnHandG();
-  const shortG = Math.max(0, demandG - onHandG);
+  // Filament already on order counts toward covering what's queued — if
+  // you've ordered enough to close the gap, don't keep telling you to order
+  // more. If what's on order still isn't enough, the shortfall below
+  // reflects the remaining gap, not the pre-order one.
+  const shortG = Math.max(0, demandG - onHandG - totalOnOrderG);
   // Not every spool is necessarily the same rated weight, but in practice
   // they all are — use whatever's actually on record as the reference
   // rather than hardcoding a number, so this stays correct if that changes.
@@ -5074,11 +5078,12 @@ function renderFilament(){
     ${runwayWidget}
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Reorder Planning</div>
-      <div class="ps-summary-grid" style="grid-template-columns:repeat(2,1fr);margin-bottom:${shortG>0?'12px':'0'};">
+      <div class="ps-summary-grid" style="grid-template-columns:repeat(${totalOnOrderG>0?3:2},1fr);margin-bottom:${shortG>0?'12px':'0'};">
         <div class="ps-summary-cell"><div class="ps-summary-num">${(onHandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools on hand right now</div></div>
+        ${totalOnOrderG>0 ? `<div class="ps-summary-cell"><div class="ps-summary-num">${(totalOnOrderG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools already on order</div></div>` : ''}
         <div class="ps-summary-cell"><div class="ps-summary-num">${(demandG/refSpoolG).toFixed(1)}</div><div class="ps-summary-label">Spools needed for active + queued jobs</div></div>
       </div>
-      ${shortG>0 ? `<div class="ps-warnbox">Short by ~${(shortG/refSpoolG).toFixed(1)} spool${(shortG/refSpoolG)!==1?'s':''} for what's already queued — worth ordering now.</div>` : ''}
+      ${shortG>0 ? `<div class="ps-warnbox">Short by ~${(shortG/refSpoolG).toFixed(1)} spool${(shortG/refSpoolG)!==1?'s':''} for what's already queued${totalOnOrderG>0?', even counting what\'s on order':''} — worth ordering ${totalOnOrderG>0?'more':'now'}.</div>` : ''}
       <div style="margin-top:16px;">
         <div class="ps-panel-title" style="font-size:12px;margin-bottom:10px;"><span class="dot"></span>Where it's located</div>
         ${(() => {
