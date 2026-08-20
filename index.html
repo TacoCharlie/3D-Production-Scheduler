@@ -4222,7 +4222,10 @@ function renderLog(){
     // above), but still draw down the spool like any real print would.
     syncConsumption();
     logStartManualValue = null; // next entry starts fresh, live-tracking "now" again
-    renderLog(); regenerateIfActive();
+    // regenerateIfActive() re-renders the Log tab itself (editingLogId is
+    // null here) along with everything else — a direct renderLog() call
+    // first just doubles that work synchronously before the browser paints.
+    regenerateIfActive();
   });
   const dismissFilamentWarning = document.getElementById('ps-log-filament-dismiss');
   if(dismissFilamentWarning){
@@ -4381,7 +4384,7 @@ function renderLog(){
         creditJobIfDue(e);
         editingLogId = null;
         syncConsumption();
-        renderLog(); regenerateIfActive();
+        regenerateIfActive();
       });
       row.querySelector('[data-action="cancel"]').addEventListener('click', () => {
         editingLogId = null;
@@ -4396,7 +4399,7 @@ function renderLog(){
         const e = productionLog.find(x=>x.id===id);
         e.actualEnd = new Date().toISOString();
         creditJobIfDue(e);
-        saveLog(); renderLog(); regenerateIfActive();
+        saveLog(); regenerateIfActive();
       });
     }
     const failBtn = row.querySelector('[data-action="fail"]');
@@ -4424,7 +4427,7 @@ function renderLog(){
         const note = noteInput ? noteInput.value.trim() : '';
         splitBatchOutcome(id, failCount, failWeightG, note);
         splittingLogId = null;
-        renderLog(); regenerateIfActive();
+        regenerateIfActive();
       });
     }
     const cancelSplitBtn = row.querySelector('[data-action="cancel-split"]');
@@ -4450,7 +4453,7 @@ function renderLog(){
         const note = noteInput ? noteInput.value.trim() : '';
         markFailed(id, actualWeightG, note);
         failingLogId = null;
-        renderLog(); regenerateIfActive();
+        regenerateIfActive();
       });
     }
     const cancelFailBtn = row.querySelector('[data-action="cancel-fail"]');
@@ -4464,7 +4467,7 @@ function renderLog(){
     if(unfailBtn){
       unfailBtn.addEventListener('click', () => {
         unmarkFailed(id);
-        renderLog(); regenerateIfActive();
+        regenerateIfActive();
       });
     }
     const editBtn = row.querySelector('[data-action="edit"]');
@@ -4496,7 +4499,7 @@ function renderLog(){
         if(removed && removed.jobCounted){
           applyJobCredit(removed, -(removed.jobCreditGiven!=null ? removed.jobCreditGiven : (removed.unitsCompleted||1)));
         }
-        saveLog(); renderLog(); regenerateIfActive();
+        saveLog(); regenerateIfActive();
       });
     }
   });
