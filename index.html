@@ -4010,7 +4010,14 @@ function renderLog(){
         return;
       }
     }
-    if(printerIdCheck && !busyWarningConfirmed){
+    // Only a real conflict if the entry being submitted right now will
+    // ITSELF be left open (no finish time) — a retroactive entry that
+    // already has both a start and finish can never coexist as "active"
+    // with anything, so warning about "two active prints at once" here
+    // was a false alarm that could talk someone out of logging a real,
+    // already-finished print.
+    const thisEntryWillBeOpen = !document.getElementById('ps-log-end').value;
+    if(printerIdCheck && !busyWarningConfirmed && thisEntryWillBeOpen){
       const alreadyActive = productionLog.find(e => e.printerId===printerIdCheck && !e.actualEnd && !e.failed);
       if(alreadyActive){
         const activeProduct = catalog.find(p=>p.id===alreadyActive.productId);
