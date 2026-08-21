@@ -530,6 +530,7 @@ function mergeById(latestArr, snapshotArr, localArr){
 let productionLogSyncSnapshot = [];
 let spoolsSyncSnapshot = [];
 let printersSyncSnapshot = [];
+let jobsSyncSnapshot = [];
 function todayISO(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
 async function loadState(){
@@ -716,9 +717,38 @@ async function loadState(){
   try { const jb = await window.storage.get('jobs'); jobs = jb ? JSON.parse(jb.value) : []; }
   catch(e){ jobs = []; }
   jobs.forEach(j => { if(typeof j.manualDone !== 'number') j.manualDone = 0; });
+  jobsSyncSnapshot = JSON.parse(JSON.stringify(jobs));
 }
 
-async function saveJobs(){ try { await window.storage.set('jobs', JSON.stringify(jobs)); flashSave(); } catch(e){ console.error(e); } }
+// Job credit (applyJobCredit) fires from several close-together actions —
+// finishing one print then immediately finishing the next, especially two
+// prints tied to the same job — and each one calls saveJobs(). This used
+// to be a bare, unqueued write: two overlapping calls could have their
+// underlying network requests land out of order, and whichever one
+// finished LAST simply overwrote the other, silently discarding a more
+// recent credit even though it had already applied correctly in memory —
+// exactly the same race that printers/spools/productionLog were fixed for
+// (see the comment above savePrinters). Jobs never got the same fix. Same
+// serialize-then-merge treatment here closes that gap.
+let jobsSaveQueue = Promise.resolve();
+async function saveJobs(){
+  jobsSaveQueue = jobsSaveQueue.then(doSaveJobs).catch(e => console.error(e));
+  return jobsSaveQueue;
+}
+async function doSaveJobs(){
+  try {
+    let latest;
+    try { const stored = await window.storage.get('jobs'); latest = stored ? JSON.parse(stored.value) : []; }
+    catch(e){ latest = []; }
+    const reconciledLatest = mergeById(latest, [], jobsSyncSnapshot);
+    const merged = mergeById(reconciledLatest, jobsSyncSnapshot, jobs);
+    await window.storage.set('jobs', JSON.stringify(merged));
+    jobs = merged;
+    jobsSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    flashSave();
+    if(document.getElementById('ps-tab-jobs')) renderJobs();
+  } catch(e){ console.error(e); }
+}
 
 async function saveEstimateItems(){ try { await window.storage.set('estimateItems', JSON.stringify(estimateItems)); flashSave(); } catch(e){ console.error(e); } }
 async function saveEstimateScenarios(){ try { await window.storage.set('estimateScenarios', JSON.stringify(estimateScenarios)); flashSave(); } catch(e){ console.error(e); } }
