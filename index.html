@@ -525,7 +525,19 @@ function mergeById(latestArr, snapshotArr, localArr){
     const snapEntry = snapshotById.get(id);
     if(!snapEntry || JSON.stringify(snapEntry) !== JSON.stringify(entry)) latestById.set(id, entry);
   });
-  return Array.from(latestById.values());
+  // Array ORDER matters for anything the person can manually drag to
+  // reorder (jobs, in particular) — but a pure reorder changes no field on
+  // any entry, so the value-diff above never notices it as a "change". Left
+  // as plain Map insertion order (which follows latestArr, i.e. whatever
+  // the server happened to have), a save that lands mid-drag would silently
+  // snap a just-reordered list back to the server's stale order the moment
+  // it resolves. This session's own array always reflects its full,
+  // intended order for everything it knows about, so that order wins here;
+  // only entries genuinely new on the server (never seen locally at all)
+  // fall back to the server's relative order, appended at the end.
+  const localOrder = localArr.map(e => e.id).filter(id => latestById.has(id));
+  const remoteOnlyOrder = Array.from(latestById.keys()).filter(id => !localById.has(id));
+  return [...localOrder, ...remoteOnlyOrder].map(id => latestById.get(id));
 }
 let productionLogSyncSnapshot = [];
 let spoolsSyncSnapshot = [];
