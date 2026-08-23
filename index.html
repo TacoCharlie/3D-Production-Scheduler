@@ -497,7 +497,7 @@ let stock = null; // unopened inventory: [{id, label, material, manufacturer, co
 let filamentOrderHistory = null; // completed order cycles: [{manufacturer, material, orderedAt, receivedAt, qty, leadTimeDays}] — used to compute average lead time per manufacturer+material
 let stockChangeLog = null; // audit trail for every change to a stock row's "In Stock" qty: [{id, stockId, label, delta, reason, at, resultingQty}] — so a shelf-count mismatch is traceable instead of a mystery
 let spoolChangeLog = null; // audit trail for every change to a spool's remaining grams — same idea, so an unexplained gram gap is traceable instead of a mystery
-let partDefs = null; // maintenance part types: [{id, name, replacementLog:[{printerId,at,hoursElapsed}]}] — hoursElapsed per entry is a real logged interval, confirmed/edited by the person at log time, never auto-guessed
+let partDefs = null; // maintenance part types: [{id, name, replacementLog:[{printerId,at,hoursElapsed}]}] — hoursElapsed per entry is computed automatically when "Log Replacement" is clicked (printer hours since the part was installed), and can be corrected afterward via the history list's Edit/Delete
 let orderQty = {};
 let priorityOrder = [];
 let productionLog = [];
@@ -2451,7 +2451,6 @@ let wattageBulkImportOpenFor = new Set(); // session-only: which printer cards s
 let bulkImportResultMsg = {}; // printerId -> last import result message (survives the re-render the import itself triggers)
 let filamentDetailsOpenFor = new Set(); // session-only: which printer cards show expanded spool detail (toggled by clicking the Filament section header)
 let editingPartDefId = null; // which maintenance part row is in edit mode
-let loggingReplacementFor = null; // `${printerId}|${partDefId}` when that printer's "log a replacement" confirm form is open
 let partHistoryOpenFor = new Set(); // which part def ids show their expanded replacement-history list in the top Maintenance Parts table
 let editingPartHistoryEntryId = null; // which single replacement-history entry (by id) is being edited inline
 
@@ -2794,28 +2793,14 @@ function renderPrinters(){
             const checkAfter = install ? (install.checkAfterHours||0) : 0;
             const pct = checkAfter>0 ? Math.min(100, (hoursOn/checkAfter)*100) : 0;
             const due = checkAfter>0 && hoursOn >= checkAfter;
-            const isLogging = loggingReplacementFor === `${p.id}|${pd.id}`;
-            if(isLogging){
-              const avgInterval = partAvgInterval(pd);
-              const checkAfterDefault = avgInterval || checkAfter || '';
-              return `
-                <div style="margin-bottom:10px;">
-                  <div class="ps-hint" style="margin-bottom:6px;">${escapeHtml(pd.name)} — logging this records how long the old part lasted automatically. Optionally set when to check the new one again (defaults to the average below if left as-is):</div>
-                  <div class="ps-row" style="gap:12px;flex-wrap:wrap;">
-                    <label class="ps-hint">Check again after <input type="number" min="0" step="1" class="ps-input ps-narrow" data-log-check-after value="${checkAfterDefault!==''?Math.round(checkAfterDefault):''}" style="width:85px;" /> h</label>
-                  </div>
-                  <div class="ps-row" style="gap:6px;margin-top:8px;">
-                    <button class="ps-btn primary small" data-action="confirm-log-replacement" data-partid="${pd.id}">Log</button>
-                    <button class="ps-btn ghost small" data-action="cancel-log-replacement">Cancel</button>
-                  </div>
-                </div>
-              `;
-            }
             return `
               <div style="margin-bottom:10px;">
-                <div class="ps-row" style="justify-content:space-between;">
+                <div class="ps-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
                   <span class="ps-hint">${escapeHtml(pd.name)} — <b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}</span>
-                  ${!p.retired ? `<button class="ps-btn ghost small" data-action="log-part-replacement" data-partid="${pd.id}">Log Replacement</button>` : ''}
+                  <div class="ps-row" style="gap:8px;align-items:center;flex-wrap:wrap;">
+                    <label class="ps-hint">Check again after <input type="number" min="0" step="1" class="ps-input ps-narrow" data-action="set-check-after" data-partid="${pd.id}" value="${checkAfter>0?Math.round(checkAfter):''}" style="width:70px;" /> h</label>
+                    ${!p.retired ? `<button class="ps-btn ghost small" data-action="log-part-replacement" data-partid="${pd.id}">Log Replacement</button>` : ''}
+                  </div>
                 </div>
                 ${checkAfter>0 ? `<div class="ps-hprogress-track" style="height:6px;margin:4px 0 0;"><div class="ps-hprogress-fill ${due?'overdue':''}" style="width:${pct}%;"></div></div>` : ''}
               </div>
@@ -2833,7 +2818,7 @@ function renderPrinters(){
   const partDefRows = partDefs.map(pd => {
     const avgInterval = partAvgInterval(pd);
     const historyOpen = partHistoryOpenFor.has(pd.id);
-    const historyToggle = `<span data-action="toggle-part-history" data-partid="${pd.id}" style="cursor:pointer;">${historyOpen?'▾':'▸'} ${pd.replacementLog.length} logged</span>`;
+    const historyToggle = `<button type="button" class="ps-btn ghost small" data-action="toggle-part-history" data-partid="${pd.id}" style="padding:2px 8px;">${historyOpen?'▾':'▸'} ${pd.replacementLog.length} logged</button>`;
     const historyRows = historyOpen ? `
       <tr data-history-for="${pd.id}"><td colspan="4" style="padding-top:0;">
         ${pd.replacementLog.length===0 ? '<div class="ps-hint" style="padding:6px 0;">No replacements logged yet.</div>' : pd.replacementLog.map(entry => {
@@ -3284,26 +3269,23 @@ function renderPrinters(){
     }
     card.querySelectorAll('[data-action="log-part-replacement"]').forEach(btn => {
       btn.addEventListener('click', () => {
+        // True one-click log: hours-elapsed for the old part and the
+        // check-again default are both computed automatically inside
+        // logPartReplacement (null => fall back to the average interval).
+        // No confirm step, no form -- clicking this button is the entire action.
         const partId = btn.getAttribute('data-partid');
-        loggingReplacementFor = `${id}|${partId}`;
+        logPartReplacement(id, partId, null);
         renderPrinters();
       });
     });
-    card.querySelectorAll('[data-action="confirm-log-replacement"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const partId = btn.getAttribute('data-partid');
-        const checkAfterInput = card.querySelector('[data-log-check-after]');
-        // Blank means "just use the average" -- logPartReplacement falls
-        // back to that itself when passed null, rather than forcing 0.
-        const checkAfter = checkAfterInput.value==='' ? null : Math.max(0, parseFloat(checkAfterInput.value)||0);
-        logPartReplacement(id, partId, checkAfter);
-        loggingReplacementFor = null;
-        renderPrinters();
-      });
-    });
-    card.querySelectorAll('[data-action="cancel-log-replacement"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        loggingReplacementFor = null;
+    card.querySelectorAll('[data-action="set-check-after"]').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const partId = inp.getAttribute('data-partid');
+        const p = printers.find(x=>x.id===id);
+        if(!p || !p.partInstalls[partId]) return;
+        const val = inp.value==='' ? 0 : Math.max(0, parseFloat(inp.value)||0);
+        p.partInstalls[partId].checkAfterHours = val;
+        savePrinters();
         renderPrinters();
       });
     });
