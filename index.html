@@ -662,14 +662,11 @@ async function loadState(){
   catch(e){ partDefs = []; }
   partDefs.forEach(pd => { if(!Array.isArray(pd.replacementLog)) pd.replacementLog = []; });
   partDefs.forEach(pd => { pd.replacementLog.forEach(r => { if(!r.id) r.id = uid('replog'); }); });
-  // Every printer gets an install-time entry for every part definition so
-  // its hours-since-install clock has somewhere to start counting from.
-  printers.forEach(p => {
-    if(!p.partInstalls) p.partInstalls = {};
-    partDefs.forEach(pd => {
-      if(!p.partInstalls[pd.id]) p.partInstalls[pd.id] = {installedAt: new Date().toISOString(), notified: false};
-    });
-  });
+  // A part is only ever "installed" on a printer once the person has
+  // actually logged a replacement for it there -- adding a part type to
+  // the catalog does NOT automatically start a clock on every printer.
+  printers.forEach(p => { if(!p.partInstalls) p.partInstalls = {}; });
+  pruneUntrackedPartInstalls();
 
   try {
     const o = await window.storage.get('lastOrder');
@@ -1906,13 +1903,33 @@ function suggestedOldPartHours(printer, partDefId){
 function logPartReplacement(printerId, partDefId, checkAfterHours){
   const partDef = partDefs.find(pd => pd.id === partDefId);
   const printer = printers.find(p => p.id === printerId);
-  if(!partDef || !printer || !printer.partInstalls[partDefId]) return;
+  if(!partDef || !printer) return;
   const hoursElapsed = suggestedOldPartHours(printer, partDefId);
+  // No pre-existing install record required -- this can be the very first
+  // time this part is ever tracked on this printer at all. That's the
+  // point: nothing is "installed" until it's actually logged.
   const install = printer.partInstalls[partDefId];
-  const fallbackCheckAfter = partAvgInterval(partDef) || install.checkAfterHours || 0;
+  const fallbackCheckAfter = partAvgInterval(partDef) || (install ? install.checkAfterHours : 0) || 0;
   partDef.replacementLog.push({id: uid('replog'), printerId, at: new Date().toISOString(), hoursElapsed: Math.max(0, hoursElapsed||0)});
   printer.partInstalls[partDefId] = {installedAt: new Date().toISOString(), notified: false, checkAfterHours: Math.max(0, checkAfterHours!=null ? checkAfterHours : fallbackCheckAfter)};
   savePartDefs(); savePrinters();
+}
+// Drops any partInstalls entry that was never actually logged as a real
+// replacement on that printer. These are phantom entries -- either leftover
+// from the old (unwanted) behavior of auto-associating every part with
+// every printer the moment it was added to the catalog, or an orphaned
+// reference to a part type that no longer exists. Called after loading or
+// importing data so old saved state converts to the new "not tracked until
+// logged" model automatically, with nothing for the person to clean up.
+function pruneUntrackedPartInstalls(){
+  printers.forEach(p => {
+    if(!p.partInstalls) { p.partInstalls = {}; return; }
+    Object.keys(p.partInstalls).forEach(partId => {
+      const partDef = partDefs.find(pd => pd.id === partId);
+      const everLogged = partDef && partDef.replacementLog.some(r => r.printerId === p.id);
+      if(!everLogged) delete p.partInstalls[partId];
+    });
+  });
 }
 
 // Edits or removes a single logged replacement-history entry (fixing a
@@ -2788,21 +2805,27 @@ function renderPrinters(){
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);">
           <div class="ps-status-label" style="margin-bottom:8px;">MAINTENANCE PARTS</div>
           ${partDefs.map(pd => {
+            // No install record means this part has never actually been
+            // logged on this printer -- it isn't "installed" just because
+            // the part type exists in the catalog, so no fake clock runs.
             const install = p.partInstalls[pd.id];
-            const hoursOn = partHoursOn(p, pd.id);
+            const hoursOn = install ? partHoursOn(p, pd.id) : 0;
             const checkAfter = install ? (install.checkAfterHours||0) : 0;
             const pct = checkAfter>0 ? Math.min(100, (hoursOn/checkAfter)*100) : 0;
             const due = checkAfter>0 && hoursOn >= checkAfter;
+            const statusText = !install
+              ? `<span class="ps-hint">not tracked on this printer yet</span>`
+              : `<b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}`;
             return `
               <div style="margin-bottom:10px;">
                 <div class="ps-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                  <span class="ps-hint">${escapeHtml(pd.name)} — <b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}</span>
+                  <span class="ps-hint">${escapeHtml(pd.name)} — ${statusText}</span>
                   <div class="ps-row" style="gap:8px;align-items:center;flex-wrap:wrap;">
                     <label class="ps-hint">Check again after <input type="number" min="0" step="1" class="ps-input ps-narrow" data-action="set-check-after" data-partid="${pd.id}" value="${checkAfter>0?Math.round(checkAfter):''}" style="width:70px;" /> h</label>
                     ${!p.retired ? `<button class="ps-btn ghost small" data-action="log-part-replacement" data-partid="${pd.id}">Log Replacement</button>` : ''}
                   </div>
                 </div>
-                ${checkAfter>0 ? `<div class="ps-hprogress-track" style="height:6px;margin:4px 0 0;"><div class="ps-hprogress-fill ${due?'overdue':''}" style="width:${pct}%;"></div></div>` : ''}
+                ${install && checkAfter>0 ? `<div class="ps-hprogress-track" style="height:6px;margin:4px 0 0;"><div class="ps-hprogress-fill ${due?'overdue':''}" style="width:${pct}%;"></div></div>` : ''}
               </div>
             `;
           }).join('')}
@@ -2996,9 +3019,10 @@ function renderPrinters(){
   document.getElementById('ps-add-part').addEventListener('click', () => {
     const newId = uid('part');
     partDefs.push({id:newId, name:'New part', replacementLog:[]});
-    printers.forEach(p => { p.partInstalls[newId] = {installedAt: new Date().toISOString(), notified:false, checkAfterHours:0}; });
+    // Deliberately NOT auto-associating this with every printer -- a part
+    // only starts being tracked on a printer once it's actually logged there.
     editingPartDefId = newId;
-    savePartDefs(); savePrinters(); renderPrinters();
+    savePartDefs(); renderPrinters();
   });
 
   root.querySelectorAll('.ps-printer-card').forEach(card => {
@@ -3269,12 +3293,17 @@ function renderPrinters(){
     }
     card.querySelectorAll('[data-action="log-part-replacement"]').forEach(btn => {
       btn.addEventListener('click', () => {
-        // True one-click log: hours-elapsed for the old part and the
-        // check-again default are both computed automatically inside
-        // logPartReplacement (null => fall back to the average interval).
-        // No confirm step, no form -- clicking this button is the entire action.
+        // True one-click log: hours-elapsed for the old part is computed
+        // automatically inside logPartReplacement. If the person already
+        // typed a number into the "check again after" box for this part
+        // (whether or not it was saved yet), that value is used as-is --
+        // clicking Log must never silently discard what's sitting in the
+        // box and fall back to the average instead. Only truly blank falls
+        // back to the average.
         const partId = btn.getAttribute('data-partid');
-        logPartReplacement(id, partId, null);
+        const checkAfterInput = card.querySelector(`[data-action="set-check-after"][data-partid="${partId}"]`);
+        const checkAfter = (checkAfterInput && checkAfterInput.value !== '') ? Math.max(0, parseFloat(checkAfterInput.value)||0) : null;
+        logPartReplacement(id, partId, checkAfter);
         renderPrinters();
       });
     });
@@ -3282,6 +3311,9 @@ function renderPrinters(){
       inp.addEventListener('change', () => {
         const partId = inp.getAttribute('data-partid');
         const p = printers.find(x=>x.id===id);
+        // Not tracked yet -- nothing to attach this to until it's actually
+        // logged (see the log-part-replacement handler above, which reads
+        // this same box at log time).
         if(!p || !p.partInstalls[partId]) return;
         const val = inp.value==='' ? 0 : Math.max(0, parseFloat(inp.value)||0);
         p.partInstalls[partId].checkAfterHours = val;
@@ -3342,11 +3374,11 @@ function renderPrinters(){
   });
 
   document.getElementById('ps-add-printer').addEventListener('click', () => {
-    const newPartInstalls = {};
-    partDefs.forEach(pd => { newPartInstalls[pd.id] = {installedAt: new Date().toISOString(), notified:false}; });
+    // Starts with no parts tracked -- same as any other printer, nothing
+    // is "installed" until it's actually logged.
     const newId = uid('printer');
     printers.push({
-      id: newId, name: 'New printer', status:'active', spoolId:null, partInstalls: newPartInstalls,
+      id: newId, name: 'New printer', status:'active', spoolId:null, partInstalls: {},
       hoursResetAt: null, wattageW: settings.printerWattageW, wattageReadings: [],
       model: 'New printer', retired: false
     });
@@ -7508,12 +7540,8 @@ async function importAllData(jsonText){
   printers.forEach(p => { if(typeof p.model !== 'string' || !p.model) p.model = p.name; });
   printers.forEach(p => { if(!Array.isArray(p.wattageReadings)) p.wattageReadings = []; });
   printers.forEach(p => { if(typeof p.retired !== 'boolean') p.retired = false; });
-  printers.forEach(p => {
-    if(!p.partInstalls) p.partInstalls = {};
-    partDefs.forEach(pd => {
-      if(!p.partInstalls[pd.id]) p.partInstalls[pd.id] = {installedAt: new Date().toISOString(), notified:false};
-    });
-  });
+  printers.forEach(p => { if(!p.partInstalls) p.partInstalls = {}; });
+  pruneUntrackedPartInstalls();
   Object.keys(orderQty).forEach(id => {
     if(typeof orderQty[id] === 'number'){ orderQty[id] = {qty: orderQty[id], pin: null}; }
   });
