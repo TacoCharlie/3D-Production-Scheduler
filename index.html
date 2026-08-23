@@ -2819,9 +2819,17 @@ function renderPrinters(){
             const checkAfter = install ? (install.checkAfterHours||0) : 0;
             const pct = checkAfter>0 ? Math.min(100, (hoursOn/checkAfter)*100) : 0;
             const due = checkAfter>0 && hoursOn >= checkAfter;
+            // How many times THIS printer specifically has had this part
+            // logged -- shown directly on the card so clicking "Log
+            // Replacement" has visible, undeniable proof it did something.
+            // Without this, two quick clicks both land on "0.0h" and look
+            // completely identical even though a real entry was recorded
+            // each time.
+            const logCountOnThisPrinter = pd.replacementLog.filter(r => r.printerId === p.id).length;
+            const logCountBadge = logCountOnThisPrinter>0 ? ` <span class="ps-hint">(${logCountOnThisPrinter} logged)</span>` : '';
             const statusText = !install
               ? `<span class="ps-hint">not tracked on this printer yet</span>`
-              : `<b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}`;
+              : `<b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}${logCountBadge}`;
             return `
               <div style="margin-bottom:10px;">
                 <div class="ps-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
