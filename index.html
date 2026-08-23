@@ -1862,36 +1862,33 @@ function recalculateJobCredit(jobId){
   saveJobs(); saveLog();
 }
 
-// Hours this printer's CURRENT installed part has been running: the
-// automatic since-install tally (built from real logged print time) plus
-// any manual correction the person has entered via "Edit" on the printer
-// card. The manual correction exists because logging a replacement is the
-// only thing that resets this clock — if a printer's current number is
-// wrong (e.g. it was left over from testing, or from before this feature
-// existed), "Edit" lets it be corrected directly without having to log a
-// fake replacement just to reset it.
+// Hours this printer's CURRENT installed part has been running, tracked
+// purely from real logged print time since it was last installed/replaced
+// (or since the part type was first defined, if it's never been logged
+// on this printer at all).
 function partHoursOn(printer, partDefId){
   const install = printer.partInstalls[partDefId];
   if(!install) return 0;
-  return (install.manualOffset||0) + printerHours(printer.id, new Date(install.installedAt));
+  return printerHours(printer.id, new Date(install.installedAt));
 }
 // Real replacement intervals logged so far for this part (across every
-// printer), used purely to suggest a "check again after" default — never
-// auto-applied, always something the person confirms or edits at log time.
+// printer), used purely to suggest a "check again after" default when
+// logging a replacement — never auto-applied, always something the person
+// can override.
 function partAvgInterval(pd){
   const vals = pd.replacementLog.map(r => r.hoursElapsed).filter(h => h > 0);
   if(!vals.length) return null;
   return vals.reduce((s,h) => s+h, 0) / vals.length;
 }
-// What "hours the OLD part just removed had really been running" defaults
-// to, before the person confirms/edits it at log time. If this printer has
-// logged a replacement of this part before, that's the real tracked
-// interval since then. If this is the very first time this part has ever
-// been logged on this printer, there's no tracked interval to fall back on
-// — but the printer's own lifetime hours (since its last hours-reset, if
-// any) are real, calculable data: the original part has presumably been
-// running since the printer itself started, so that's a genuine number,
-// not a guess.
+// How many hours the OLD part (the one being removed right now) actually
+// ran, computed automatically -- never asked of the person. If this
+// printer has logged a replacement of this part before, that's the real
+// tracked interval since then. If this is the very first time this part
+// has ever been logged on this printer, there's no tracked interval to
+// fall back on — but the printer's own lifetime hours (since its last
+// hours-reset, if any) are real, calculable data: the original part has
+// presumably been running since the printer itself started, so that's a
+// genuine number, not a guess.
 function suggestedOldPartHours(printer, partDefId){
   const partDef = partDefs.find(pd => pd.id === partDefId);
   const everLoggedOnThisPrinter = partDef && partDef.replacementLog.some(r => r.printerId === printer.id);
@@ -1899,34 +1896,23 @@ function suggestedOldPartHours(printer, partDefId){
   return printerHours(printer.id, printer.hoursResetAt ? new Date(printer.hoursResetAt) : null);
 }
 
-// Logs a real maintenance replacement: hoursElapsed is however many hours
-// the OLD part actually lasted (confirmed/edited by the person at log time
-// — see suggestedOldPartHours for how it's defaulted), and checkAfterHours
-// is when they want to be prompted to look at the NEW part again. Both are
-// explicit inputs rather than anything auto-computed and silently applied,
-// since neither can be known for certain — only estimated.
-function logPartReplacement(printerId, partDefId, hoursElapsed, checkAfterHours){
+// Logs a real maintenance replacement in one step: how many hours the OLD
+// part lasted is computed automatically (see suggestedOldPartHours) —
+// never something the person has to enter. checkAfterHours is the one
+// thing they can set, for when they want to be prompted to look at the
+// NEW part again; leaving it out just carries forward the average of real
+// logged intervals for this part (or 0 / "no interval set" if there isn't
+// one yet).
+function logPartReplacement(printerId, partDefId, checkAfterHours){
   const partDef = partDefs.find(pd => pd.id === partDefId);
   const printer = printers.find(p => p.id === printerId);
   if(!partDef || !printer || !printer.partInstalls[partDefId]) return;
+  const hoursElapsed = suggestedOldPartHours(printer, partDefId);
+  const install = printer.partInstalls[partDefId];
+  const fallbackCheckAfter = partAvgInterval(partDef) || install.checkAfterHours || 0;
   partDef.replacementLog.push({id: uid('replog'), printerId, at: new Date().toISOString(), hoursElapsed: Math.max(0, hoursElapsed||0)});
-  printer.partInstalls[partDefId] = {installedAt: new Date().toISOString(), notified: false, manualOffset: 0, checkAfterHours: Math.max(0, checkAfterHours||0)};
+  printer.partInstalls[partDefId] = {installedAt: new Date().toISOString(), notified: false, checkAfterHours: Math.max(0, checkAfterHours!=null ? checkAfterHours : fallbackCheckAfter)};
   savePartDefs(); savePrinters();
-}
-
-// Directly corrects a printer's current tracking state for a part -- its
-// hours-on-part and/or its check-again interval -- without logging a new
-// replacement. For fixing bad numbers already sitting on a printer (e.g.
-// left over from testing, or a check-in interval that was never set),
-// rather than having to log a fake replacement just to reset the clock.
-function correctPartTracking(printerId, partDefId, hoursOn, checkAfterHours){
-  const printer = printers.find(p => p.id === printerId);
-  if(!printer || !printer.partInstalls[partDefId]) return;
-  printer.partInstalls[partDefId] = {
-    installedAt: new Date().toISOString(), notified: false,
-    manualOffset: Math.max(0, hoursOn||0), checkAfterHours: Math.max(0, checkAfterHours||0)
-  };
-  savePrinters();
 }
 
 // Edits or removes a single logged replacement-history entry (fixing a
@@ -2466,7 +2452,6 @@ let bulkImportResultMsg = {}; // printerId -> last import result message (surviv
 let filamentDetailsOpenFor = new Set(); // session-only: which printer cards show expanded spool detail (toggled by clicking the Filament section header)
 let editingPartDefId = null; // which maintenance part row is in edit mode
 let loggingReplacementFor = null; // `${printerId}|${partDefId}` when that printer's "log a replacement" confirm form is open
-let editingPartTrackingFor = null; // `${printerId}|${partDefId}` when that printer's current hours/check-again is being directly corrected (not a new log)
 let partHistoryOpenFor = new Set(); // which part def ids show their expanded replacement-history list in the top Maintenance Parts table
 let editingPartHistoryEntryId = null; // which single replacement-history entry (by id) is being edited inline
 
@@ -2810,17 +2795,13 @@ function renderPrinters(){
             const pct = checkAfter>0 ? Math.min(100, (hoursOn/checkAfter)*100) : 0;
             const due = checkAfter>0 && hoursOn >= checkAfter;
             const isLogging = loggingReplacementFor === `${p.id}|${pd.id}`;
-            const isCorrecting = editingPartTrackingFor === `${p.id}|${pd.id}`;
             if(isLogging){
-              const everLoggedOnThisPrinter = pd.replacementLog.some(r => r.printerId === p.id);
-              const oldHoursDefault = suggestedOldPartHours(p, pd.id);
               const avgInterval = partAvgInterval(pd);
               const checkAfterDefault = avgInterval || checkAfter || '';
               return `
                 <div style="margin-bottom:10px;">
-                  <div class="ps-hint" style="margin-bottom:6px;">${escapeHtml(pd.name)} — confirm how many hours the old part actually lasted${everLoggedOnThisPrinter ? '' : ` (defaulted to this printer's lifetime hours, since this part has never been logged on it before)`}:</div>
+                  <div class="ps-hint" style="margin-bottom:6px;">${escapeHtml(pd.name)} — logging this records how long the old part lasted automatically. Optionally set when to check the new one again (defaults to the average below if left as-is):</div>
                   <div class="ps-row" style="gap:12px;flex-wrap:wrap;">
-                    <label class="ps-hint">Old part lasted <input type="number" min="0" step="1" class="ps-input ps-narrow" data-log-old-hours value="${Math.round(oldHoursDefault)}" style="width:85px;" /> h</label>
                     <label class="ps-hint">Check again after <input type="number" min="0" step="1" class="ps-input ps-narrow" data-log-check-after value="${checkAfterDefault!==''?Math.round(checkAfterDefault):''}" style="width:85px;" /> h</label>
                   </div>
                   <div class="ps-row" style="gap:6px;margin-top:8px;">
@@ -2830,27 +2811,10 @@ function renderPrinters(){
                 </div>
               `;
             }
-            if(isCorrecting){
-              return `
-                <div style="margin-bottom:10px;">
-                  <div class="ps-hint" style="margin-bottom:6px;">${escapeHtml(pd.name)} — correct this printer's current numbers (doesn't log a replacement, just fixes what's tracked):</div>
-                  <div class="ps-row" style="gap:12px;flex-wrap:wrap;">
-                    <label class="ps-hint">Hours on this part now <input type="number" min="0" step="1" class="ps-input ps-narrow" data-correct-hours value="${Math.round(hoursOn)}" style="width:85px;" /> h</label>
-                    <label class="ps-hint">Check again after <input type="number" min="0" step="1" class="ps-input ps-narrow" data-correct-check-after value="${checkAfter>0?Math.round(checkAfter):''}" style="width:85px;" /> h</label>
-                  </div>
-                  <div class="ps-row" style="gap:6px;margin-top:8px;">
-                    <button class="ps-btn primary small" data-action="save-part-tracking" data-partid="${pd.id}">Save</button>
-                    <button class="ps-btn ghost small" data-action="cancel-part-tracking">Cancel</button>
-                  </div>
-                </div>
-              `;
-            }
             return `
               <div style="margin-bottom:10px;">
                 <div class="ps-row" style="justify-content:space-between;">
-                  <span class="ps-hint">${escapeHtml(pd.name)} — <b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}
-                    ${!p.retired ? `<button class="ps-btn ghost small" data-action="edit-part-tracking" data-partid="${pd.id}" title="Directly correct this printer's hours/check-in interval without logging a replacement">Edit</button>` : ''}
-                  </span>
+                  <span class="ps-hint">${escapeHtml(pd.name)} — <b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}</span>
                   ${!p.retired ? `<button class="ps-btn ghost small" data-action="log-part-replacement" data-partid="${pd.id}">Log Replacement</button>` : ''}
                 </div>
                 ${checkAfter>0 ? `<div class="ps-hprogress-track" style="height:6px;margin:4px 0 0;"><div class="ps-hprogress-fill ${due?'overdue':''}" style="width:${pct}%;"></div></div>` : ''}
@@ -3328,11 +3292,11 @@ function renderPrinters(){
     card.querySelectorAll('[data-action="confirm-log-replacement"]').forEach(btn => {
       btn.addEventListener('click', () => {
         const partId = btn.getAttribute('data-partid');
-        const oldHoursInput = card.querySelector('[data-log-old-hours]');
         const checkAfterInput = card.querySelector('[data-log-check-after]');
-        const oldHours = Math.max(0, parseFloat(oldHoursInput.value)||0);
-        const checkAfter = Math.max(0, parseFloat(checkAfterInput.value)||0);
-        logPartReplacement(id, partId, oldHours, checkAfter);
+        // Blank means "just use the average" -- logPartReplacement falls
+        // back to that itself when passed null, rather than forcing 0.
+        const checkAfter = checkAfterInput.value==='' ? null : Math.max(0, parseFloat(checkAfterInput.value)||0);
+        logPartReplacement(id, partId, checkAfter);
         loggingReplacementFor = null;
         renderPrinters();
       });
@@ -3340,31 +3304,6 @@ function renderPrinters(){
     card.querySelectorAll('[data-action="cancel-log-replacement"]').forEach(btn => {
       btn.addEventListener('click', () => {
         loggingReplacementFor = null;
-        renderPrinters();
-      });
-    });
-    card.querySelectorAll('[data-action="edit-part-tracking"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const partId = btn.getAttribute('data-partid');
-        editingPartTrackingFor = `${id}|${partId}`;
-        renderPrinters();
-      });
-    });
-    card.querySelectorAll('[data-action="save-part-tracking"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const partId = btn.getAttribute('data-partid');
-        const hoursInput = card.querySelector('[data-correct-hours]');
-        const checkAfterInput = card.querySelector('[data-correct-check-after]');
-        const hoursOn = Math.max(0, parseFloat(hoursInput.value)||0);
-        const checkAfter = Math.max(0, parseFloat(checkAfterInput.value)||0);
-        correctPartTracking(id, partId, hoursOn, checkAfter);
-        editingPartTrackingFor = null;
-        renderPrinters();
-      });
-    });
-    card.querySelectorAll('[data-action="cancel-part-tracking"]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        editingPartTrackingFor = null;
         renderPrinters();
       });
     });
