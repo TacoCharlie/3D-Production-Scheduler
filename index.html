@@ -1948,7 +1948,13 @@ function deletePartHistoryEntry(partDefId, entryId){
   const partDef = partDefs.find(pd => pd.id === partDefId);
   if(!partDef) return;
   partDef.replacementLog = partDef.replacementLog.filter(r => r.id !== entryId);
-  savePartDefs();
+  // Deleting the last logged entry for a printer/part pair un-tracks it
+  // immediately -- the same "log it when it's logged" rule applies in
+  // reverse: with no log entries left, there's nothing real to base a
+  // running clock (or its check-again interval) on, so the printer reverts
+  // to "not tracked" rather than keeping a stale install record around.
+  pruneUntrackedPartInstalls();
+  savePartDefs(); savePrinters();
 }
 
 
