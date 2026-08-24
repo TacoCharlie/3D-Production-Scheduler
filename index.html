@@ -2474,7 +2474,7 @@ let wattageBulkImportOpenFor = new Set(); // session-only: which printer cards s
 let bulkImportResultMsg = {}; // printerId -> last import result message (survives the re-render the import itself triggers)
 let filamentDetailsOpenFor = new Set(); // session-only: which printer cards show expanded spool detail (toggled by clicking the Filament section header)
 let editingPartDefId = null; // which maintenance part row is in edit mode
-let partHistoryOpenFor = new Set(); // which part def ids show their expanded replacement-history list in the top Maintenance Parts table
+let partHistoryOpenFor = new Set(); // `${printerId}|${partDefId}` keys whose expanded replacement-history list is showing on that printer's own card (history is per-printer now, not shown in the top Maintenance Parts table at all)
 let editingPartHistoryEntryId = null; // which single replacement-history entry (by id) is being edited inline
 
 // ---------- rendering: Status tab ----------
@@ -2824,12 +2824,46 @@ function renderPrinters(){
             // Replacement" has visible, undeniable proof it did something.
             // Without this, two quick clicks both land on "0.0h" and look
             // completely identical even though a real entry was recorded
-            // each time.
-            const logCountOnThisPrinter = pd.replacementLog.filter(r => r.printerId === p.id).length;
-            const logCountBadge = logCountOnThisPrinter>0 ? ` <span class="ps-hint">(${logCountOnThisPrinter} logged)</span>` : '';
+            // each time. It's also the only place this printer's history
+            // lives now -- click it to see/edit/delete past replacements
+            // logged on THIS printer specifically, not mixed in with every
+            // other printer's history for the same part type.
+            const printerEntries = pd.replacementLog.filter(r => r.printerId === p.id);
+            const logCountOnThisPrinter = printerEntries.length;
+            const historyKey = `${p.id}|${pd.id}`;
+            const historyOpen = partHistoryOpenFor.has(historyKey);
+            const logCountBadge = logCountOnThisPrinter>0 ? ` <button type="button" class="ps-btn ghost small" data-action="toggle-part-history" data-partid="${pd.id}" data-printerid="${p.id}" style="padding:1px 6px;">${historyOpen?'▾':'▸'} ${logCountOnThisPrinter} logged</button>` : '';
             const statusText = !install
               ? `<span class="ps-hint">not tracked on this printer yet</span>`
               : `<b style="color:${due?'var(--danger)':'var(--text)'};">${fmtHours(hoursOn)}</b>${checkAfter>0 ? ` / ${fmtHours(checkAfter)}` : ' <span class="ps-hint">(no check-in interval set yet)</span>'}${due ? ' <span style="color:var(--danger);font-weight:700;">— inspect/replace</span>' : ''}${logCountBadge}`;
+            const historyRows = historyOpen ? `
+              <div style="margin:4px 0 0 0;padding:6px 8px;background:var(--panel-2, rgba(255,255,255,0.03));border-radius:6px;">
+                ${printerEntries.map(entry => {
+                  const dateStr = new Date(entry.at).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+                  if(editingPartHistoryEntryId === entry.id){
+                    return `
+                      <div class="ps-row" style="justify-content:space-between;gap:6px;padding:3px 0;flex-wrap:wrap;">
+                        <span class="ps-hint">${dateStr}</span>
+                        <div class="ps-row" style="gap:6px;">
+                          <input type="number" min="0" step="1" class="ps-input ps-narrow" data-history-hours value="${Math.round(entry.hoursElapsed)}" style="width:80px;" />
+                          <button class="ps-btn primary small" data-action="save-history-entry" data-partid="${pd.id}" data-entryid="${entry.id}">Save</button>
+                          <button class="ps-btn ghost small" data-action="cancel-history-entry-edit">Cancel</button>
+                        </div>
+                      </div>
+                    `;
+                  }
+                  return `
+                    <div class="ps-row" style="justify-content:space-between;gap:6px;padding:3px 0;">
+                      <span class="ps-hint">${dateStr} — <b style="color:var(--text);">${fmtHours(entry.hoursElapsed)}</b></span>
+                      <div class="ps-row" style="gap:6px;">
+                        <button class="ps-btn ghost small" data-action="edit-history-entry" data-partid="${pd.id}" data-entryid="${entry.id}">Edit</button>
+                        <button class="ps-btn ghost small" data-action="delete-history-entry" data-partid="${pd.id}" data-entryid="${entry.id}">✕</button>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            ` : '';
             return `
               <div style="margin-bottom:10px;">
                 <div class="ps-row" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
@@ -2840,6 +2874,7 @@ function renderPrinters(){
                   </div>
                 </div>
                 ${install && checkAfter>0 ? `<div class="ps-hprogress-track" style="height:6px;margin:4px 0 0;"><div class="ps-hprogress-fill ${due?'overdue':''}" style="width:${pct}%;"></div></div>` : ''}
+                ${historyRows}
               </div>
             `;
           }).join('')}
@@ -2854,63 +2889,34 @@ function renderPrinters(){
 
   const partDefRows = partDefs.map(pd => {
     const avgInterval = partAvgInterval(pd);
-    const historyOpen = partHistoryOpenFor.has(pd.id);
-    const historyToggle = `<button type="button" class="ps-btn ghost small" data-action="toggle-part-history" data-partid="${pd.id}" style="padding:2px 8px;">${historyOpen?'▾':'▸'} ${pd.replacementLog.length} logged</button>`;
-    const historyRows = historyOpen ? `
-      <tr data-history-for="${pd.id}"><td colspan="4" style="padding-top:0;">
-        ${pd.replacementLog.length===0 ? '<div class="ps-hint" style="padding:6px 0;">No replacements logged yet.</div>' : pd.replacementLog.map(entry => {
-          const printerName = (printers.find(pr=>pr.id===entry.printerId)||{}).name || 'Unknown printer';
-          const dateStr = new Date(entry.at).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-          if(editingPartHistoryEntryId === entry.id){
-            return `
-              <div class="ps-row" style="justify-content:space-between;gap:6px;padding:4px 0;flex-wrap:wrap;">
-                <span class="ps-hint">${escapeHtml(printerName)} — ${dateStr}</span>
-                <div class="ps-row" style="gap:6px;">
-                  <input type="number" min="0" step="1" class="ps-input ps-narrow" data-history-hours value="${Math.round(entry.hoursElapsed)}" style="width:80px;" />
-                  <button class="ps-btn primary small" data-action="save-history-entry" data-partid="${pd.id}" data-entryid="${entry.id}">Save</button>
-                  <button class="ps-btn ghost small" data-action="cancel-history-entry-edit">Cancel</button>
-                </div>
-              </div>
-            `;
-          }
-          return `
-            <div class="ps-row" style="justify-content:space-between;gap:6px;padding:4px 0;">
-              <span class="ps-hint">${escapeHtml(printerName)} — ${dateStr} — <b style="color:var(--text);">${fmtHours(entry.hoursElapsed)}</b></span>
-              <div class="ps-row" style="gap:6px;">
-                <button class="ps-btn ghost small" data-action="edit-history-entry" data-partid="${pd.id}" data-entryid="${entry.id}">Edit</button>
-                <button class="ps-btn ghost small" data-action="delete-history-entry" data-partid="${pd.id}" data-entryid="${entry.id}">✕</button>
-              </div>
-            </div>
-          `;
-        }).join('')}
-      </td></tr>
-    ` : '';
+    // Part-type management only lives here (name, avg interval, add/remove
+    // part type). The actual replacement history is per-printer and lives
+    // on each printer's own card now, right next to the "Log Replacement"
+    // button that creates it -- not duplicated here mixed across printers.
     if(editingPartDefId === pd.id){
       return `
       <tr data-id="${pd.id}" data-editing="1">
         <td><input class="ps-input ps-name" data-field="name" value="${escapeHtml(pd.name)}" /></td>
         <td class="mono ps-hint">${avgInterval ? fmtHours(avgInterval) : '—'}</td>
-        <td class="ps-hint">${historyToggle}</td>
         <td>
           <div class="ps-row" style="gap:6px;">
             <button class="ps-btn primary small" data-action="save-part">Save</button>
             <button class="ps-btn ghost small" data-action="cancel-part-edit">Cancel</button>
           </div>
         </td>
-      </tr>${historyRows}`;
+      </tr>`;
     }
     return `
     <tr data-id="${pd.id}">
       <td><b>${escapeHtml(pd.name)}</b></td>
       <td class="mono ps-hint">${avgInterval ? fmtHours(avgInterval) : '—'}</td>
-      <td class="ps-hint">${historyToggle}</td>
       <td>
         <div class="ps-row" style="gap:6px;">
           <button class="ps-btn ghost small" data-action="edit-part">Edit</button>
           <button class="ps-btn ghost small" data-action="remove-part">✕</button>
         </div>
       </td>
-    </tr>${historyRows}
+    </tr>
   `;
   }).join('');
 
@@ -2921,7 +2927,7 @@ function renderPrinters(){
       ${partDefs.length===0 ? '<div class="ps-empty">No parts tracked yet — add one below, e.g. "Hotend", then log replacements as you actually do them.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th>Part</th><th style="width:120px">Avg. Interval</th><th style="width:100px">History</th><th></th></tr></thead>
+        <thead><tr><th>Part</th><th style="width:120px">Avg. Interval</th><th></th></tr></thead>
         <tbody id="ps-parts-body">${partDefRows}</tbody>
       </table>
       </div>
@@ -2989,27 +2995,32 @@ function renderPrinters(){
       });
     }
   });
-  root.querySelectorAll('#ps-parts-body [data-action="toggle-part-history"]').forEach(el => {
+  // The replacement-history list now lives on each printer's own card (see
+  // printerCardHtml above), keyed by printer+part together so the same
+  // part type can be expanded independently on different printers.
+  root.querySelectorAll('[data-action="toggle-part-history"]').forEach(el => {
     el.addEventListener('click', () => {
       const partId = el.getAttribute('data-partid');
-      if(partHistoryOpenFor.has(partId)) partHistoryOpenFor.delete(partId);
-      else partHistoryOpenFor.add(partId);
+      const printerId = el.getAttribute('data-printerid');
+      const key = `${printerId}|${partId}`;
+      if(partHistoryOpenFor.has(key)) partHistoryOpenFor.delete(key);
+      else partHistoryOpenFor.add(key);
       renderPrinters();
     });
   });
-  root.querySelectorAll('#ps-parts-body [data-action="edit-history-entry"]').forEach(btn => {
+  root.querySelectorAll('[data-action="edit-history-entry"]').forEach(btn => {
     btn.addEventListener('click', () => {
       editingPartHistoryEntryId = btn.getAttribute('data-entryid');
       renderPrinters();
     });
   });
-  root.querySelectorAll('#ps-parts-body [data-action="cancel-history-entry-edit"]').forEach(btn => {
+  root.querySelectorAll('[data-action="cancel-history-entry-edit"]').forEach(btn => {
     btn.addEventListener('click', () => {
       editingPartHistoryEntryId = null;
       renderPrinters();
     });
   });
-  root.querySelectorAll('#ps-parts-body [data-action="save-history-entry"]').forEach(btn => {
+  root.querySelectorAll('[data-action="save-history-entry"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const partId = btn.getAttribute('data-partid');
       const entryId = btn.getAttribute('data-entryid');
@@ -3022,7 +3033,7 @@ function renderPrinters(){
       renderPrinters();
     });
   });
-  root.querySelectorAll('#ps-parts-body [data-action="delete-history-entry"]').forEach(btn => {
+  root.querySelectorAll('[data-action="delete-history-entry"]').forEach(btn => {
     btn.addEventListener('click', () => {
       const partId = btn.getAttribute('data-partid');
       const entryId = btn.getAttribute('data-entryid');
