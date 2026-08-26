@@ -6427,11 +6427,22 @@ function renderModelComparisonWidget(sinceDate){
 // model, so that pattern is actually visible instead of assumed.
 function computeFailureRateTrend(weeksBack){
   const now = new Date();
+  // Fixed calendar weeks (Monday-Sunday), not a rolling trailing-7-days
+  // window. A rolling window anchored to "right now" drifts by a full day
+  // every time you check it -- checking on a Monday vs. a Wednesday shows
+  // two genuinely different 7-day spans under the same column -- so
+  // week-over-week comparisons were never really comparing the same two
+  // periods. Calendar weeks are fixed: they only roll over once a week,
+  // at the same real Monday boundary, so the same week always means the
+  // same week no matter when you look.
+  const dayOfWeek = now.getDay(); // 0=Sun,1=Mon,...,6=Sat
+  const daysSinceMonday = (dayOfWeek + 6) % 7;
+  const thisMonday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysSinceMonday);
   const buckets = [];
   for(let i=0;i<weeksBack;i++){
-    const end = new Date(now.getTime() - i*7*24*60*60*1000);
-    const start = new Date(end.getTime() - 7*24*60*60*1000);
-    buckets.push({start, end, byModel: {}});
+    const start = new Date(thisMonday.getTime() - i*7*24*60*60*1000);
+    const end = new Date(start.getTime() + 7*24*60*60*1000); // exclusive upper bound -- the following Monday
+    buckets.push({start, end, weekEndLabel: new Date(end.getTime() - 24*60*60*1000), byModel: {}});
   }
   const models = new Set();
   productionLog.forEach(e => {
@@ -6451,6 +6462,72 @@ function computeFailureRateTrend(weeksBack){
   buckets.reverse(); // oldest first, so the table reads left-to-right chronologically
   return { buckets, models: Array.from(models).sort() };
 }
+// Renders a self-contained inline-SVG line chart (no external chart
+// library -- this is a single HTML file) plotting each printer's failure
+// rate across the same calendar weeks as the table below it. A missing
+// week (no completed prints) breaks the line into a separate segment
+// rather than interpolating through the gap or treating it as 0%, since
+// "no data" and "0% failures" are different claims.
+function renderFailureRateLineChart(buckets, models){
+  if(buckets.length < 2) return ''; // a single point isn't a trend
+  const PALETTE = ['#6aa9ff','#ff9f5b','#7ee08c','#e0c25b','#e07ee0','#5be0d3','#e05b5b','#a3e05b'];
+  const W = 680, H = 180, padL = 34, padR = 10, padT = 10, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const perModel = models.map((model, idx) => {
+    const points = buckets.map(b => {
+      const d = b.byModel[model];
+      if(!d || d.total===0) return null;
+      return { rate: d.failed/d.total*100, total: d.total, failed: d.failed };
+    });
+    return { model, color: PALETTE[idx % PALETTE.length], points };
+  });
+
+  const allRates = perModel.flatMap(m => m.points.filter(Boolean).map(p => p.rate));
+  const rawMax = allRates.length ? Math.max(...allRates) : 0;
+  const yMax = Math.max(20, Math.ceil((rawMax*1.15)/10)*10);
+  const xStep = plotW/(buckets.length-1);
+  const xAt = i => padL + i*xStep;
+  const yAt = rate => padT + plotH - (rate/yMax)*plotH;
+
+  const gridLines = [0, 0.5, 1].map(f => {
+    const y = padT + plotH*(1-f);
+    const label = Math.round(yMax*f);
+    return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1" />
+      <text x="${padL-6}" y="${(y+4).toFixed(1)}" font-size="10" text-anchor="end" fill="var(--text-dim, #999)">${label}%</text>`;
+  }).join('');
+
+  const xLabels = buckets.map((b,i) => `<text x="${xAt(i).toFixed(1)}" y="${H-6}" font-size="10" text-anchor="middle" fill="var(--text-dim, #999)">${b.weekEndLabel.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</text>`).join('');
+
+  const lines = perModel.map(m => {
+    const segments = [];
+    let current = [];
+    m.points.forEach((p, i) => {
+      if(p){ current.push({x:xAt(i), y:yAt(p.rate)}); }
+      else { if(current.length) segments.push(current); current = []; }
+    });
+    if(current.length) segments.push(current);
+    const paths = segments.map(seg => {
+      const d = seg.map((pt,i) => `${i===0?'M':'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(' ');
+      return `<path d="${d}" fill="none" stroke="${m.color}" stroke-width="2" />`;
+    }).join('');
+    const dots = m.points.map((p,i) => p ? `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(p.rate).toFixed(1)}" r="3" fill="${m.color}"><title>${escapeHtml(m.model)}: ${p.rate.toFixed(0)}% (${p.failed} of ${p.total})</title></circle>` : '').join('');
+    return paths + dots;
+  }).join('');
+
+  const legend = perModel.map(m => `<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${m.color};"></span><span class="ps-hint">${escapeHtml(m.model)}</span></span>`).join('');
+
+  return `
+    <div style="margin-bottom:14px;">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;">
+        ${gridLines}
+        ${lines}
+        ${xLabels}
+      </svg>
+      <div style="margin-top:6px;">${legend}</div>
+    </div>
+  `;
+}
 function renderFailureRateTrendWidget(){
   let { buckets, models } = computeFailureRateTrend(10);
   // Weeks before your first logged print are just empty padding — trim
@@ -6463,12 +6540,12 @@ function renderFailureRateTrendWidget(){
     return `
       <div class="ps-panel">
         <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
-        <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per week, shows whether it's actually improving/worsening or just settling around a stable number.</div>
+        <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per calendar week (Monday–Sunday), shows whether it's actually improving/worsening or just settling around a stable number.</div>
         <div class="ps-empty">Not enough history yet.</div>
       </div>
     `;
   }
-  const header = buckets.map(b => `<th class="mono" style="font-weight:400;white-space:nowrap;">${b.end.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</th>`).join('');
+  const header = buckets.map(b => `<th class="mono" style="font-weight:400;white-space:nowrap;">${b.weekEndLabel.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</th>`).join('');
   const rows = models.map(model => {
     const cells = buckets.map(b => {
       const d = b.byModel[model];
@@ -6481,7 +6558,8 @@ function renderFailureRateTrendWidget(){
   return `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
-      <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per week (labeled by the week's end date), shows whether it's actually improving/worsening or just settling around a stable number. "—" means no completed prints that week.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per calendar week (Monday–Sunday, labeled by that week's ending Sunday), shows whether it's actually improving/worsening or just settling around a stable number. "—" means no completed prints that week.</div>
+      ${renderFailureRateLineChart(buckets, models)}
       <div style="overflow-x:auto;">
         <table class="ps-table">
           <thead><tr><th></th>${header}</tr></thead>
