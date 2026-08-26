@@ -1393,6 +1393,73 @@ function computeFilamentOnHandG(){
   const stockG = stock.reduce((s,st) => s + (st.qty||0)*(st.weightPerSpoolG||0), 0);
   return spoolG + stockG;
 }
+// Reconstructs REAL historical on-hand totals from the spool/stock change
+// logs (every change is recorded with a timestamp and the resulting
+// absolute value -- see logSpoolChange/logStockChange) and finds the most
+// recent moment total on-hand grams actually dropped to ~0 and has stayed
+// there since. This is different from "projected run-out," which only
+// forecasts forward from today's live numbers and, once you're already at
+// 0g on hand, can only ever say "today" -- it has no memory of when that
+// actually happened. Returns null if you're not currently out, or if
+// there's no reconstructible history to pin down when it happened.
+function computeActualRunOutDate(){
+  const events = []; // {at: Date, deltaG: number} -- change in TOTAL on-hand grams at this instant
+
+  // Every spool contributes: a "gained totalG" event when first loaded, one
+  // event per logged remainingG change while active, and a "lost whatever
+  // was left" event when retired (retired spools stop counting toward
+  // on-hand, same as computeFilamentOnHandG above).
+  spools.forEach(s => {
+    if(!s.loadedAt) return;
+    events.push({ at: new Date(s.loadedAt), deltaG: s.totalG||0 });
+    const myLog = spoolChangeLog.filter(l => l.spoolId === s.id).sort((a,b) => new Date(a.at) - new Date(b.at));
+    myLog.forEach(l => events.push({ at: new Date(l.at), deltaG: l.delta }));
+    if(s.retired && s.retiredAt){
+      const lastKnownG = myLog.length ? myLog[myLog.length-1].resultingG : (s.totalG||0);
+      events.push({ at: new Date(s.retiredAt), deltaG: -lastKnownG });
+    }
+  });
+
+  // Stock rows have no reliable creation timestamp, so each row's earliest
+  // derivable quantity is seeded as already present at the dawn of the
+  // reconstructible timeline -- only the recent window actually matters
+  // for pinpointing a real run-out date, so this doesn't need to be exact
+  // for ancient history.
+  const earliestOverall = events.length ? new Date(Math.min(...events.map(e => e.at.getTime()))) : new Date(0);
+  stock.forEach(st => {
+    const myLog = stockChangeLog.filter(l => l.stockId === st.id).sort((a,b) => new Date(a.at) - new Date(b.at));
+    const weightPerSpoolG = st.weightPerSpoolG||0;
+    if(myLog.length){
+      const qtyBeforeFirst = myLog[0].resultingQty - myLog[0].delta;
+      events.push({ at: earliestOverall, deltaG: qtyBeforeFirst*weightPerSpoolG });
+      myLog.forEach(l => events.push({ at: new Date(l.at), deltaG: l.delta*weightPerSpoolG }));
+    } else {
+      events.push({ at: earliestOverall, deltaG: (st.qty||0)*weightPerSpoolG });
+    }
+  });
+
+  if(!events.length) return null;
+  events.sort((a,b) => a.at - b.at);
+
+  let running = 0;
+  const timeline = events.map(e => { running += e.deltaG; return { at: e.at, total: running }; });
+
+  const EPS = 0.5; // grams -- avoids float noise flip-flopping right at zero
+  const currentTotal = timeline[timeline.length-1].total;
+  if(currentTotal > EPS) return null; // not currently out -- nothing to pinpoint
+
+  // Walk backward from now to find the most recent point on-hand was
+  // meaningfully positive; the run-out moment is the very next event after
+  // that, where it dropped to ~0 and never recovered since.
+  for(let i = timeline.length-1; i>=0; i--){
+    if(timeline[i].total > EPS){
+      return i+1 < timeline.length ? timeline[i+1].at : null;
+    }
+  }
+  // Every reconstructed point is already at/below zero -- the actual
+  // run-out predates whatever history we have, so don't guess at a date.
+  return null;
+}
 function computeLeadTimeSummary(){
   const groups = {};
   filamentOrderHistory.forEach(o => {
@@ -5332,8 +5399,18 @@ function renderFilament(){
         <div class="ps-hint">No production logged in the last 14 days — can't project a runway yet.</div>
       ` : `
         ${reorderHeadline}
-        <div class="ps-summary-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:0;">
-          <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${stockoutDate.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div><div class="ps-summary-label">Projected run-out</div></div>
+        ${(() => {
+          // Once you're actually at 0g on hand, "projected run-out" can
+          // only ever say "today" -- it forecasts forward from today's
+          // live numbers and has no memory of when you actually ran out.
+          // In that specific case, show the real historical date instead,
+          // reconstructed from the spool/stock change logs.
+          const actualRunOut = runwayDays<=0 ? computeActualRunOutDate() : null;
+          const label = actualRunOut ? 'Ran out' : 'Projected run-out';
+          const dateForDisplay = actualRunOut || stockoutDate;
+          return `<div class="ps-summary-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:0;">
+          <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${dateForDisplay.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div><div class="ps-summary-label">${label}</div></div>`;
+        })()}
           <div class="ps-summary-cell"><div class="ps-summary-num" ${runwayCritical?'style="color:var(--danger);"':''}>${runwayDays.toFixed(1)}</div><div class="ps-summary-label">Days of filament left</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num">${dailyRateG.toFixed(0)}g</div><div class="ps-summary-label">Used per day</div></div>
           <div class="ps-summary-cell"><div class="ps-summary-num">${reorderPointDays.toFixed(1)}</div><div class="ps-summary-label">Order-by threshold (days)</div><div class="ps-hint" style="margin-top:2px;">reorder once runway drops to this</div></div>
