@@ -3556,8 +3556,8 @@ function logHistoryMatchesFilters(e){
   return true;
 }
 
-function renderFailureStatsWidget(){
-  const resolved = productionLog.filter(e => !e.isTest && (e.failed || e.actualEnd));
+function renderFailureStatsWidget(sinceDate){
+  const resolved = productionLog.filter(e => !e.isTest && (e.failed || e.actualEnd)).filter(e => !sinceDate || new Date(e.actualEnd || e.actualStart) >= sinceDate);
   if(resolved.length===0) return '';
   const totalFailures = resolved.filter(e=>e.failed).length;
   const failureRate = resolved.length>0 ? (totalFailures/resolved.length*100) : 0;
@@ -5908,7 +5908,7 @@ function renderAnalytics(){
       <div class="ps-hint" style="margin-bottom:12px;">More metrics can get added here over time.</div>
       <div class="ps-row" style="gap:6px;flex-wrap:wrap;">${rangeButtons}</div>
     </div>
-    ${renderFailureStatsWidget()}
+    ${renderFailureStatsWidget(sinceDate)}
     ${renderFailureRateTrendWidget()}
     ${renderModelComparisonWidget(sinceDate)}
     ${renderQuantityByProductWidget(sinceDate)}
