@@ -5962,6 +5962,13 @@ function renderAnalytics(){
       renderAnalytics();
     });
   }
+  const failureRateDisplayToggle = document.getElementById('ps-failure-rate-display-toggle');
+  if(failureRateDisplayToggle){
+    failureRateDisplayToggle.addEventListener('click', () => {
+      failureRateShowCounts = !failureRateShowCounts;
+      renderAnalytics();
+    });
+  }
 }
 
 function renderQuantityByProductWidget(sinceDate){
@@ -6328,6 +6335,7 @@ function renderPrinterTimeCostWidget(sinceDate){
 // printer makes. 100% = perfectly matches its own expectations with zero
 // time lost to failures.
 let printerEfficiencyBestFirst = true; // higher % is better, so "best first" = descending
+let failureRateShowCounts = false; // false = show "%", true = show raw "fails/total" counts, in the Failure Rate Trend table
 
 function computePrinterEfficiency(sinceDate){
   const byPrinter = {}; // printerId -> {expectedMinForGood, actualTimeMin, goodUnits, productIds:Set}
@@ -6551,7 +6559,8 @@ function renderFailureRateTrendWidget(){
       const d = b.byModel[model];
       if(!d || d.total===0) return `<td class="mono ps-hint" style="text-align:center;">—</td>`;
       const rate = (d.failed/d.total*100);
-      return `<td class="mono" style="text-align:center;" title="${d.failed} of ${d.total} units">${rate.toFixed(0)}%</td>`;
+      const displayText = failureRateShowCounts ? `${d.failed}/${d.total}` : `${rate.toFixed(0)}%`;
+      return `<td class="mono" style="text-align:center;" title="${d.failed} of ${d.total} units">${displayText}</td>`;
     }).join('');
     return `<tr><td style="white-space:nowrap;padding-right:12px;">${escapeHtml(model)}</td>${cells}</tr>`;
   }).join('');
@@ -6560,6 +6569,7 @@ function renderFailureRateTrendWidget(){
       <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
       <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per calendar week (Monday–Sunday, labeled by that week's ending Sunday), shows whether it's actually improving/worsening or just settling around a stable number. "—" means no completed prints that week.</div>
       ${renderFailureRateLineChart(buckets, models)}
+      <button class="ps-btn ghost small" id="ps-failure-rate-display-toggle" style="margin-bottom:10px;">${failureRateShowCounts ? 'Show as %' : 'Show as fails/total'}</button>
       <div style="overflow-x:auto;">
         <table class="ps-table">
           <thead><tr><th></th>${header}</tr></thead>
