@@ -4747,9 +4747,24 @@ function renderLog(){
     if(finishBtn){
       finishBtn.addEventListener('click', () => {
         const e = productionLog.find(x=>x.id===id);
+        // Logging a print can happen hours before it's actually marked
+        // finished (start it, walk away, come back later and hit "Mark
+        // finished now") — by the time this click happens, the "last one
+        // needed" warning shown back at log-submit time is long gone from
+        // view. Catch the moment THIS click is what pushes the job's total
+        // over the finish line, so it doesn't quietly sit "done" until the
+        // Jobs tab happens to get checked again.
+        const job = e.jobId ? jobs.find(j=>j.id===e.jobId) : null;
+        const totalUnits = job ? jobTotals(job).totalUnits : 0;
+        const beforeDone = job ? Math.max(0, job.manualDone||0) : 0;
         e.actualEnd = new Date().toISOString();
         creditJobIfDue(e);
+        const afterDone = job ? Math.max(0, job.manualDone||0) : 0;
+        const jobJustCompleted = job && totalUnits>0 && beforeDone < totalUnits && afterDone >= totalUnits;
         saveLog(); regenerateIfActive();
+        if(jobJustCompleted){
+          alert(`Marking this finished brings "${job.name}" to ${totalUnits} of ${totalUnits} units — this looks like the last print needed for this job. Head to the Jobs tab to mark it Done.`);
+        }
       });
     }
     const failBtn = row.querySelector('[data-action="fail"]');
