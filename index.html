@@ -303,28 +303,72 @@ if(sb){
 
 if(typeof window.storage === 'undefined'){
   if(sb){
+    // supabase-js normally keeps the access token fresh in the background
+    // on its own timer, but that timer is throttled or paused while the
+    // tab is backgrounded/inactive — exactly the "left it running
+    // overnight, checked it this morning" case. By the time a request
+    // actually goes out on a stale token, the client hasn't caught up yet
+    // and the request comes back 401. Without this, that 401 was silently
+    // swallowed (caught, logged to the console, nothing else) — the click
+    // LOOKED like it worked (the row updates from the in-memory change)
+    // but nothing was actually persisted, so it reverted the moment
+    // anything re-read from storage. One explicit refresh-then-retry
+    // recovers silently instead of leaving it to be discovered later.
+    async function withAuthRetry(fn){
+      try {
+        return await fn();
+      } catch(err){
+        const status = err && (err.status || err.code);
+        const msg = (err && err.message) || '';
+        const looksLikeAuthError = status===401 || status==='401' || status==='PGRST301' || /jwt|expired|unauthoriz/i.test(msg);
+        if(!looksLikeAuthError) throw err;
+        try {
+          const { error: refreshError } = await sb.auth.refreshSession();
+          if(refreshError) throw err;
+        } catch(refreshErr){
+          throw err;
+        }
+        return await fn();
+      }
+    }
     window.storage = {
       async get(key){
-        const {data, error} = await sb.from('kv_store').select('value').eq('key', key).maybeSingle();
-        if(error) throw error;
-        if(!data) throw new Error('not found');
-        return {key, value: data.value, shared:false};
+        return withAuthRetry(async () => {
+          const {data, error} = await sb.from('kv_store').select('value').eq('key', key).maybeSingle();
+          if(error) throw error;
+          if(!data) throw new Error('not found');
+          return {key, value: data.value, shared:false};
+        });
       },
       async set(key, value){
-        const {error} = await sb.from('kv_store').upsert({key, value, updated_at: new Date().toISOString()});
-        if(error) throw error;
-        return {key, value, shared:false};
+        // Unlike get()/delete(), a failed set() means a real, user-visible
+        // action (like "Mark finished now") silently didn't save — worth a
+        // visible warning even after the retry above already had its shot.
+        try {
+          return await withAuthRetry(async () => {
+            const {error} = await sb.from('kv_store').upsert({key, value, updated_at: new Date().toISOString()});
+            if(error) throw error;
+            return {key, value, shared:false};
+          });
+        } catch(err){
+          flashSaveError();
+          throw err;
+        }
       },
       async delete(key){
-        const {error} = await sb.from('kv_store').delete().eq('key', key);
-        if(error) throw error;
-        return {key, deleted:true, shared:false};
+        return withAuthRetry(async () => {
+          const {error} = await sb.from('kv_store').delete().eq('key', key);
+          if(error) throw error;
+          return {key, deleted:true, shared:false};
+        });
       },
       async list(prefix){
-        const {data, error} = await sb.from('kv_store').select('key');
-        if(error) throw error;
-        const keys = (data||[]).map(r=>r.key).filter(k => !prefix || k.startsWith(prefix));
-        return {keys, prefix, shared:false};
+        return withAuthRetry(async () => {
+          const {data, error} = await sb.from('kv_store').select('key');
+          if(error) throw error;
+          const keys = (data||[]).map(r=>r.key).filter(k => !prefix || k.startsWith(prefix));
+          return {keys, prefix, shared:false};
+        });
       }
     };
   } else {
@@ -397,22 +441,32 @@ async function bootWithAuth(){
     }
   });
 
+  // showApp() (above) already REMOVES #ps-auth-screen entirely whenever a
+  // session already exists at boot — the normal case for a returning,
+  // already-signed-in user. submitBtn is therefore null every single time
+  // that happens, and wiring it up unconditionally threw here on every
+  // normal page load ("Cannot read properties of null (reading
+  // 'addEventListener')"), which is one of two bugs behind prints not
+  // reliably staying marked finished. Only wire the sign-in form when it's
+  // actually still on the page (i.e. showAuthScreen() ran instead).
   const submitBtn = document.getElementById('ps-auth-submit');
-  const errEl = document.getElementById('ps-auth-error');
-  async function attemptSignIn(){
-    errEl.textContent = '';
-    const email = document.getElementById('ps-auth-email').value.trim();
-    const password = document.getElementById('ps-auth-password').value;
-    if(!email || !password){ errEl.textContent = 'Enter both email and password.'; return; }
-    submitBtn.disabled = true;
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-    submitBtn.disabled = false;
-    if(error){ errEl.textContent = error.message; }
+  if(submitBtn){
+    const errEl = document.getElementById('ps-auth-error');
+    async function attemptSignIn(){
+      errEl.textContent = '';
+      const email = document.getElementById('ps-auth-email').value.trim();
+      const password = document.getElementById('ps-auth-password').value;
+      if(!email || !password){ errEl.textContent = 'Enter both email and password.'; return; }
+      submitBtn.disabled = true;
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      submitBtn.disabled = false;
+      if(error){ errEl.textContent = error.message; }
+    }
+    submitBtn.addEventListener('click', attemptSignIn);
+    document.getElementById('ps-auth-password').addEventListener('keydown', (e) => {
+      if(e.key === 'Enter') attemptSignIn();
+    });
   }
-  submitBtn.addEventListener('click', attemptSignIn);
-  document.getElementById('ps-auth-password').addEventListener('keydown', (e) => {
-    if(e.key === 'Enter') attemptSignIn();
-  });
 
   const signoutBtn = document.getElementById('ps-auth-signout');
   if(signoutBtn){
@@ -1151,8 +1205,23 @@ function flashSave(){
   const el = document.getElementById('ps-save-note');
   if(!el) return;
   el.textContent = 'saved';
+  el.style.color = '';
   clearTimeout(flashTimer);
   flashTimer = setTimeout(()=>{ el.textContent=''; }, 1200);
+}
+// A save that genuinely failed (after the auth-retry in window.storage.set
+// already had its shot) used to be silent — logged to the console and
+// nothing else, so a click that didn't actually save looked identical to
+// one that did. This is the one visible cue that something needs a retry
+// or a page reload, held up longer than the routine "saved" flash since
+// it's the one that actually matters to notice.
+function flashSaveError(){
+  const el = document.getElementById('ps-save-note');
+  if(!el) return;
+  el.textContent = 'not saved — check your connection';
+  el.style.color = 'var(--danger)';
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(()=>{ el.textContent=''; el.style.color=''; }, 8000);
 }
 
 // ---------- time helpers ----------
