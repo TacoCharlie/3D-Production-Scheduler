@@ -5405,9 +5405,25 @@ function renderFilament(){
           <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
         </div>
     `;
+    const retiredPrinterName = (() => {
+      if(!retired || !s.loadedOnPrinterId) return null;
+      const p = printers.find(pr=>pr.id===s.loadedOnPrinterId);
+      return p ? p.name : '(deleted printer)';
+    })();
+    const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}) : null;
+    const mountedStr = retired ? fmtDate(s.loadedAt) : null;
+    const retiredStr = retired ? fmtDate(s.retiredAt) : null;
+    const retiredDatesLine = (retired && (mountedStr || retiredStr)) ? `
+        <div class="ps-row" style="gap:16px;flex-wrap:wrap;margin-top:8px;">
+          ${mountedStr ? `<span class="ps-hint">Mounted: <b style="color:var(--text);">${mountedStr}</b></span>` : ''}
+          ${retiredStr ? `<span class="ps-hint">Retired: <b style="color:var(--text);">${retiredStr}</b></span>` : ''}
+        </div>
+    ` : '';
     return `
       <div class="ps-spool-card" data-id="${s.id}">
-        ${retired ? '' : (() => {
+        ${retired
+          ? (retiredPrinterName ? `<div style="font-weight:700;font-size:14.5px;">${escapeHtml(retiredPrinterName)}</div>` : `<div class="ps-hint">— printer not recorded for this spool —</div>`)
+          : (() => {
           const onPrinter = printers.find(pr=>pr.spoolId===s.id);
           return onPrinter
             ? `<div style="font-weight:700;font-size:14.5px;">${escapeHtml(onPrinter.name)}</div>`
@@ -5417,6 +5433,7 @@ function renderFilament(){
         ${fieldsBlock}
         ${(overConsumed && !retired) ? `<div class="ps-hint" style="color:var(--danger);margin-top:8px;">This spool has been logged for ${Math.abs(s.remainingG)}g more than it had — the number above is showing 0 rather than negative. Worth a manual correction once you know the real amount left.</div>` : ''}
         ${retirementSummary}
+        ${retiredDatesLine}
         <div class="ps-hint" style="margin-top:8px;">${usageLine}</div>
         ${(() => {
           const entries = spoolChangeLog.filter(l => l.spoolId === s.id);
