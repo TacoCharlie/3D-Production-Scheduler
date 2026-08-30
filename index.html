@@ -8820,7 +8820,26 @@ document.getElementById('ps-root').addEventListener('focusout', (e) => {
 });
 
 // ---------- init ----------
+let appStarted = false;
 async function startApp(){
+  // A second, unrelated 401/auth investigation traced "Mark finished now
+  // pops back up" one further step: supabase-js can emit an extra
+  // SIGNED_IN event well after the real sign-in -- e.g. via the same-
+  // origin session broadcast that fires in every open tab/window whenever
+  // any one of them refreshes its token, exactly the kind of thing that
+  // happens on a tab left open for hours. bootWithAuth() calls
+  // showApp()+startApp() on every SIGNED_IN it sees, and startApp() had no
+  // guard against running twice. loadState() (called at the top here)
+  // does a raw, unmerged overwrite of productionLog straight from
+  // storage -- unlike doSaveLog()'s careful three-way merge -- so a
+  // second startApp() firing while a "Mark finished now" click's own save
+  // is still in flight would silently discard that in-memory change the
+  // instant it re-rendered, with no error of any kind. Only ever fully
+  // initialize once per page load; a real sign-out already does a full
+  // location.reload() (see bootWithAuth), so this guard never blocks a
+  // legitimate fresh sign-in.
+  if(appStarted) return;
+  appStarted = true;
   await loadState();
   syncConsumption();
   setupTabs();
