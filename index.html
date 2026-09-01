@@ -985,6 +985,20 @@ async function doSaveLog(){
     const reconciledLatest = mergeById(latest, [], productionLogSyncSnapshot);
     const merged = mergeById(reconciledLatest, productionLogSyncSnapshot, productionLog);
     await window.storage.set('productionLog', JSON.stringify(merged));
+    // Diagnostic watchdog for an intermittent, still-unconfirmed report:
+    // finishing two entries back to back can show the SECOND one's "Mark
+    // finished now" button reappearing, needing a second click -- even
+    // when nothing here throws or logs an error. If a merge ever actually
+    // drops a locally-finished entry's actualEnd, this makes that fact
+    // loud and specific instead of silently vanishing into a re-render
+    // that just looks like "it reverted".
+    productionLog.forEach(localEntry => {
+      if(!localEntry.actualEnd) return;
+      const mergedEntry = merged.find(m => m.id === localEntry.id);
+      if(mergedEntry && !mergedEntry.actualEnd){
+        console.error(`MERGE DROPPED A FINISHED ENTRY: "${localEntry.id}" had actualEnd set locally (${localEntry.actualEnd}) but the save about to land does not -- its "Mark finished now" button will reappear.`);
+      }
+    });
     productionLog = merged;
     productionLogSyncSnapshot = JSON.parse(JSON.stringify(merged));
     flashSave();
