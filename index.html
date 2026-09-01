@@ -314,6 +314,22 @@ if(typeof window.storage === 'undefined'){
     // but nothing was actually persisted, so it reverted the moment
     // anything re-read from storage. One explicit refresh-then-retry
     // recovers silently instead of leaving it to be discovered later.
+    // A 401 from a stale token can hit more than one storage call around
+    // the same moment (this session's own get()-then-set() pair, a
+    // background poll landing at the same time, etc). Supabase rotates
+    // refresh tokens on every refreshSession() call -- each refresh token
+    // is single-use -- so if two callers each independently call
+    // refreshSession() concurrently, the second one can be handed a
+    // token that's already been consumed by the first and fail itself.
+    // Share a single in-flight refresh across every concurrent caller
+    // instead of letting each one kick off its own.
+    let refreshInFlight = null;
+    function doRefreshSession(){
+      if(!refreshInFlight){
+        refreshInFlight = sb.auth.refreshSession().finally(() => { refreshInFlight = null; });
+      }
+      return refreshInFlight;
+    }
     async function withAuthRetry(fn){
       try {
         return await fn();
@@ -323,12 +339,23 @@ if(typeof window.storage === 'undefined'){
         const looksLikeAuthError = status===401 || status==='401' || status==='PGRST301' || /jwt|expired|unauthoriz/i.test(msg);
         if(!looksLikeAuthError) throw err;
         try {
-          const { error: refreshError } = await sb.auth.refreshSession();
+          const { error: refreshError } = await doRefreshSession();
           if(refreshError) throw err;
         } catch(refreshErr){
           throw err;
         }
-        return await fn();
+        try {
+          return await fn();
+        } catch(retryErr){
+          // Still failing even with a just-refreshed token -- this is a
+          // different (and more telling) failure than the first one, so
+          // surface exactly what it was instead of leaving only the
+          // browser's generic "Failed to load resource" line to go on.
+          const retryStatus = retryErr && (retryErr.status || retryErr.code);
+          const retryMsg = (retryErr && retryErr.message) || retryErr;
+          console.error('Storage retry still failed after refreshSession() succeeded -- code/status:', retryStatus, '-- message:', retryMsg);
+          throw retryErr;
+        }
       }
     }
     window.storage = {
