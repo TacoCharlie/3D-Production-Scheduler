@@ -832,10 +832,17 @@ async function doSaveJobs(){
     try { const stored = await window.storage.get('jobs'); latest = stored ? JSON.parse(stored.value) : []; }
     catch(e){ latest = []; }
     const reconciledLatest = mergeById(latest, [], jobsSyncSnapshot);
+    // Snapshot before computing merged, then reconcile again after the
+    // write below -- see the matching comment in doSaveLog for why: an
+    // entry mutated in place while this save's own write is still in
+    // flight would otherwise get silently overwritten by the stale
+    // `merged` this function is about to commit.
+    const localAtMergeTime = JSON.parse(JSON.stringify(jobs));
     const merged = mergeById(reconciledLatest, jobsSyncSnapshot, jobs);
     await window.storage.set('jobs', JSON.stringify(merged));
-    jobs = merged;
-    jobsSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    const finalMerged = mergeById(merged, localAtMergeTime, jobs);
+    jobs = finalMerged;
+    jobsSyncSnapshot = JSON.parse(JSON.stringify(finalMerged));
     flashSave();
     if(document.getElementById('ps-tab-jobs')) renderJobs();
   } catch(e){ console.error(e); }
@@ -880,10 +887,17 @@ async function doSavePrinters(){
     // we already confirmed saving), reconcile our last known-good state
     // back in first, so a lagging read can never silently erase it.
     const reconciledLatest = mergeById(latest, [], printersSyncSnapshot);
+    // Snapshot before computing merged, then reconcile again after the
+    // write below -- see the matching comment in doSaveLog for why: an
+    // entry mutated in place while this save's own write is still in
+    // flight would otherwise get silently overwritten by the stale
+    // `merged` this function is about to commit.
+    const localAtMergeTime = JSON.parse(JSON.stringify(printers));
     const merged = mergeById(reconciledLatest, printersSyncSnapshot, printers);
     await window.storage.set('printers', JSON.stringify(merged));
-    printers = merged;
-    printersSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    const finalMerged = mergeById(merged, localAtMergeTime, printers);
+    printers = finalMerged;
+    printersSyncSnapshot = JSON.parse(JSON.stringify(finalMerged));
     flashSave();
     if(document.getElementById('ps-tab-printers')) renderPrinters();
     if(document.getElementById('ps-tab-status')) renderStatus();
@@ -900,10 +914,17 @@ async function doSaveSpools(){
     try { const stored = await window.storage.get('spools'); latest = stored ? JSON.parse(stored.value) : []; }
     catch(e){ latest = []; }
     const reconciledLatest = mergeById(latest, [], spoolsSyncSnapshot);
+    // Snapshot before computing merged, then reconcile again after the
+    // write below -- see the matching comment in doSaveLog for why: an
+    // entry mutated in place while this save's own write is still in
+    // flight would otherwise get silently overwritten by the stale
+    // `merged` this function is about to commit.
+    const localAtMergeTime = JSON.parse(JSON.stringify(spools));
     const merged = mergeById(reconciledLatest, spoolsSyncSnapshot, spools);
     await window.storage.set('spools', JSON.stringify(merged));
-    spools = merged;
-    spoolsSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    const finalMerged = mergeById(merged, localAtMergeTime, spools);
+    spools = finalMerged;
+    spoolsSyncSnapshot = JSON.parse(JSON.stringify(finalMerged));
     flashSave();
     if(document.getElementById('ps-tab-filament')) renderFilament();
     if(document.getElementById('ps-tab-printers')) renderPrinters();
@@ -983,24 +1004,51 @@ async function doSaveLog(){
     try { const stored = await window.storage.get('productionLog'); latest = stored ? JSON.parse(stored.value) : []; }
     catch(e){ latest = []; }
     const reconciledLatest = mergeById(latest, [], productionLogSyncSnapshot);
+    // Found the real mechanism behind the recurring "Mark finished now pops
+    // back up" report: mergeById's "unchanged from snapshot" branch hands
+    // back whatever object reconciledLatest/the snapshot happened to hold
+    // for that id -- NOT a live reference into productionLog. That's fine
+    // at the instant `merged` below is computed. But the very next line
+    // awaits a real network write, and productionLog's own entries are
+    // mutated in place (see the "finish" click handler) -- so if a SECOND
+    // click (e.g. finishing another entry) lands during that write, the
+    // live productionLog array now reflects it while `merged` (computed
+    // before the click) does not. The unconditional `productionLog =
+    // merged` below then overwrote the live array with that stale
+    // snapshot, silently reverting the second click's change -- exactly
+    // what the MERGE DROPPED / RENDER REGRESSION watchdogs caught firing
+    // together in production for two real entries. Snapshotting
+    // productionLog right here, before the write, gives a precise
+    // before-picture to diff the live array against afterward, so any
+    // straggling edit that landed mid-write can be told apart from what
+    // `merged` already accounts for and folded back in instead of erased.
+    const localAtMergeTime = JSON.parse(JSON.stringify(productionLog));
     const merged = mergeById(reconciledLatest, productionLogSyncSnapshot, productionLog);
     await window.storage.set('productionLog', JSON.stringify(merged));
-    // Diagnostic watchdog for an intermittent, still-unconfirmed report:
-    // finishing two entries back to back can show the SECOND one's "Mark
-    // finished now" button reappearing, needing a second click -- even
-    // when nothing here throws or logs an error. If a merge ever actually
-    // drops a locally-finished entry's actualEnd, this makes that fact
-    // loud and specific instead of silently vanishing into a re-render
-    // that just looks like "it reverted".
+    // Reconcile anything that changed in productionLog *during* the write
+    // above against `merged`. This mirrors the reconciledLatest trick
+    // further up (this session's own diffs always win over a stale read)
+    // but applied to this same save's own in-flight window instead of the
+    // server: a straggler here hasn't been written to storage by this
+    // call, but it's already queued behind its own saveLog() call (the
+    // click that made it also called saveLog()), which will persist it
+    // moments later -- this just stops it from being wiped from memory
+    // and the screen in between.
+    const finalMerged = mergeById(merged, localAtMergeTime, productionLog);
+    // Diagnostic watchdog for the same report: if a locally-finished entry
+    // is still missing from finalMerged after the reconciliation above,
+    // that's a genuine, still-unexplained drop -- make it loud and specific
+    // instead of silently vanishing into a re-render that just looks like
+    // "it reverted".
     productionLog.forEach(localEntry => {
       if(!localEntry.actualEnd) return;
-      const mergedEntry = merged.find(m => m.id === localEntry.id);
+      const mergedEntry = finalMerged.find(m => m.id === localEntry.id);
       if(mergedEntry && !mergedEntry.actualEnd){
         console.error(`MERGE DROPPED A FINISHED ENTRY: "${localEntry.id}" had actualEnd set locally (${localEntry.actualEnd}) but the save about to land does not -- its "Mark finished now" button will reappear.`);
       }
     });
-    productionLog = merged;
-    productionLogSyncSnapshot = JSON.parse(JSON.stringify(merged));
+    productionLog = finalMerged;
+    productionLogSyncSnapshot = JSON.parse(JSON.stringify(finalMerged));
     flashSave();
     // Reconcile every view that reads productionLog, in case the merge
     // pulled in something logged from another device in the meantime.
@@ -3732,18 +3780,15 @@ function getValidSplitRows(unitsCompleted){
 }
 let lastRenderedFinishState = new Map(); // entry id -> whether actualEnd was set as of the last renderLog() call. Diagnostic-only, never read for actual rendering logic.
 function renderLog(){
-  // Diagnostic tripwire for an intermittent, still-unexplained report:
-  // clicking "Mark finished now" on two entries back to back sometimes
-  // shows the SECOND one's button reappearing, needing a second click.
-  // Two leading theories were ruled out with hard evidence already (a
-  // stale-token save that never actually recovers, and the productionLog
-  // merge dropping a local change) -- neither of their own diagnostics
-  // ever fires when this happens, yet it keeps happening. This catches
-  // the actual moment THIS function is about to render a previously-
-  // finished entry as unfinished again, plus the call stack of whatever
-  // triggered this specific render -- the one piece of evidence that
-  // would finally identify the real mechanism instead of ruling out
-  // another guess.
+  // Diagnostic tripwire for the "Mark finished now pops back up" report.
+  // The real mechanism was found and fixed in doSaveLog(): a second finish
+  // click landing while an earlier save's storage.set() write was still in
+  // flight could get silently overwritten by that earlier save's own
+  // (by-then-stale) merge result. doSaveLog() now reconciles against a
+  // fresh local snapshot after its write to catch exactly that straggler.
+  // This tripwire stays in place as ongoing insurance -- if a render ever
+  // again shows a previously-finished entry reverting, it logs loudly with
+  // a call stack instead of silently looking like "it reverted".
   productionLog.forEach(e => {
     const hadFinishBefore = lastRenderedFinishState.get(e.id);
     if(hadFinishBefore === true && !e.actualEnd){
