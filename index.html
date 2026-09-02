@@ -3730,7 +3730,27 @@ function getValidSplitRows(unitsCompleted){
   if(sum !== unitsCompleted) return null;
   return rows;
 }
+let lastRenderedFinishState = new Map(); // entry id -> whether actualEnd was set as of the last renderLog() call. Diagnostic-only, never read for actual rendering logic.
 function renderLog(){
+  // Diagnostic tripwire for an intermittent, still-unexplained report:
+  // clicking "Mark finished now" on two entries back to back sometimes
+  // shows the SECOND one's button reappearing, needing a second click.
+  // Two leading theories were ruled out with hard evidence already (a
+  // stale-token save that never actually recovers, and the productionLog
+  // merge dropping a local change) -- neither of their own diagnostics
+  // ever fires when this happens, yet it keeps happening. This catches
+  // the actual moment THIS function is about to render a previously-
+  // finished entry as unfinished again, plus the call stack of whatever
+  // triggered this specific render -- the one piece of evidence that
+  // would finally identify the real mechanism instead of ruling out
+  // another guess.
+  productionLog.forEach(e => {
+    const hadFinishBefore = lastRenderedFinishState.get(e.id);
+    if(hadFinishBefore === true && !e.actualEnd){
+      console.error(`RENDER REGRESSION: entry "${e.id}" was shown as FINISHED in an earlier render, but this renderLog() call is about to show it as NOT finished (actualEnd=${e.actualEnd}). Its "Mark finished now" button is about to reappear. Call stack:`, new Error().stack);
+    }
+    lastRenderedFinishState.set(e.id, !!e.actualEnd);
+  });
   const root = document.getElementById('ps-tab-log');
   // Fall back to the first item only if nothing was ever selected, or the
   // previously-selected one no longer exists (deleted printer/product).
