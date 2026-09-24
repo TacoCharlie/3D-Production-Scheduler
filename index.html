@@ -246,6 +246,7 @@
       <button class="ps-tab" data-tab="printers">Printers</button>
       <button class="ps-tab" data-tab="filament">Filament</button>
       <button class="ps-tab" data-tab="catalog">Catalog</button>
+      <button class="ps-tab" data-tab="inventory">Inventory</button>
       <button class="ps-tab" data-tab="shipping">Shipping</button>
       <button class="ps-tab" data-tab="analytics">Analytics</button>
       <button class="ps-tab" data-tab="settings">Settings</button>
@@ -259,6 +260,7 @@
     <div id="ps-tab-printers" style="display:none;"></div>
     <div id="ps-tab-filament" style="display:none;"></div>
     <div id="ps-tab-catalog" style="display:none;"></div>
+    <div id="ps-tab-inventory" style="display:none;"></div>
     <div id="ps-tab-shipping" style="display:none;"></div>
     <div id="ps-tab-analytics" style="display:none;"></div>
     <div id="ps-tab-settings" style="display:none;"></div>
@@ -7055,6 +7057,11 @@ function renderCatalog(){
   } else {
     renderCatalogList(root);
   }
+  // Inventory report shares the same underlying catalog/shopifySync data, so
+  // it's kept in lockstep with the Catalog tab by piggybacking on every
+  // place that already calls renderCatalog() rather than needing its own
+  // call added at each of those ~50 sites individually.
+  if(document.getElementById('ps-tab-inventory')) renderInventory();
 }
 
 // ---- Browsing view: a plain list, nothing inline-editable ----
@@ -7350,6 +7357,187 @@ function renderCatalogList(root){
     e.target.value = '';
     editingProductId = '_new';
     renderCatalog();
+  });
+}
+
+// ---- Inventory report: a dedicated, sortable/filterable view of every
+// product's Stock/Velocity/Runway, separate from the Catalog tab. Chadd
+// asked for this after seeing the same numbers folded into the Catalog
+// table (Phase 4) — that view is fine for editing a product, but there was
+// no good way to sort/filter across the whole list from there. Session-only
+// state (not persisted): sort column/direction and the current filters.
+let inventoryReportSort = { col: 'runway', dir: 'asc' };
+let inventoryReportFilter = { search: '', show: 'all', runwayMax: '' };
+
+function inventoryReportRows(){
+  return catalog.map(p => {
+    const sync = shopifySync[p.id];
+    const skuCount = (p.shopifySkus||[]).length;
+    const unmatchedCount = sync ? (sync.unmatched_skus||[]).length : 0;
+    const stock = sync ? Number(sync.current_stock) : null;
+    const velocity = sync ? Number(sync.velocity_per_day) : null;
+    // Numeric runway for sorting/filtering: no sync data at all -> null
+    // (sorts last, never matches a "runway <= N" filter); zero velocity
+    // with stock on hand -> Infinity (matches the Catalog tab's "—", i.e.
+    // no estimate, effectively never runs out at the current pace); zero
+    // velocity and zero stock -> 0 (most urgent).
+    const runway = !sync ? null
+      : velocity > 0 ? stock / velocity
+      : stock > 0 ? Infinity
+      : 0;
+    return { p, sync, skuCount, unmatchedCount, stock, velocity, runway };
+  });
+}
+
+function renderInventory(){
+  const root = document.getElementById('ps-tab-inventory');
+  if(!sb){
+    root.innerHTML = `
+      <div class="ps-panel">
+        <div class="ps-panel-title"><span class="dot"></span>Inventory Report</div>
+        <div class="ps-empty">This report needs Supabase configured (same as the Catalog tab's Stock/Velocity/Runway columns) — it's not available in offline/local-only mode.</div>
+      </div>
+    `;
+    return;
+  }
+
+  let rows = inventoryReportRows();
+
+  const search = inventoryReportFilter.search.trim().toLowerCase();
+  if(search){
+    rows = rows.filter(r => r.p.name.toLowerCase().includes(search) || (r.p.shopifySkus||[]).some(s => s.toLowerCase().includes(search)));
+  }
+  if(inventoryReportFilter.show === 'mapped') rows = rows.filter(r => r.skuCount > 0);
+  else if(inventoryReportFilter.show === 'unmatched') rows = rows.filter(r => r.unmatchedCount > 0);
+  const runwayMax = parseFloat(inventoryReportFilter.runwayMax);
+  if(!isNaN(runwayMax)) rows = rows.filter(r => r.runway !== null && r.runway <= runwayMax);
+
+  const col = inventoryReportSort.col;
+  const dir = inventoryReportSort.dir === 'desc' ? -1 : 1;
+  rows.sort((a, b) => {
+    let av, bv;
+    if(col === 'name'){ av = a.p.name.toLowerCase(); bv = b.p.name.toLowerCase(); }
+    else if(col === 'sku') { av = a.skuCount; bv = b.skuCount; }
+    else if(col === 'price') { av = a.p.salesPrice||0; bv = b.p.salesPrice||0; }
+    else { av = a[col]; bv = b[col]; }
+    // Nulls (no sync data yet) always sort to the bottom regardless of direction.
+    if(av === null && bv === null) return 0;
+    if(av === null) return 1;
+    if(bv === null) return -1;
+    if(av < bv) return -1 * dir;
+    if(av > bv) return 1 * dir;
+    return 0;
+  });
+
+  const arrow = (c) => col===c ? (dir===1 ? ' ▲' : ' ▼') : '';
+  const th = (c, label, width) => `<th style="width:${width};cursor:pointer;user-select:none;" data-sort-col="${c}">${label}${arrow(c)}</th>`;
+
+  const rowsHtml = rows.map(r => {
+    const p = r.p;
+    const skuCell = (r.skuCount>0 ? r.skuCount+' SKU'+(r.skuCount!==1?'s':'') : '—')
+      + (r.unmatchedCount>0 ? ` <span class="ps-hint" style="color:var(--danger)" title="${escapeHtml((r.sync.unmatched_skus||[]).join(', '))} — mapped here but Shopify didn't recognize ${r.unmatchedCount>1?'them':'it'}">⚠ ${r.unmatchedCount} unmatched</span>` : '');
+    const priceCell = p.salesPrice>0 ? '$'+Number(p.salesPrice).toFixed(2) : '—';
+    const stockCell = r.stock!=null ? String(r.stock) : '—';
+    const velocityCell = r.velocity!=null ? r.velocity.toFixed(2)+'/day' : '—';
+    const runwayCell = r.runway===null ? '—' : r.runway===Infinity ? '—' : Math.round(r.runway)+'d';
+    return `
+      <tr data-id="${p.id}">
+        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
+        <td class="ps-hint">${skuCell}</td>
+        <td class="mono ps-hint">${priceCell}</td>
+        <td class="mono ps-hint">${stockCell}</td>
+        <td class="mono ps-hint">${velocityCell}</td>
+        <td class="mono ps-hint">${runwayCell}</td>
+        <td><button class="ps-btn small" data-action="inventory-report-edit" data-id="${p.id}">Edit</button></td>
+      </tr>
+    `;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Inventory Report</div>
+      <div class="ps-hint" style="margin-bottom:10px;">Every catalog product's Shopify SKU mapping, price, and live stock/velocity/runway in one sortable, filterable list. Click a column header to sort by it.</div>
+      <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+        <button class="ps-btn" id="ps-inventory-report-sync-btn">Sync Shopify now</button>
+        <span class="ps-hint" id="ps-inventory-report-sync-status">${shopifySyncStatusHint()}</span>
+      </div>
+      <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+        <input class="ps-input" id="ps-inventory-report-search" placeholder="Search name or SKU…" value="${escapeHtml(inventoryReportFilter.search)}" style="max-width:220px;" />
+        <select class="ps-select" id="ps-inventory-report-show" style="max-width:180px;">
+          <option value="all" ${inventoryReportFilter.show==='all'?'selected':''}>All products</option>
+          <option value="mapped" ${inventoryReportFilter.show==='mapped'?'selected':''}>Mapped to Shopify only</option>
+          <option value="unmatched" ${inventoryReportFilter.show==='unmatched'?'selected':''}>Unmatched SKUs only</option>
+        </select>
+        <label class="ps-hint" style="display:flex;align-items:center;gap:6px;">Runway ≤
+          <input class="ps-input" type="number" min="0" id="ps-inventory-report-runway-max" placeholder="days" value="${escapeHtml(inventoryReportFilter.runwayMax)}" style="max-width:80px;" />
+        </label>
+        ${(inventoryReportFilter.search || inventoryReportFilter.show!=='all' || inventoryReportFilter.runwayMax) ? `<button class="ps-btn ghost small" id="ps-inventory-report-clear">Clear filters</button>` : ''}
+      </div>
+      ${rows.length===0 ? '<div class="ps-empty">No products match these filters.</div>' : `
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr>${th('name','Product','')}${th('sku','SKU','80px')}${th('price','Price','80px')}${th('stock','Stock','70px')}${th('velocity','Velocity','90px')}${th('runway','Runway','80px')}<th style="width:70px"></th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+      </div>
+      `}
+    </div>
+  `;
+
+  document.getElementById('ps-inventory-report-search').addEventListener('input', (e) => {
+    inventoryReportFilter.search = e.target.value;
+    renderInventory();
+  });
+  document.getElementById('ps-inventory-report-show').addEventListener('change', (e) => {
+    inventoryReportFilter.show = e.target.value;
+    renderInventory();
+  });
+  document.getElementById('ps-inventory-report-runway-max').addEventListener('input', (e) => {
+    inventoryReportFilter.runwayMax = e.target.value;
+    renderInventory();
+  });
+  const clearBtn = document.getElementById('ps-inventory-report-clear');
+  if(clearBtn){
+    clearBtn.addEventListener('click', () => {
+      inventoryReportFilter = { search: '', show: 'all', runwayMax: '' };
+      renderInventory();
+    });
+  }
+  root.querySelectorAll('[data-sort-col]').forEach(header => {
+    header.addEventListener('click', () => {
+      const c = header.getAttribute('data-sort-col');
+      if(inventoryReportSort.col === c){
+        inventoryReportSort.dir = inventoryReportSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        inventoryReportSort = { col: c, dir: 'asc' };
+      }
+      renderInventory();
+    });
+  });
+  const syncBtn = document.getElementById('ps-inventory-report-sync-btn');
+  syncBtn.addEventListener('click', async () => {
+    const statusEl = document.getElementById('ps-inventory-report-sync-status');
+    syncBtn.disabled = true;
+    syncBtn.textContent = 'Syncing…';
+    if(statusEl) statusEl.textContent = '';
+    try {
+      const { data, error } = await sb.functions.invoke('shopify-sync', { body: {} });
+      if(error) throw error;
+      if(data && data.ok === false) throw new Error(data.error || 'Sync failed');
+      await loadShopifySync();
+      renderCatalog(); // also refreshes the Catalog tab's own Stock/Velocity/Runway columns, and re-invokes renderInventory()
+    } catch(err){
+      alert('Shopify sync failed: ' + (err.message || err));
+      syncBtn.disabled = false;
+      syncBtn.textContent = 'Sync Shopify now';
+    }
+  });
+  root.querySelectorAll('[data-action="inventory-report-edit"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      editingProductId = btn.getAttribute('data-id');
+      switchToTab('catalog');
+      renderCatalog();
+    });
   });
 }
 
@@ -9034,16 +9222,21 @@ function renderScheduleOutput(sched, container){
 }
 
 // ---------- tabs ----------
+const PS_TAB_NAMES = ['status','schedule','log','estimate','jobs','printers','filament','catalog','inventory','shipping','analytics','settings'];
+
+// Reused by setupTabs()'s own click handler and by any button elsewhere in
+// the app that needs to jump the user to a specific tab programmatically
+// (e.g. "Edit" from the Inventory report jumping to that product in Catalog).
+function switchToTab(target){
+  document.querySelectorAll('.ps-tab').forEach(t => t.classList.toggle('active', t.getAttribute('data-tab')===target));
+  PS_TAB_NAMES.forEach(name => {
+    document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
+  });
+}
+
 function setupTabs(){
   document.querySelectorAll('.ps-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.ps-tab').forEach(t=>t.classList.remove('active'));
-      tab.classList.add('active');
-      const target = tab.getAttribute('data-tab');
-      ['status','schedule','log','estimate','jobs','printers','filament','catalog','shipping','analytics','settings'].forEach(name => {
-        document.getElementById('ps-tab-'+name).style.display = (name===target) ? '' : 'none';
-      });
-    });
+    tab.addEventListener('click', () => switchToTab(tab.getAttribute('data-tab')));
   });
 }
 
