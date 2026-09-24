@@ -586,6 +586,7 @@ let estimateItems = []; // [{id: productId, qty}] in a custom, user-controlled o
 let estimateScenarios = [1,2,3]; // user-editable list of printer counts to compare
 let jobs = []; // [{id, name, items:[{id,qty}], status:'queued'|'active'|'done', createdAt}]
 let liveSchedule = null;
+let shopifySync = {}; // product_id -> {current_stock, units_sold_recent, velocity_window_days, velocity_per_day, unmatched_skus, synced_at}, from the shopify_sync table (Supabase-only; stays {} without Supabase configured)
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
 
@@ -816,6 +817,24 @@ async function loadState(){
   catch(e){ jobs = []; }
   jobs.forEach(j => { if(typeof j.manualDone !== 'number') j.manualDone = 0; });
   jobsSyncSnapshot = JSON.parse(JSON.stringify(jobs));
+
+  await loadShopifySync();
+}
+
+// shopify_sync is a plain Supabase table (not kv_store) -- see the Shopify
+// integration doc: it's system-written by the shopify-sync Edge Function
+// and read-only from the app's perspective, so it doesn't need the
+// merge-based window.storage abstraction built for user edits. Silently
+// stays {} without Supabase configured (no sb client) or before the first
+// sync has ever run.
+async function loadShopifySync(){
+  shopifySync = {};
+  if(!sb) return;
+  try {
+    const { data, error } = await sb.from('shopify_sync').select('*');
+    if(error) throw error;
+    (data||[]).forEach(row => { shopifySync[row.product_id] = row; });
+  } catch(e){ console.error('Failed to load shopify_sync', e); }
 }
 
 // Job credit (applyJobCredit) fires from several close-together actions —
@@ -7015,6 +7034,20 @@ function renderShipping(){
   });
 }
 
+// Small "last synced ... ago, N unmatched SKUs" hint shown next to the
+// Sync button, so the sync status is visible without opening every
+// product's editor or the Supabase table directly.
+function shopifySyncStatusHint(){
+  const rows = Object.values(shopifySync);
+  if(rows.length===0) return 'Never synced yet.';
+  const latest = rows.reduce((max, r) => r.synced_at > max ? r.synced_at : max, rows[0].synced_at);
+  const unmatchedCount = rows.reduce((sum, r) => sum + ((r.unmatched_skus||[]).length), 0);
+  const agoMs = Date.now() - new Date(latest).getTime();
+  const agoMin = Math.round(agoMs/60000);
+  const agoText = agoMin < 1 ? 'just now' : agoMin < 60 ? `${agoMin}m ago` : agoMin < 1440 ? `${Math.round(agoMin/60)}h ago` : `${Math.round(agoMin/1440)}d ago`;
+  return `Last synced ${agoText}${unmatchedCount>0 ? ` — ${unmatchedCount} unmatched SKU${unmatchedCount!==1?'s':''}` : ''}`;
+}
+
 function renderCatalog(){
   const root = document.getElementById('ps-tab-catalog');
   if(editingProductId !== null){
@@ -7059,8 +7092,18 @@ function renderCatalogList(root){
     const fileCount = Object.keys(p.projectFiles||{}).length;
     const batchCount = (p.batchConfigs||[]).length;
     const skuCount = (p.shopifySkus||[]).length;
-    const skuCell = skuCount>0 ? skuCount+' SKU'+(skuCount!==1?'s':'') : '—';
+    const sync = shopifySync[p.id];
+    const unmatchedCount = sync ? (sync.unmatched_skus||[]).length : 0;
+    const skuCell = (skuCount>0 ? skuCount+' SKU'+(skuCount!==1?'s':'') : '—')
+      + (unmatchedCount>0 ? ` <span class="ps-hint" style="color:var(--danger)" title="${escapeHtml((sync.unmatched_skus||[]).join(', '))} — mapped here but Shopify didn't recognize ${unmatchedCount>1?'them':'it'}">⚠ ${unmatchedCount} unmatched</span>` : '');
     const priceCell = p.salesPrice>0 ? '$'+Number(p.salesPrice).toFixed(2) : '—';
+    const stockCell = sync ? String(sync.current_stock) : '—';
+    const velocityCell = sync ? Number(sync.velocity_per_day).toFixed(2)+'/day' : '—';
+    const runwayCell = (() => {
+      if(!sync) return '—';
+      if(sync.velocity_per_day > 0) return Math.round(sync.current_stock / sync.velocity_per_day) + 'd';
+      return sync.current_stock > 0 ? '—' : '0d';
+    })();
     const isExpanded = expandedBatchPreview.has(p.id);
     const badge = batchCount>0
       ? ` <button class="ps-tag" data-action="toggle-batch-preview" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool); border:none; cursor:pointer;" title="${isExpanded?'Hide':'Show'} batch details">${isExpanded?'▾':'▸'} ${batchCount}× batch${batchCount!==1?'es':''}</button>`
@@ -7079,11 +7122,12 @@ function renderCatalogList(root){
         <td></td>
         <td></td>
         <td></td>
+        ${sb ? `<td></td><td></td><td></td>` : ''}
       </tr>
     `).join('') : '';
     const costBreakdownRow = (costExpanded && cogs) ? `
       <tr class="ps-batch-preview-row" style="opacity:0.9;">
-        <td colspan="11" style="padding:8px 12px 8px 28px;">
+        <td colspan="${sb ? 14 : 11}" style="padding:8px 12px 8px 28px;">
           <div class="ps-row" style="gap:24px;flex-wrap:wrap;font-size:12.5px;">
             <span class="ps-hint">Filament: <b style="color:var(--text);">$${cogs.filamentCost.toFixed(2)}</b></span>
             <span class="ps-hint">Electricity (avg): <b style="color:var(--text);">$${cogs.electricityCostBlended.toFixed(2)}</b> at $${cogs.blendedRate.toFixed(3)}/kWh — all-time blended</span>
@@ -7104,6 +7148,7 @@ function renderCatalogList(root){
         <td class="ps-hint">${batchCount>0?batchCount+' batch'+(batchCount!==1?'es':''):'—'}</td>
         <td class="ps-hint">${skuCell}</td>
         <td class="ps-hint">${priceCell}</td>
+        ${sb ? `<td class="mono ps-hint">${stockCell}</td><td class="mono ps-hint">${velocityCell}</td><td class="mono ps-hint">${runwayCell}</td>` : ''}
         <td><button class="ps-btn small" data-action="edit-product">Edit</button></td>
       </tr>
       ${subRows}
@@ -7129,13 +7174,15 @@ function renderCatalogList(root){
     </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Product Catalog</div>
-      <div style="margin-bottom:14px;">
+      <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
         <button class="ps-btn primary" id="ps-add-product-btn">+ Add Product</button>
+        ${sb ? `<button class="ps-btn" id="ps-shopify-sync-btn">Sync Shopify now</button>` : ''}
+        ${sb ? `<span class="ps-hint" id="ps-shopify-sync-status">${shopifySyncStatusHint()}</span>` : ''}
       </div>
       ${catalog.length===0 ? '<div class="ps-empty">No products yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px">SKU</th><th style="width:80px">Price</th><th style="width:70px"></th></tr></thead>
+        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px">SKU</th><th style="width:80px">Price</th>${sb ? `<th style="width:70px">Stock</th><th style="width:80px">Velocity</th><th style="width:80px">Runway</th>` : ''}<th style="width:70px"></th></tr></thead>
         <tbody>${productRows}</tbody>
       </table>
       </div>
@@ -7147,6 +7194,26 @@ function renderCatalogList(root){
     editingProductId = '_new';
     renderCatalog();
   });
+  const syncBtn = document.getElementById('ps-shopify-sync-btn');
+  if(syncBtn){
+    syncBtn.addEventListener('click', async () => {
+      const statusEl = document.getElementById('ps-shopify-sync-status');
+      syncBtn.disabled = true;
+      syncBtn.textContent = 'Syncing…';
+      if(statusEl) statusEl.textContent = '';
+      try {
+        const { data, error } = await sb.functions.invoke('shopify-sync', { body: {} });
+        if(error) throw error;
+        if(data && data.ok === false) throw new Error(data.error || 'Sync failed');
+        await loadShopifySync();
+        renderCatalog();
+      } catch(err){
+        alert('Shopify sync failed: ' + (err.message || err));
+        syncBtn.disabled = false;
+        syncBtn.textContent = 'Sync Shopify now';
+      }
+    });
+  }
   root.querySelectorAll('[data-action="toggle-batch-preview"]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
