@@ -642,6 +642,13 @@ async function loadState(){
       delete p.projectFileUrl;
       delete p.projectFilePath;
     }
+    // Shopify integration groundwork: which Shopify variant SKUs sell this
+    // product (a product can be sold as several colorway variants — hence a
+    // list, not a single field), and its sales price. Both are plain manual
+    // fields for now, filled in ahead of the Shopify sync that will read
+    // stock/velocity for whatever SKUs are listed here.
+    if(!p.shopifySkus) p.shopifySkus = [];
+    if(p.salesPrice == null) p.salesPrice = 0;
   });
   // A product's own timeH/timeM/weightG/projectFiles stay exactly what they
   // were — that's the "1 unit" configuration and everything else in the app
@@ -7051,6 +7058,11 @@ function renderCatalogList(root){
     const incomplete = printMin<=0;
     const fileCount = Object.keys(p.projectFiles||{}).length;
     const batchCount = (p.batchConfigs||[]).length;
+    const skuCount = (p.shopifySkus||[]).length;
+    const shopifyParts = [];
+    if(p.salesPrice>0) shopifyParts.push('$'+Number(p.salesPrice).toFixed(2));
+    if(skuCount>0) shopifyParts.push(skuCount+' SKU'+(skuCount!==1?'s':''));
+    const shopifyCell = shopifyParts.length ? shopifyParts.join(' · ') : '—';
     const isExpanded = expandedBatchPreview.has(p.id);
     const badge = batchCount>0
       ? ` <button class="ps-tag" data-action="toggle-batch-preview" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool); border:none; cursor:pointer;" title="${isExpanded?'Hide':'Show'} batch details">${isExpanded?'▾':'▸'} ${batchCount}× batch${batchCount!==1?'es':''}</button>`
@@ -7067,11 +7079,12 @@ function renderCatalogList(root){
         <td class="ps-hint">${Object.keys(cfg.projectFiles||{}).length>0?Object.keys(cfg.projectFiles||{}).length+' file'+(Object.keys(cfg.projectFiles||{}).length!==1?'s':''):'—'}</td>
         <td></td>
         <td></td>
+        <td></td>
       </tr>
     `).join('') : '';
     const costBreakdownRow = (costExpanded && cogs) ? `
       <tr class="ps-batch-preview-row" style="opacity:0.9;">
-        <td colspan="9" style="padding:8px 12px 8px 28px;">
+        <td colspan="10" style="padding:8px 12px 8px 28px;">
           <div class="ps-row" style="gap:24px;flex-wrap:wrap;font-size:12.5px;">
             <span class="ps-hint">Filament: <b style="color:var(--text);">$${cogs.filamentCost.toFixed(2)}</b></span>
             <span class="ps-hint">Electricity (avg): <b style="color:var(--text);">$${cogs.electricityCostBlended.toFixed(2)}</b> at $${cogs.blendedRate.toFixed(3)}/kWh — all-time blended</span>
@@ -7090,6 +7103,7 @@ function renderCatalogList(root){
         <td class="mono ps-hint">${cogs?`<button class="ps-btn ghost small" data-action="toggle-cost-breakdown" style="padding:1px 6px;">$${cogs.totalNow.toFixed(2)} ${costExpanded?'▾':'▸'}</button>`:'—'}</td>
         <td class="ps-hint">${fileCount>0?fileCount+' file'+(fileCount!==1?'s':''):'—'}</td>
         <td class="ps-hint">${batchCount>0?batchCount+' batch'+(batchCount!==1?'es':''):'—'}</td>
+        <td class="ps-hint">${shopifyCell}</td>
         <td><button class="ps-btn small" data-action="edit-product">Edit</button></td>
       </tr>
       ${subRows}
@@ -7121,7 +7135,7 @@ function renderCatalogList(root){
       ${catalog.length===0 ? '<div class="ps-empty">No products yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px"></th></tr></thead>
+        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:110px">Shopify</th><th style="width:70px"></th></tr></thead>
         <tbody>${productRows}</tbody>
       </table>
       </div>
@@ -7361,6 +7375,7 @@ function renderProductEditor(root){
     ${!isNew ? renderProductFilesSection(p) : ''}
     ${!isNew ? renderProductBatchesSection(p) : ''}
     ${!isNew ? renderPrinterOverridesSection(p) : ''}
+    ${!isNew ? renderProductShopifySection(p) : ''}
   `;
 
   wireProductEditor(root, p, isNew);
@@ -7395,6 +7410,32 @@ function renderProductFilesSection(p){
       <div class="ps-panel-title"><span class="dot"></span>Project Files</div>
       <div class="ps-hint" style="margin-bottom:10px;">One file per printer — "Default" covers any printer without its own. Uploading a .gcode here also fills in the numbers above automatically. Picked the wrong printer? Use "Move to…" to reassign it without re-uploading.</div>
       ${rows}
+    </div>
+  `;
+}
+
+function renderProductShopifySection(p){
+  const skus = p.shopifySkus||[];
+  const skuRows = skus.map(sku => `
+    <div class="ps-row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);">
+      <span class="mono">${escapeHtml(sku)}</span>
+      <button class="ps-btn ghost small" data-action="remove-shopify-sku" data-sku="${escapeHtml(sku)}">✕</button>
+    </div>
+  `).join('');
+  return `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Shopify</div>
+      <div class="ps-hint" style="margin-bottom:10px;">Groundwork for the Shopify sync — sales price and the Shopify variant SKUs that sell this product. A product sold as several colorways can list more than one SKU. Not every product needs one; skip anything not sold on Shopify.</div>
+      <div class="ps-field" style="max-width:160px;margin-bottom:14px;">
+        <span class="ps-field-label">Sales price ($)</span>
+        <input class="ps-input" type="number" min="0" step="0.01" id="ps-editor-salesprice" value="${p.salesPrice||0}" />
+      </div>
+      <div class="ps-field-label" style="margin-bottom:4px;">Shopify SKUs</div>
+      ${skus.length>0 ? skuRows : '<div class="ps-empty">No SKUs mapped yet.</div>'}
+      <div class="ps-row" style="gap:8px;margin-top:10px;max-width:320px;">
+        <input class="ps-input" id="ps-editor-new-sku" placeholder="e.g. MV1-BLUE" />
+        <button class="ps-btn" id="ps-editor-add-sku">+ Add SKU</button>
+      </div>
     </div>
   `;
 }
@@ -7715,6 +7756,38 @@ function wireProductEditor(root, p, isNew){
         saveCatalog(); renderCatalog();
       });
     }
+  });
+
+  // ---- Shopify (sales price + SKU mapping) ----
+  const salesPriceInput = document.getElementById('ps-editor-salesprice');
+  if(salesPriceInput){
+    salesPriceInput.addEventListener('change', () => {
+      p.salesPrice = Math.max(0, parseFloat(salesPriceInput.value)||0);
+      saveCatalog();
+    });
+  }
+  const addSkuBtn = document.getElementById('ps-editor-add-sku');
+  if(addSkuBtn){
+    addSkuBtn.addEventListener('click', () => {
+      const input = document.getElementById('ps-editor-new-sku');
+      const sku = input.value.trim();
+      if(!sku) return;
+      if(!p.shopifySkus) p.shopifySkus = [];
+      if(p.shopifySkus.includes(sku)){ input.value=''; return; } // already mapped, nothing to do
+      p.shopifySkus.push(sku);
+      saveCatalog(); renderCatalog();
+    });
+  }
+  const newSkuInput = document.getElementById('ps-editor-new-sku');
+  if(newSkuInput){
+    newSkuInput.addEventListener('keydown', (e) => { if(e.key==='Enter'){ e.preventDefault(); addSkuBtn.click(); } });
+  }
+  root.querySelectorAll('[data-action="remove-shopify-sku"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const sku = btn.getAttribute('data-sku');
+      p.shopifySkus = (p.shopifySkus||[]).filter(s => s!==sku);
+      saveCatalog(); renderCatalog();
+    });
   });
 
   // ---- Batches list actions ----
