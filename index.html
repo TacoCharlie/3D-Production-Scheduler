@@ -588,7 +588,7 @@ let estimateItems = []; // [{id: productId, qty}] in a custom, user-controlled o
 let estimateScenarios = [1,2,3]; // user-editable list of printer counts to compare
 let jobs = []; // [{id, name, items:[{id,qty}], status:'queued'|'active'|'done', createdAt}]
 let liveSchedule = null;
-let shopifySync = {}; // product_id -> {current_stock, units_sold_recent, velocity_window_days, velocity_per_day, unmatched_skus, synced_at}, from the shopify_sync table (Supabase-only; stays {} without Supabase configured)
+let shopifySync = {}; // product_id -> {current_stock, units_sold_recent, velocity_window_days, velocity_per_day, unmatched_skus, unit_cogs, synced_at}, from the shopify_sync table (Supabase-only; stays {} without Supabase configured). unit_cogs (Phase 6) is Shopify's own per-unit cost, nullable if not set there yet.
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
 
@@ -1900,6 +1900,59 @@ function needsToBePrintedList(){
     if(runway > thresholdDays) return null;
     return { p, runway, thresholdDays, stock, velocity };
   }).filter(Boolean).sort((a,b) => a.runway - b.runway);
+}
+
+// Phase 6: Profit/hr and Priority Score -- a standing, general-value metric
+// per product ("where am I getting the most printer value"), independent of
+// current stock. Complements Runway/Needs-to-be-printed (which says *when*
+// something needs printing) rather than replacing it.
+//
+// Failure rate mirrors the Analytics tab's own Failure Stats widget
+// (non-test entries that are either failed or finished), scoped to one
+// product. No print history yet -> 0, so a brand-new product doesn't get
+// blocked from having a value metric just because nothing's failed (or
+// succeeded) yet.
+function productFailureRate(productId){
+  const resolved = productionLog.filter(e => !e.isTest && e.productId === productId && (e.failed || e.actualEnd));
+  if(resolved.length === 0) return 0;
+  return resolved.filter(e => e.failed).length / resolved.length;
+}
+
+// Profit/hr = [(Sales Price - COGS) x success rate - COGS x failure rate] / printer hours.
+// COGS comes straight from Shopify's own "Inventory item cost" field
+// (unit_cogs on shopify_sync, pulled by the Edge Function) rather than
+// being reconstructed from filament/electricity math -- Chadd already
+// keeps that field current in Shopify using this app's own cost numbers,
+// so reading it back is simpler and more current than re-deriving it here.
+// Demand is the same recent sales velocity already computed for Runway.
+// Priority Score = Profit/hr x Demand -- a ranking index for comparing
+// products, not a literal dollar figure.
+//
+// Returns null profitPerHour/priorityScore (with a human-readable `reason`)
+// whenever a required input is missing, rather than showing a number that
+// would be misleading: no Shopify sync yet, no cost data from Shopify yet,
+// no Sales Price set, or no print time to divide by.
+function computeProductValueMetrics(productId){
+  const product = catalog.find(p => p.id === productId);
+  if(!product) return { profitPerHour: null, priorityScore: null, reason: 'Unknown product' };
+  const sync = shopifySync[productId];
+  if(!sync) return { profitPerHour: null, priorityScore: null, reason: 'Not yet synced with Shopify' };
+  const cogs = sync.unit_cogs;
+  if(cogs == null || Number.isNaN(Number(cogs))) {
+    return { profitPerHour: null, priorityScore: null, reason: 'No cost data from Shopify yet — set "Cost per item" on this product\'s SKU(s) in Shopify, then re-sync' };
+  }
+  const salesPrice = Number(product.salesPrice) || 0;
+  if(salesPrice <= 0) return { profitPerHour: null, priorityScore: null, reason: 'No Sales Price set for this product' };
+  const printMin = productActualPrintMinutes(productId);
+  if(!(printMin > 0)) return { profitPerHour: null, priorityScore: null, reason: 'No print time to calculate against' };
+  const printerHours = printMin / 60;
+  const failureRate = productFailureRate(productId);
+  const successRate = 1 - failureRate;
+  const cogsNum = Number(cogs);
+  const profitPerHour = ((salesPrice - cogsNum) * successRate - cogsNum * failureRate) / printerHours;
+  const demand = Number(sync.velocity_per_day) || 0;
+  const priorityScore = profitPerHour * demand;
+  return { profitPerHour, priorityScore, cogs: cogsNum, failureRate, demand, reason: null };
 }
 
 function loggedTodayCount(productId){
@@ -7471,7 +7524,8 @@ function inventoryReportRows(){
       : velocity > 0 ? stock / velocity
       : stock > 0 ? Infinity
       : 0;
-    return { p, sync, skuCount, unmatchedCount, stock, velocity, runway };
+    const value = computeProductValueMetrics(p.id);
+    return { p, sync, skuCount, unmatchedCount, stock, velocity, runway, profitPerHour: value.profitPerHour, priorityScore: value.priorityScore, valueReason: value.reason };
   });
 }
 
@@ -7528,6 +7582,12 @@ function renderInventory(){
     const stockCell = r.stock!=null ? String(r.stock) : '—';
     const velocityCell = r.velocity!=null ? r.velocity.toFixed(2)+'/day' : '—';
     const runwayCell = r.runway===null ? '—' : r.runway===Infinity ? '—' : Math.round(r.runway)+'d';
+    const profitCell = r.profitPerHour!=null
+      ? `<span${r.profitPerHour<0?' style="color:var(--danger);"':''}>$${r.profitPerHour.toFixed(2)}/hr</span>`
+      : `<span class="ps-hint" title="${escapeHtml(r.valueReason||'')}">—</span>`;
+    const priorityCell = r.priorityScore!=null
+      ? `<span${r.priorityScore<0?' style="color:var(--danger);"':''}>${r.priorityScore.toFixed(1)}</span>`
+      : `<span class="ps-hint" title="${escapeHtml(r.valueReason||'')}">—</span>`;
     return `
       <tr data-id="${p.id}">
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
@@ -7537,6 +7597,8 @@ function renderInventory(){
         <td class="mono ps-hint">${stockCell}</td>
         <td class="mono ps-hint">${velocityCell}</td>
         <td class="mono ps-hint">${runwayCell}</td>
+        <td class="mono">${profitCell}</td>
+        <td class="mono">${priorityCell}</td>
         <td><button class="ps-btn small" data-action="inventory-report-edit" data-id="${p.id}">Edit</button></td>
       </tr>
     `;
@@ -7545,7 +7607,7 @@ function renderInventory(){
   root.innerHTML = `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Inventory Report</div>
-      <div class="ps-hint" style="margin-bottom:10px;">Every catalog product's Shopify SKU mapping, price, and live stock/velocity/runway in one sortable, filterable list. Click a column header to sort by it.</div>
+      <div class="ps-hint" style="margin-bottom:10px;">Every catalog product's Shopify SKU mapping, price, live stock/velocity/runway, and profit value in one sortable, filterable list. Click a column header to sort by it. Profit/hr and Priority need Shopify's own per-item cost synced (Phase 6) plus a Sales Price set — products missing either show "—"; hover it to see why.</div>
       <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
         <button class="ps-btn" id="ps-inventory-report-sync-btn">Sync Shopify now</button>
         <span class="ps-hint" id="ps-inventory-report-sync-status">${shopifySyncStatusHint()}</span>
@@ -7566,7 +7628,7 @@ function renderInventory(){
       ${rows.length===0 ? '<div class="ps-empty">No products match these filters.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr>${th('name','Product','')}${th('sku','SKU','80px')}${th('price','Price','80px')}${th('startDate','Start date','130px')}${th('stock','Stock','70px')}${th('velocity','Velocity','90px')}${th('runway','Runway','80px')}<th style="width:70px"></th></tr></thead>
+        <thead><tr>${th('name','Product','')}${th('sku','SKU','80px')}${th('price','Price','80px')}${th('startDate','Start date','130px')}${th('stock','Stock','70px')}${th('velocity','Velocity','90px')}${th('runway','Runway','80px')}${th('profitPerHour','Profit/hr','90px')}${th('priorityScore','Priority','80px')}<th style="width:70px"></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
       </div>
