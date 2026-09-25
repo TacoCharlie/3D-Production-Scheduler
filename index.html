@@ -7590,10 +7590,10 @@ function renderInventory(){
       : `<span title="${escapeHtml(r.valueReason||'')}">—</span>`;
     return `
       <tr data-id="${p.id}">
-        <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
+        <td style="white-space:nowrap;font-size:12.5px;">${renderTag(p.type)} <span style="margin-left:4px;">${escapeHtml(p.name)}</span></td>
         <td class="ps-hint">${skuCell}</td>
         <td class="mono ps-hint">${priceCell}</td>
-        <td><input class="ps-input" type="date" data-action="inventory-report-startdate" data-id="${p.id}" value="${escapeHtml(p.startDate||'')}" style="max-width:130px;padding:2px 6px;" title="Velocity start date — set directly here, no need to open the editor" /></td>
+        <td><input class="ps-input" type="date" data-action="inventory-report-startdate" data-id="${p.id}" value="${escapeHtml(p.startDate||'')}" style="width:95px;padding:2px 4px;font-size:12px;" title="Velocity start date — set directly here, no need to open the editor" /></td>
         <td class="mono ps-hint">${stockCell}</td>
         <td class="mono ps-hint">${velocityCell}</td>
         <td class="mono ps-hint">${runwayCell}</td>
@@ -7628,7 +7628,7 @@ function renderInventory(){
       ${rows.length===0 ? '<div class="ps-empty">No products match these filters.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr>${th('name','Product','')}${th('sku','SKU','80px')}${th('price','Price','80px')}${th('startDate','Start date','130px')}${th('stock','Stock','70px')}${th('velocity','Velocity','90px')}${th('runway','Runway','80px')}${th('profitPerHour','Profit/hr','90px')}${th('priorityScore','Priority','80px')}<th style="width:70px"></th></tr></thead>
+        <thead><tr>${th('name','Product','170px')}${th('sku','SKU','60px')}${th('price','Price','60px')}${th('startDate','Start date','105px')}${th('stock','Stock','52px')}${th('velocity','Velocity','72px')}${th('runway','Runway','62px')}${th('profitPerHour','Profit/hr','72px')}${th('priorityScore','Priority','62px')}<th style="width:55px"></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
       </div>
