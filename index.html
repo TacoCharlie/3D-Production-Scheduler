@@ -652,6 +652,12 @@ async function loadState(){
     // stock/velocity for whatever SKUs are listed here.
     if(!p.shopifySkus) p.shopifySkus = [];
     if(p.salesPrice == null) p.salesPrice = 0;
+    // Optional manual "start date" (e.g. when this product actually went on
+    // sale) — lets the sync divide recent sales by the real number of days
+    // it's been sellable instead of a flat 90, so a brand-new product's
+    // velocity isn't understated by counting days before it existed. Blank
+    // means "use the flat 90-day window," same as before this existed.
+    if(p.startDate == null) p.startDate = '';
   });
   // A product's own timeH/timeM/weightG/projectFiles stay exactly what they
   // were — that's the "1 unit" configuration and everything else in the app
@@ -7681,10 +7687,17 @@ function renderProductShopifySection(p){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Shopify</div>
       <div class="ps-hint" style="margin-bottom:10px;">Groundwork for the Shopify sync — sales price and the Shopify variant SKUs that sell this product. A product sold as several colorways can list more than one SKU. Not every product needs one; skip anything not sold on Shopify.</div>
-      <div class="ps-field" style="max-width:160px;margin-bottom:14px;">
-        <span class="ps-field-label">Sales price ($)</span>
-        <input class="ps-input" type="number" min="0" step="0.01" id="ps-editor-salesprice" value="${p.salesPrice||0}" />
+      <div class="ps-row" style="gap:20px;margin-bottom:14px;flex-wrap:wrap;">
+        <div class="ps-field" style="max-width:160px;">
+          <span class="ps-field-label">Sales price ($)</span>
+          <input class="ps-input" type="number" min="0" step="0.01" id="ps-editor-salesprice" value="${p.salesPrice||0}" />
+        </div>
+        <div class="ps-field" style="max-width:180px;">
+          <span class="ps-field-label">Velocity start date</span>
+          <input class="ps-input" type="date" id="ps-editor-startdate" value="${escapeHtml(p.startDate||'')}" />
+        </div>
       </div>
+      <div class="ps-hint" style="margin-top:-8px;margin-bottom:14px;">Optional. If set, the sync divides recent sales by the number of days since this date (capped at 90) instead of a flat 90 — more accurate for a product that hasn't been on sale that long yet. Leave blank to use the flat 90-day window.</div>
       <div class="ps-field-label" style="margin-bottom:4px;">Shopify SKUs</div>
       ${skus.length>0 ? skuRows : '<div class="ps-empty">No SKUs mapped yet.</div>'}
       <div class="ps-row" style="gap:8px;margin-top:10px;max-width:320px;">
@@ -8018,6 +8031,13 @@ function wireProductEditor(root, p, isNew){
   if(salesPriceInput){
     salesPriceInput.addEventListener('change', () => {
       p.salesPrice = Math.max(0, parseFloat(salesPriceInput.value)||0);
+      saveCatalog();
+    });
+  }
+  const startDateInput = document.getElementById('ps-editor-startdate');
+  if(startDateInput){
+    startDateInput.addEventListener('change', () => {
+      p.startDate = startDateInput.value || '';
       saveCatalog();
     });
   }
