@@ -7415,6 +7415,7 @@ function renderInventory(){
   }
   if(inventoryReportFilter.show === 'mapped') rows = rows.filter(r => r.skuCount > 0);
   else if(inventoryReportFilter.show === 'unmatched') rows = rows.filter(r => r.unmatchedCount > 0);
+  else if(inventoryReportFilter.show === 'no-startdate') rows = rows.filter(r => !r.p.startDate);
   const runwayMax = parseFloat(inventoryReportFilter.runwayMax);
   if(!isNaN(runwayMax)) rows = rows.filter(r => r.runway !== null && r.runway <= runwayMax);
 
@@ -7425,6 +7426,7 @@ function renderInventory(){
     if(col === 'name'){ av = a.p.name.toLowerCase(); bv = b.p.name.toLowerCase(); }
     else if(col === 'sku') { av = a.skuCount; bv = b.skuCount; }
     else if(col === 'price') { av = a.p.salesPrice||0; bv = b.p.salesPrice||0; }
+    else if(col === 'startDate') { av = a.p.startDate || null; bv = b.p.startDate || null; }
     else { av = a[col]; bv = b[col]; }
     // Nulls (no sync data yet) always sort to the bottom regardless of direction.
     if(av === null && bv === null) return 0;
@@ -7451,6 +7453,7 @@ function renderInventory(){
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
         <td class="ps-hint">${skuCell}</td>
         <td class="mono ps-hint">${priceCell}</td>
+        <td><input class="ps-input" type="date" data-action="inventory-report-startdate" data-id="${p.id}" value="${escapeHtml(p.startDate||'')}" style="max-width:130px;padding:2px 6px;" title="Velocity start date — set directly here, no need to open the editor" /></td>
         <td class="mono ps-hint">${stockCell}</td>
         <td class="mono ps-hint">${velocityCell}</td>
         <td class="mono ps-hint">${runwayCell}</td>
@@ -7473,6 +7476,7 @@ function renderInventory(){
           <option value="all" ${inventoryReportFilter.show==='all'?'selected':''}>All products</option>
           <option value="mapped" ${inventoryReportFilter.show==='mapped'?'selected':''}>Mapped to Shopify only</option>
           <option value="unmatched" ${inventoryReportFilter.show==='unmatched'?'selected':''}>Unmatched SKUs only</option>
+          <option value="no-startdate" ${inventoryReportFilter.show==='no-startdate'?'selected':''}>Missing start date</option>
         </select>
         <label class="ps-hint" style="display:flex;align-items:center;gap:6px;">Runway ≤
           <input class="ps-input" type="number" min="0" id="ps-inventory-report-runway-max" placeholder="days" value="${escapeHtml(inventoryReportFilter.runwayMax)}" style="max-width:80px;" />
@@ -7482,7 +7486,7 @@ function renderInventory(){
       ${rows.length===0 ? '<div class="ps-empty">No products match these filters.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr>${th('name','Product','')}${th('sku','SKU','80px')}${th('price','Price','80px')}${th('stock','Stock','70px')}${th('velocity','Velocity','90px')}${th('runway','Runway','80px')}<th style="width:70px"></th></tr></thead>
+        <thead><tr>${th('name','Product','')}${th('sku','SKU','80px')}${th('price','Price','80px')}${th('startDate','Start date','130px')}${th('stock','Stock','70px')}${th('velocity','Velocity','90px')}${th('runway','Runway','80px')}<th style="width:70px"></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
       </div>
@@ -7543,6 +7547,20 @@ function renderInventory(){
       editingProductId = btn.getAttribute('data-id');
       switchToTab('catalog');
       renderCatalog();
+    });
+  });
+  // Inline start-date editing right in the table -- Chadd flagged that
+  // opening each product's full editor just to check/set this one field
+  // meant a lot of scrolling and got kicked back to the Catalog list every
+  // time. This edits the same p.startDate field the product editor does,
+  // just without leaving this tab or touching editingProductId at all.
+  root.querySelectorAll('[data-action="inventory-report-startdate"]').forEach(input => {
+    input.addEventListener('change', () => {
+      const product = catalog.find(c => c.id === input.getAttribute('data-id'));
+      if(!product) return;
+      product.startDate = input.value || '';
+      saveCatalog();
+      renderInventory();
     });
   });
 }
