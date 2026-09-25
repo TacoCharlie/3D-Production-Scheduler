@@ -7203,19 +7203,6 @@ function renderCatalogList(root){
     const incomplete = printMin<=0;
     const fileCount = Object.keys(p.projectFiles||{}).length;
     const batchCount = (p.batchConfigs||[]).length;
-    const skuCount = (p.shopifySkus||[]).length;
-    const sync = shopifySync[p.id];
-    const unmatchedCount = sync ? (sync.unmatched_skus||[]).length : 0;
-    const skuCell = (skuCount>0 ? skuCount+' SKU'+(skuCount!==1?'s':'') : '—')
-      + (unmatchedCount>0 ? ` <span class="ps-hint" style="color:var(--danger)" title="${escapeHtml((sync.unmatched_skus||[]).join(', '))} — mapped here but Shopify didn't recognize ${unmatchedCount>1?'them':'it'}">⚠ ${unmatchedCount} unmatched</span>` : '');
-    const priceCell = p.salesPrice>0 ? '$'+Number(p.salesPrice).toFixed(2) : '—';
-    const stockCell = sync ? String(sync.current_stock) : '—';
-    const velocityCell = sync ? Number(sync.velocity_per_day).toFixed(2)+'/day' : '—';
-    const runwayCell = (() => {
-      if(!sync) return '—';
-      if(sync.velocity_per_day > 0) return Math.round(sync.current_stock / sync.velocity_per_day) + 'd';
-      return sync.current_stock > 0 ? '—' : '0d';
-    })();
     const isExpanded = expandedBatchPreview.has(p.id);
     const badge = batchCount>0
       ? ` <button class="ps-tag" data-action="toggle-batch-preview" style="background:color-mix(in srgb, var(--cool) 22%, transparent); color:var(--cool); border:none; cursor:pointer;" title="${isExpanded?'Hide':'Show'} batch details">${isExpanded?'▾':'▸'} ${batchCount}× batch${batchCount!==1?'es':''}</button>`
@@ -7232,14 +7219,11 @@ function renderCatalogList(root){
         <td class="ps-hint">${Object.keys(cfg.projectFiles||{}).length>0?Object.keys(cfg.projectFiles||{}).length+' file'+(Object.keys(cfg.projectFiles||{}).length!==1?'s':''):'—'}</td>
         <td></td>
         <td></td>
-        <td></td>
-        <td></td>
-        ${sb ? `<td></td><td></td><td></td>` : ''}
       </tr>
     `).join('') : '';
     const costBreakdownRow = (costExpanded && cogs) ? `
       <tr class="ps-batch-preview-row" style="opacity:0.9;">
-        <td colspan="${sb ? 14 : 11}" style="padding:8px 12px 8px 28px;">
+        <td colspan="9" style="padding:8px 12px 8px 28px;">
           <div class="ps-row" style="gap:24px;flex-wrap:wrap;font-size:12.5px;">
             <span class="ps-hint">Filament: <b style="color:var(--text);">$${cogs.filamentCost.toFixed(2)}</b></span>
             <span class="ps-hint">Electricity (avg): <b style="color:var(--text);">$${cogs.electricityCostBlended.toFixed(2)}</b> at $${cogs.blendedRate.toFixed(3)}/kWh — all-time blended</span>
@@ -7258,9 +7242,6 @@ function renderCatalogList(root){
         <td class="mono ps-hint">${cogs?`<button class="ps-btn ghost small" data-action="toggle-cost-breakdown" style="padding:1px 6px;">$${cogs.totalNow.toFixed(2)} ${costExpanded?'▾':'▸'}</button>`:'—'}</td>
         <td class="ps-hint">${fileCount>0?fileCount+' file'+(fileCount!==1?'s':''):'—'}</td>
         <td class="ps-hint">${batchCount>0?batchCount+' batch'+(batchCount!==1?'es':''):'—'}</td>
-        <td class="ps-hint">${skuCell}</td>
-        <td class="ps-hint">${priceCell}</td>
-        ${sb ? `<td class="mono ps-hint">${stockCell}</td><td class="mono ps-hint">${velocityCell}</td><td class="mono ps-hint">${runwayCell}</td>` : ''}
         <td><button class="ps-btn small" data-action="edit-product">Edit</button></td>
       </tr>
       ${subRows}
@@ -7294,7 +7275,7 @@ function renderCatalogList(root){
       ${catalog.length===0 ? '<div class="ps-empty">No products yet.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px">SKU</th><th style="width:80px">Price</th>${sb ? `<th style="width:70px">Stock</th><th style="width:80px">Velocity</th><th style="width:80px">Runway</th>` : ''}<th style="width:70px"></th></tr></thead>
+        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px"></th></tr></thead>
         <tbody>${productRows}</tbody>
       </table>
       </div>
