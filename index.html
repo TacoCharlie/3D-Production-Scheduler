@@ -1857,6 +1857,51 @@ function productAvgActualByPrinter(productId){
     };
   }).sort((a,b) => a.printerName.localeCompare(b.printerName));
 }
+// Phase 5 ("Needs to be printed"): a single blended actual print-time
+// number per product, in minutes -- unlike productAvgActualByPrinter()
+// above, this deliberately ignores which printer logged it, since the
+// threshold below just needs one number to add the +14 day buffer to, not
+// a per-printer comparison. Falls back to the catalog's own estimate
+// (timeH/timeM) when there's no real print history yet for this product,
+// so a brand-new product still gets a usable (if less precise) threshold
+// rather than being skipped entirely.
+function productActualPrintMinutes(productId){
+  const product = catalog.find(p=>p.id===productId);
+  if(!product) return 0;
+  const entries = productionLog.filter(e => e.productId === productId && e.actualEnd && !e.failed && !(e.unitsCompleted>1));
+  if(entries.length === 0) return product.timeH*60 + product.timeM;
+  const totalMin = entries.reduce((s,e) => s + (new Date(e.actualEnd) - new Date(e.actualStart))/60000, 0);
+  return totalMin / entries.length;
+}
+
+// The +14 days is a fixed buffer (7 days for the rest of a batch job to
+// finish shipping as a whole, 7 more for shipping to the fulfillment
+// location) on top of that product's own actual print time -- see the
+// Shopify integration project doc for the full reasoning. A product needs
+// attention once its Runway (days of stock left at the current sales pace)
+// drops to or below print time + 14 days.
+const NEEDS_PRINT_BUFFER_DAYS = 14;
+
+// Every product with live Shopify sync data (Phase 4), flagged if its
+// Runway has dropped to or below its own print-time-plus-buffer threshold,
+// sorted most-urgent-first. Products never synced (no shopify_sync row --
+// not mapped to any Shopify SKU yet, or a mapped product whose sync hasn't
+// run) are left out entirely rather than treated as urgent by default.
+function needsToBePrintedList(){
+  if(!sb) return [];
+  return catalog.map(p => {
+    const sync = shopifySync[p.id];
+    if(!sync) return null;
+    const velocity = Number(sync.velocity_per_day);
+    const stock = Number(sync.current_stock);
+    const runway = velocity > 0 ? stock / velocity : (stock > 0 ? Infinity : 0);
+    const printMin = productActualPrintMinutes(p.id);
+    const thresholdDays = printMin / 1440 + NEEDS_PRINT_BUFFER_DAYS;
+    if(runway > thresholdDays) return null;
+    return { p, runway, thresholdDays, stock, velocity };
+  }).filter(Boolean).sort((a,b) => a.runway - b.runway);
+}
+
 function loggedTodayCount(productId){
   const key = new Date().toDateString();
   return productionLog.filter(e => e.productId === productId && new Date(e.actualStart).toDateString() === key).length;
@@ -2269,6 +2314,7 @@ function renderJobs(){
   const queued = jobs.filter(j=>j.status==='queued');
   const active = jobs.filter(j=>j.status==='active');
   const done = jobs.filter(j=>j.status==='done');
+  const needsPrint = needsToBePrintedList();
 
   const queuedCards = queued.map(job => {
     const t = jobTotals(job);
@@ -2382,7 +2428,39 @@ function renderJobs(){
     `;
   }).join('');
 
+  const needsPrintRows = needsPrint.map(row => {
+    const runwayStr = row.runway === Infinity ? '∞' : row.runway.toFixed(1)+'d';
+    return `
+      <tr data-id="${row.p.id}">
+        <td>${escapeHtml(row.p.name)}</td>
+        <td class="mono">${runwayStr}</td>
+        <td class="mono">${row.stock}</td>
+        <td class="mono">${row.velocity.toFixed(2)}/day</td>
+        <td class="mono">${row.thresholdDays.toFixed(1)}d</td>
+      </tr>
+    `;
+  }).join('');
+
   root.innerHTML = `
+    <div class="ps-panel">
+      <div class="ps-panel-title"><span class="dot"></span>Needs to be printed</div>
+      ${!sb ? `
+      <div class="ps-empty">This panel needs Supabase configured (same as the Catalog and Inventory tabs' Shopify sync) — it's not available in offline/local-only mode.</div>
+      ` : needsPrint.length===0 ? `
+      <div class="ps-hint" style="margin-bottom:0;">Products show up here when their Shopify runway drops to or below their actual print time plus a 14-day buffer (7 days to finish a batch, 7 days to ship). Nothing's urgent right now.</div>
+      ` : `
+      <div class="ps-hint" style="margin-bottom:12px;">Runway is at or below actual print time + a 14-day buffer (7 days to finish a batch, 7 days to ship). Sorted most urgent first.</div>
+      <div style="overflow-x:auto;">
+      <table class="ps-table">
+        <thead><tr><th>Product</th><th style="width:90px">Runway</th><th style="width:80px">Stock</th><th style="width:110px">Velocity</th><th style="width:100px">Threshold</th></tr></thead>
+        <tbody>${needsPrintRows}</tbody>
+      </table>
+      </div>
+      <div class="ps-row" style="margin-top:14px;">
+        <button class="ps-btn primary" id="ps-needsprint-create-job">+ Create job from these ${needsPrint.length} product${needsPrint.length!==1?'s':''}</button>
+      </div>
+      `}
+    </div>
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Queued</div>
       <div class="ps-hint" style="margin-bottom:12px;">Staged jobs, not yet part of the real production queue. Edit freely, then move each into the active queue whenever a printer's actually ready for it.</div>
@@ -2716,6 +2794,23 @@ function renderJobs(){
       const newId = uid('job');
       jobs.push({id: newId, name: 'New job', items: [], status:'queued', createdAt: new Date().toISOString(), manualDone: 0});
       editingJobNameId = newId;
+      saveJobs(); renderJobs();
+    });
+  }
+
+  const needsPrintCreateBtn = document.getElementById('ps-needsprint-create-job');
+  if(needsPrintCreateBtn){
+    needsPrintCreateBtn.addEventListener('click', () => {
+      if(needsPrint.length===0) return;
+      const newId = uid('job');
+      jobs.push({
+        id: newId,
+        name: 'Needs printing – ' + new Date().toLocaleDateString(),
+        items: needsPrint.map(row => ({id: row.p.id, qty: 1})),
+        status: 'queued',
+        createdAt: new Date().toISOString(),
+        manualDone: 0
+      });
       saveJobs(); renderJobs();
     });
   }
@@ -7068,6 +7163,10 @@ function renderCatalog(){
   // place that already calls renderCatalog() rather than needing its own
   // call added at each of those ~50 sites individually.
   if(document.getElementById('ps-tab-inventory')) renderInventory();
+  // Same reasoning for the Jobs tab's "Needs to be printed" panel — it
+  // reads shopifySync too, so a sync (or any other catalog change) should
+  // refresh it without needing its own call wired in everywhere.
+  if(document.getElementById('ps-tab-jobs')) renderJobs();
 }
 
 // ---- Browsing view: a plain list, nothing inline-editable ----
