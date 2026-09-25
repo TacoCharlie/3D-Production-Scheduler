@@ -7584,10 +7584,10 @@ function renderInventory(){
     const runwayCell = r.runway===null ? '—' : r.runway===Infinity ? '—' : Math.round(r.runway)+'d';
     const profitCell = r.profitPerHour!=null
       ? `<span${r.profitPerHour<0?' style="color:var(--danger);"':''}>$${r.profitPerHour.toFixed(2)}/hr</span>`
-      : `<span class="ps-hint" title="${escapeHtml(r.valueReason||'')}">—</span>`;
+      : `<span title="${escapeHtml(r.valueReason||'')}">—</span>`;
     const priorityCell = r.priorityScore!=null
       ? `<span${r.priorityScore<0?' style="color:var(--danger);"':''}>${r.priorityScore.toFixed(1)}</span>`
-      : `<span class="ps-hint" title="${escapeHtml(r.valueReason||'')}">—</span>`;
+      : `<span title="${escapeHtml(r.valueReason||'')}">—</span>`;
     return `
       <tr data-id="${p.id}">
         <td>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}</td>
@@ -7597,8 +7597,8 @@ function renderInventory(){
         <td class="mono ps-hint">${stockCell}</td>
         <td class="mono ps-hint">${velocityCell}</td>
         <td class="mono ps-hint">${runwayCell}</td>
-        <td class="mono">${profitCell}</td>
-        <td class="mono">${priorityCell}</td>
+        <td class="mono ps-hint">${profitCell}</td>
+        <td class="mono ps-hint">${priorityCell}</td>
         <td><button class="ps-btn small" data-action="inventory-report-edit" data-id="${p.id}">Edit</button></td>
       </tr>
     `;
