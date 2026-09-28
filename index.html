@@ -1911,6 +1911,29 @@ function productCommittedQty(productId){
   }, 0);
 }
 
+// Units of this product actually printed since Shopify's current_stock
+// figure was last captured (sync.synced_at) -- physically done, sitting
+// on the shelf, just not yet reflected in that stale stock number because
+// nobody's re-synced Shopify yet. Fixed 2026-09-29 (Chadd printed 2 units
+// against the active job and watched Qty go UP by 2 instead of staying
+// flat): productCommittedQty correctly drops those 2 out of "still
+// outstanding on the job" (Queued went 20 -> 18, as it should), but
+// nothing credited them anywhere else, so they just vanished from the
+// math -- rawTarget stayed the same (still computed off the same stale
+// stock:12) while committedQty shrank, and targetQty = rawTarget -
+// committedQty rose to fill the gap. Printing progress was making the
+// panel MORE urgent, backwards from what actually happened on the floor.
+// Counted independent of which job (or no job at all) the print was
+// logged against, and independent of job status -- a completed print is
+// a completed print, whether or not its job has been marked Done yet.
+function productProducedSinceSync(productId, syncedAt){
+  if(!syncedAt) return 0;
+  const since = new Date(syncedAt);
+  return productionLog
+    .filter(e => e.productId===productId && e.actualEnd && !e.isTest && !e.failed && new Date(e.actualEnd) > since)
+    .reduce((s,e) => s + (e.unitsCompleted||1), 0);
+}
+
 // Shipping-only buffer now -- production lead time is computed per
 // product below, from how long targetQty actually takes to print.
 const NEEDS_PRINT_SHIP_DAYS = 7;
@@ -1964,9 +1987,10 @@ function needsToBePrintedList(){
     const stock = Number(sync.current_stock);
     const runway = velocity > 0 ? stock / velocity : (stock > 0 ? Infinity : 0);
     const committedQty = productCommittedQty(p.id);
-    const targetQty = Math.ceil(velocity * targetRunwayDays - stock) - committedQty;
+    const producedSinceSync = productProducedSinceSync(p.id, sync.synced_at);
+    const targetQty = Math.ceil(velocity * targetRunwayDays - stock) - committedQty - producedSinceSync;
     if(targetQty <= 0) return;
-    candidates.push({ p, runway, stock, velocity, committedQty, targetQty });
+    candidates.push({ p, runway, stock, velocity, committedQty, producedSinceSync, targetQty });
   });
   if(candidates.length===0) return [];
 
@@ -2019,7 +2043,7 @@ function needsToBePrintedList(){
     if(!finish) return; // couldn't be scheduled (e.g. no printer can ever fit it) -- shouldn't normally happen
     const thresholdDays = (finish - now) / 86400000 + NEEDS_PRINT_SHIP_DAYS;
     if(c.runway > thresholdDays) return;
-    results.push({ p:c.p, runway:c.runway, thresholdDays, stock:c.stock, velocity:c.velocity, targetQty:c.targetQty, committedQty:c.committedQty });
+    results.push({ p:c.p, runway:c.runway, thresholdDays, stock:c.stock, velocity:c.velocity, targetQty:c.targetQty, committedQty:c.committedQty, producedSinceSync:c.producedSinceSync });
   });
   return results.sort((a,b) => a.runway - b.runway);
 }
@@ -2609,11 +2633,11 @@ function renderJobs(){
       <tr data-id="${row.p.id}">
         <td>${escapeHtml(row.p.name)}</td>
         <td class="mono">${runwayStr}</td>
-        <td class="mono">${row.stock}</td>
+        <td class="mono" title="${row.producedSinceSync>0 ? `Plus ${row.producedSinceSync} printed since Shopify was last synced -- not counted here yet, but already netted out of Qty` : 'From the last Shopify sync'}">${row.stock}${row.producedSinceSync>0 ? `<span class="ps-hint"> +${row.producedSinceSync}*</span>` : ''}</td>
         <td class="mono">${row.velocity.toFixed(2)}/day</td>
         <td class="mono" title="Projected finish time on the real multi-printer schedule (queued/active jobs + everything else needing restocking), plus a 7-day ship buffer">${row.thresholdDays.toFixed(1)}d</td>
         <td class="mono ps-hint" title="Units of this product already sitting on a job that hasn't finished yet">${row.committedQty>0 ? row.committedQty : '—'}</td>
-        <td class="mono" title="Additional units needed beyond Stock + Already Queued to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity">${row.targetQty}</td>
+        <td class="mono" title="Additional units needed beyond Stock + Already Queued${row.producedSinceSync>0 ? ` + ${row.producedSinceSync} printed since last sync (see Stock)` : ''} to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity">${row.targetQty}</td>
       </tr>
     `;
   }).join('');
@@ -2633,6 +2657,7 @@ function renderJobs(){
         <tbody>${needsPrintRows}</tbody>
       </table>
       </div>
+      ${needsPrint.some(r=>r.producedSinceSync>0) ? `<div class="ps-hint" style="margin-top:8px;">* already printed since Shopify was last synced -- Qty already accounts for these, they just haven't shown up in Stock yet. Run "Sync Shopify now" on the Inventory tab to clear them.</div>` : ''}
       <div class="ps-row" style="margin-top:14px;">
         <button class="ps-btn primary" id="ps-needsprint-create-job">+ Create job from these ${needsPrint.length} product${needsPrint.length!==1?'s':''}</button>
       </div>
