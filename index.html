@@ -2612,7 +2612,8 @@ function renderJobs(){
         <td class="mono">${row.stock}</td>
         <td class="mono">${row.velocity.toFixed(2)}/day</td>
         <td class="mono" title="Projected finish time on the real multi-printer schedule (queued/active jobs + everything else needing restocking), plus a 7-day ship buffer">${row.thresholdDays.toFixed(1)}d</td>
-        <td class="mono" title="Enough to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity${row.committedQty>0 ? ` (already nets out ${row.committedQty} sitting on an unfinished job)` : ''}">${row.targetQty}</td>
+        <td class="mono ps-hint" title="Units of this product already sitting on a job that hasn't finished yet">${row.committedQty>0 ? row.committedQty : '—'}</td>
+        <td class="mono" title="Additional units needed beyond Stock + Already Queued to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity">${row.targetQty}</td>
       </tr>
     `;
   }).join('');
@@ -2625,10 +2626,10 @@ function renderJobs(){
       ` : needsPrint.length===0 ? `
       <div class="ps-hint" style="margin-bottom:0;">Products show up here when their Shopify runway drops to or below the time it'd take to print a full restock run (enough to reach ${settings.needsPrintTargetRunwayDays} days of stock) plus a 7-day ship buffer. Nothing's urgent right now.</div>
       ` : `
-      <div class="ps-hint" style="margin-bottom:12px;">Runway is at or below the time to print+ship enough to reach ${settings.needsPrintTargetRunwayDays} days of stock (Qty column). Sorted most urgent first.</div>
+      <div class="ps-hint" style="margin-bottom:12px;">Runway is at or below the time to print+ship enough to reach ${settings.needsPrintTargetRunwayDays} days of stock. Qty already accounts for Queued (units sitting on a job that hasn't finished yet) — it's the remaining shortfall, so Queued + Qty is the full amount still needed, not Qty on its own added to Queued twice. Sorted most urgent first.</div>
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th>Product</th><th style="width:90px">Runway</th><th style="width:80px">Stock</th><th style="width:110px">Velocity</th><th style="width:100px">Threshold</th><th style="width:70px" title="Enough to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity">Qty</th></tr></thead>
+        <thead><tr><th>Product</th><th style="width:90px">Runway</th><th style="width:80px">Stock</th><th style="width:110px">Velocity</th><th style="width:100px">Threshold</th><th style="width:80px" title="Units of this product already on a job that hasn't finished yet">Queued</th><th style="width:70px" title="Additional units needed beyond Stock + Queued to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity">Qty</th></tr></thead>
         <tbody>${needsPrintRows}</tbody>
       </table>
       </div>
