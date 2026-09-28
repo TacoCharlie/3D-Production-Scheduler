@@ -1915,46 +1915,33 @@ function productCommittedQty(productId){
 // product below, from how long targetQty actually takes to print.
 const NEEDS_PRINT_SHIP_DAYS = 7;
 
-// Total minutes already committed to jobs that haven't finished yet
-// (queued or active), across every product on them. This work happens
-// regardless of anything below -- it was already queued -- so it always
-// sits ahead of any brand-new restock run. Reuses productCommittedQty
-// (outstanding units per product) rather than re-scanning jobs a second
-// time.
-function committedBacklogMinutes(){
-  const ids = new Set();
-  jobs.filter(j => j.status !== 'done').forEach(j => j.items.forEach(it => ids.add(it.id)));
-  let min = 0;
-  ids.forEach(id => { min += productCommittedQty(id) * productActualPrintMinutes(id); });
-  return min;
-}
-
 // Every product with live Shopify sync data (Phase 4), flagged if its
 // Runway has dropped to or below the time it'd take to actually get
-// printed and shipped -- not just the time to print its own targetQty in
-// isolation. Fixed 2026-09-28 (Chadd caught this the same day as the
-// double-ordering fix): the threshold used to assume a product's own
-// restock run could start immediately, as if the printer were sitting
-// empty. It never accounted for everything else that would print first --
-// jobs already queued, or other products that rank higher in print
-// priority and are ALSO flagged here. A product stuck behind two other
-// urgent products in priorityOrder would get flagged far too late,
-// because its threshold ignored the real wait for a printer to free up.
+// printed and shipped for real -- not a flat priorityOrder-ordered tally.
+// Fixed 2026-09-29 (Chadd caught this by comparing this panel against a
+// real in-progress job): the previous version walked priorityOrder as if
+// it were a strict "this prints before that" ordering, accumulating each
+// higher-priority product's print time as backlog ahead of the next one.
+// But priorityOrder isn't a strict ordering in the real scheduler --
+// buildMultiSchedule (below, same engine the Schedule tab uses) only
+// consults it to break ties between two equal-length jobs; the actual
+// driver is best-fitting whichever job's length fits what's left of each
+// printer's day, across every active printer in parallel. Treating
+// priorityOrder as strict serial ordering meant a product with a
+// comfortable runway that happened to rank #1 in priorityOrder (for
+// reasons unrelated to restocking urgency) could push out the threshold
+// for a genuinely urgent product ranked a few slots lower -- backwards
+// from what would actually happen once real jobs hit real printers. It
+// also never split work across multiple printers running in parallel,
+// the caveat flagged (but not yet fixed) in the 2026-09-28 version.
 //
-// Now walked in priorityOrder (the same manual print-priority ranking
-// the Schedule tab and buildMultiSchedule use to sequence real jobs),
-// accumulating a running backlog: committed-job minutes first, then each
-// higher-priority product's own targetQty print time gets added on top
-// before the next (lower-priority) product's threshold is computed. A
-// product only "sees" work that would genuinely print before it.
-//
-// Same caveat as before: this still treats all that backlog as one
-// serial queue on a single printer, not split across whatever printers
-// are actually active in parallel -- so real wait times are shorter than
-// shown whenever work can be spread across machines. Fixing that
-// properly means running this through the real buildMultiSchedule
-// engine instead of a flat minutes tally; flagging it rather than
-// guessing at the modeling without checking first.
+// Now: build one combined queue -- every unit still outstanding on a
+// real job (queued/active), plus each product's own restock shortfall in
+// priorityOrder -- and run it through the actual buildMultiSchedule
+// engine (mode 'live', so every printer's starting point reflects what
+// it's really doing right now), exactly like the Schedule tab does. The
+// resulting per-unit finish times on the real multi-printer schedule are
+// the real lead time, not an approximation of it.
 //
 // Products never synced (no shopify_sync row) are left out entirely.
 // targetQty nets out productCommittedQty (units already sitting in an
@@ -1962,36 +1949,77 @@ function committedBacklogMinutes(){
 // queued drops off the list entirely rather than showing up asking for
 // "just 1 more" (which would reintroduce the flapping the qty:1 fix was
 // for), and a partially-covered product only asks for the remaining
-// shortfall. Sorted most-urgent-first for display once every product's
-// threshold has been computed.
+// shortfall. Sorted most-urgent-first for display.
 function needsToBePrintedList(){
   if(!sb) return [];
+  const activePrinters = printers.filter(p=>p.status==='active' && !p.retired);
+  if(activePrinters.length===0 || settings.workDays.length===0) return [];
+
   const targetRunwayDays = settings.needsPrintTargetRunwayDays;
-  let backlogMin = committedBacklogMinutes();
-  const results = [];
-  priorityOrder.forEach(pid => {
-    const p = catalog.find(x=>x.id===pid);
-    if(!p) return;
-    const sync = shopifySync[pid];
+  const candidates = [];
+  catalog.forEach(p => {
+    const sync = shopifySync[p.id];
     if(!sync) return;
     const velocity = Number(sync.velocity_per_day);
     const stock = Number(sync.current_stock);
     const runway = velocity > 0 ? stock / velocity : (stock > 0 ? Infinity : 0);
-    const committedQty = productCommittedQty(pid);
-    const targetQty = Math.ceil(velocity * targetRunwayDays - stock - committedQty);
+    const committedQty = productCommittedQty(p.id);
+    const targetQty = Math.ceil(velocity * targetRunwayDays - stock) - committedQty;
     if(targetQty <= 0) return;
+    candidates.push({ p, runway, stock, velocity, committedQty, targetQty });
+  });
+  if(candidates.length===0) return [];
+
+  // The real queue: every already-committed unit first (this happens
+  // regardless of what's flagged below -- it was already queued), then
+  // each candidate's own shortfall, walked in priorityOrder so ties
+  // resolve the same way the real scheduler resolves them.
+  const queue = [];
+  jobs.filter(j => j.status !== 'done').forEach(j => {
+    j.items.forEach(item => {
+      if(!catalog.some(x=>x.id===item.id)) return;
+      const alreadyLogged = productionLog
+        .filter(e => e.jobId===j.id && e.productId===item.id && !e.isTest && !e.failed && e.actualEnd)
+        .reduce((s,e) => s + (e.unitsCompleted||1), 0);
+      const outstanding = Math.max(0, item.qty - alreadyLogged);
+      const printMin = productActualPrintMinutes(item.id);
+      for(let i=0;i<outstanding;i++) queue.push({productId:item.id, printTimeMin:printMin, pin:null});
+    });
+  });
+  const candidateById = {};
+  candidates.forEach(c => { candidateById[c.p.id] = c; });
+  const seeded = new Set();
+  priorityOrder.forEach(pid => {
+    const c = candidateById[pid];
+    if(!c) return;
+    seeded.add(pid);
     const printMin = productActualPrintMinutes(pid);
-    const ownPrintMin = printMin * targetQty;
-    const aheadDays = backlogMin / 1440;
-    const thresholdDays = (backlogMin + ownPrintMin) / 1440 + NEEDS_PRINT_SHIP_DAYS;
-    if(runway > thresholdDays) return;
-    // Only a product that's actually urgent counts as real backlog for
-    // anything lower-priority -- a higher-priority product that merely
-    // has *some* shortfall but isn't urgent yet isn't competing for
-    // printer time today, so it shouldn't push lower-priority thresholds
-    // out.
-    backlogMin += ownPrintMin;
-    results.push({ p, runway, thresholdDays, stock, velocity, targetQty, committedQty, aheadDays });
+    for(let i=0;i<c.targetQty;i++) queue.push({productId:pid, printTimeMin:printMin, pin:null});
+  });
+  // Belt-and-suspenders: priorityOrder is kept in sync with the catalog
+  // elsewhere on load, but if a candidate is somehow missing from it,
+  // still queue its shortfall rather than silently dropping it.
+  candidates.forEach(c => {
+    if(seeded.has(c.p.id)) return;
+    const printMin = productActualPrintMinutes(c.p.id);
+    for(let i=0;i<c.targetQty;i++) queue.push({productId:c.p.id, printTimeMin:printMin, pin:null});
+  });
+
+  const { machines } = buildMultiSchedule(queue, activePrinters, settings, 'live');
+  const finishByProduct = {};
+  machines.forEach(m => m.days.forEach(d => d.jobs.forEach(job => {
+    const prev = finishByProduct[job.productId];
+    if(!prev || job.end > prev) finishByProduct[job.productId] = job.end;
+  })));
+
+  const now = new Date();
+  const results = [];
+  candidates.forEach(c => {
+    const finish = finishByProduct[c.p.id];
+    if(!finish) return; // couldn't be scheduled (e.g. no printer can ever fit it) -- shouldn't normally happen
+    const thresholdDays = (finish - now) / 86400000 + NEEDS_PRINT_SHIP_DAYS;
+    if(c.runway > thresholdDays) return;
+    results.push({ p:c.p, runway:c.runway, thresholdDays, stock:c.stock, velocity:c.velocity, targetQty:c.targetQty, committedQty:c.committedQty });
   });
   return results.sort((a,b) => a.runway - b.runway);
 }
@@ -2583,7 +2611,7 @@ function renderJobs(){
         <td class="mono">${runwayStr}</td>
         <td class="mono">${row.stock}</td>
         <td class="mono">${row.velocity.toFixed(2)}/day</td>
-        <td class="mono" title="${row.aheadDays>0 ? `Includes ~${row.aheadDays.toFixed(1)}d of higher-priority/queued work ahead of this one` : 'Nothing higher-priority queued ahead of this one right now'}">${row.thresholdDays.toFixed(1)}d</td>
+        <td class="mono" title="Projected finish time on the real multi-printer schedule (queued/active jobs + everything else needing restocking), plus a 7-day ship buffer">${row.thresholdDays.toFixed(1)}d</td>
         <td class="mono" title="Enough to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity${row.committedQty>0 ? ` (already nets out ${row.committedQty} sitting on an unfinished job)` : ''}">${row.targetQty}</td>
       </tr>
     `;
