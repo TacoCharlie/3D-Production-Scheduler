@@ -589,6 +589,13 @@ let estimateScenarios = [1,2,3]; // user-editable list of printer counts to comp
 let jobs = []; // [{id, name, items:[{id,qty}], status:'queued'|'active'|'done', createdAt}]
 let liveSchedule = null;
 let shopifySync = {}; // product_id -> {current_stock, units_sold_recent, velocity_window_days, velocity_per_day, unmatched_skus, unit_cogs, synced_at}, from the shopify_sync table (Supabase-only; stays {} without Supabase configured). unit_cogs (Phase 6) is Shopify's own per-unit cost, nullable if not set there yet.
+// product_id -> {reconciledUnits, lastKnownStock}. A persistent ledger of
+// how much of this product's all-time production has actually shown up in
+// Shopify's current_stock. See productProducedPending() below for why this
+// exists (2026-09-30 fix) -- Chadd doesn't add units to Shopify until he
+// ships them to the fulfillment location, which can be well after they're
+// printed, and can span more than one "Sync Shopify now" click in between.
+let stockReconcile = {};
 
 function uid(prefix){ return (prefix||'p') + Math.random().toString(36).slice(2,9); }
 
@@ -827,6 +834,9 @@ async function loadState(){
   jobs.forEach(j => { if(typeof j.manualDone !== 'number') j.manualDone = 0; });
   jobsSyncSnapshot = JSON.parse(JSON.stringify(jobs));
 
+  try { const sr = await window.storage.get('stockReconcile'); stockReconcile = sr ? JSON.parse(sr.value) : {}; }
+  catch(e){ stockReconcile = {}; }
+
   await loadShopifySync();
 }
 
@@ -844,7 +854,62 @@ async function loadShopifySync(){
     if(error) throw error;
     (data||[]).forEach(row => { shopifySync[row.product_id] = row; });
   } catch(e){ console.error('Failed to load shopify_sync', e); }
+  reconcileStockLedger();
 }
+
+// Runs every time shopify_sync data is (re)loaded -- both an ordinary page
+// load and right after "Sync Shopify now" finishes, since both call
+// loadShopifySync(). See stockReconcile's declaration and
+// productProducedPending() for why this exists: Shopify's current_stock
+// only moves when Chadd actually ships product to the fulfillment location
+// and adds it there, which can happen well after it's printed and can span
+// more than one sync click. So "pending" units can't be cleared just
+// because a sync happened -- they clear only when current_stock is
+// actually observed to have gone UP, and by exactly that much.
+function reconcileStockLedger(){
+  let changed = false;
+  Object.keys(shopifySync).forEach(productId => {
+    const newStock = Number(shopifySync[productId].current_stock);
+    if(!Number.isFinite(newStock)) return;
+    let rec = stockReconcile[productId];
+    if(!rec){
+      // First time we've ever tracked this product. Baseline "already
+      // accounted for" using the OLD synced_at heuristic this replaces
+      // (anything printed at or before the last real Shopify sync), not a
+      // blanket "everything ever produced" -- otherwise the very act of
+      // deploying this fix would silently wipe out whatever pending credit
+      // a product legitimately had at that moment (e.g. units printed
+      // after the last sync but not yet shipped), causing exactly the
+      // one-render Qty jump this whole fix is for. From here on, only real
+      // observed stock increases (below) move the reconciled count.
+      const totalProduced = productTotalProducedEver(productId);
+      const syncedAt = shopifySync[productId].synced_at ? new Date(shopifySync[productId].synced_at) : null;
+      const producedAfterLastSync = syncedAt
+        ? productionLog.filter(e => e.productId===productId && e.actualEnd && !e.isTest && !e.failed && new Date(e.actualEnd) > syncedAt).reduce((s,e) => s + (e.unitsCompleted||1), 0)
+        : 0;
+      stockReconcile[productId] = { reconciledUnits: totalProduced - producedAfterLastSync, lastKnownStock: newStock };
+      changed = true;
+      return;
+    }
+    const delta = newStock - rec.lastKnownStock;
+    if(delta > 0){
+      // Stock only rises here when fulfillment intake happens -- credit
+      // that rise against whatever's still pending, capped at total
+      // production so a stock bump from some unrelated cause (a manual
+      // correction in Shopify, say) can't push a product "negative".
+      const totalProduced = productTotalProducedEver(productId);
+      const nextReconciled = Math.min(totalProduced, rec.reconciledUnits + delta);
+      if(nextReconciled !== rec.reconciledUnits){ rec.reconciledUnits = nextReconciled; changed = true; }
+    }
+    // Always re-baseline the watermark, including on a drop from sales --
+    // otherwise a later restock would be measured against a stale, too-low
+    // baseline and get double-counted.
+    if(rec.lastKnownStock !== newStock){ rec.lastKnownStock = newStock; changed = true; }
+  });
+  if(changed) saveStockReconcile();
+}
+
+async function saveStockReconcile(){ try { await window.storage.set('stockReconcile', JSON.stringify(stockReconcile)); } catch(e){ console.error(e); } }
 
 // Job credit (applyJobCredit) fires from several close-together actions —
 // finishing one print then immediately finishing the next, especially two
@@ -1911,27 +1976,48 @@ function productCommittedQty(productId){
   }, 0);
 }
 
-// Units of this product actually printed since Shopify's current_stock
-// figure was last captured (sync.synced_at) -- physically done, sitting
-// on the shelf, just not yet reflected in that stale stock number because
-// nobody's re-synced Shopify yet. Fixed 2026-09-29 (Chadd printed 2 units
-// against the active job and watched Qty go UP by 2 instead of staying
-// flat): productCommittedQty correctly drops those 2 out of "still
-// outstanding on the job" (Queued went 20 -> 18, as it should), but
-// nothing credited them anywhere else, so they just vanished from the
-// math -- rawTarget stayed the same (still computed off the same stale
-// stock:12) while committedQty shrank, and targetQty = rawTarget -
-// committedQty rose to fill the gap. Printing progress was making the
-// panel MORE urgent, backwards from what actually happened on the floor.
-// Counted independent of which job (or no job at all) the print was
-// logged against, and independent of job status -- a completed print is
-// a completed print, whether or not its job has been marked Done yet.
-function productProducedSinceSync(productId, syncedAt){
-  if(!syncedAt) return 0;
-  const since = new Date(syncedAt);
+// All-time units of this product ever actually completed (real prints,
+// not test prints or failures) -- independent of job or job status, a
+// completed print is a completed print. Used only as an input to the
+// stockReconcile ledger below; there's no reason to call this directly
+// elsewhere.
+function productTotalProducedEver(productId){
   return productionLog
-    .filter(e => e.productId===productId && e.actualEnd && !e.isTest && !e.failed && new Date(e.actualEnd) > since)
+    .filter(e => e.productId===productId && e.actualEnd && !e.isTest && !e.failed)
     .reduce((s,e) => s + (e.unitsCompleted||1), 0);
+}
+
+// Units of this product physically printed but not yet reflected in
+// Shopify's current_stock -- read straight off the persistent
+// stockReconcile ledger (see loadShopifySync/reconcileStockLedger above).
+//
+// Fixed 2026-09-29 (Chadd printed 2 units against the active job and
+// watched Qty go UP by 2 instead of staying flat): productCommittedQty
+// correctly dropped those 2 out of "still outstanding on the job" (Queued
+// went 20 -> 18, as it should), but nothing credited them anywhere else,
+// so they just vanished from the math -- rawTarget stayed the same (still
+// computed off the same stale stock:12) while committedQty shrank, and
+// targetQty = rawTarget - committedQty rose to fill the gap.
+//
+// First attempt compared productionLog against sync.synced_at ("since the
+// last sync"). Fixed again 2026-09-30 (Chadd: "they disappear if I hit the
+// sync shopify button"): that assumed any sync means the units are now
+// accounted for, but Chadd doesn't add units to Shopify until he ships
+// them to the fulfillment location -- often well after printing, and
+// often spanning more than one "Sync Shopify now" click with the stock
+// number unchanged. Clicking sync just moved synced_at forward, so the
+// printed-since-then window went to zero and the credit vanished even
+// though the units still weren't in Shopify's stock -- Qty jumped right
+// back up.
+//
+// Now: the ledger only clears a product's pending units when
+// current_stock is actually OBSERVED TO RISE (see reconcileStockLedger),
+// which is what really happens when Chadd ships to fulfillment, no matter
+// how many syncs happen in between with no change.
+function productProducedPending(productId){
+  const rec = stockReconcile[productId];
+  if(!rec) return 0;
+  return Math.max(0, productTotalProducedEver(productId) - rec.reconciledUnits);
 }
 
 // Shipping-only buffer now -- production lead time is computed per
@@ -1987,10 +2073,10 @@ function needsToBePrintedList(){
     const stock = Number(sync.current_stock);
     const runway = velocity > 0 ? stock / velocity : (stock > 0 ? Infinity : 0);
     const committedQty = productCommittedQty(p.id);
-    const producedSinceSync = productProducedSinceSync(p.id, sync.synced_at);
-    const targetQty = Math.ceil(velocity * targetRunwayDays - stock) - committedQty - producedSinceSync;
+    const producedPending = productProducedPending(p.id);
+    const targetQty = Math.ceil(velocity * targetRunwayDays - stock) - committedQty - producedPending;
     if(targetQty <= 0) return;
-    candidates.push({ p, runway, stock, velocity, committedQty, producedSinceSync, targetQty });
+    candidates.push({ p, runway, stock, velocity, committedQty, producedPending, targetQty });
   });
   if(candidates.length===0) return [];
 
@@ -2043,7 +2129,7 @@ function needsToBePrintedList(){
     if(!finish) return; // couldn't be scheduled (e.g. no printer can ever fit it) -- shouldn't normally happen
     const thresholdDays = (finish - now) / 86400000 + NEEDS_PRINT_SHIP_DAYS;
     if(c.runway > thresholdDays) return;
-    results.push({ p:c.p, runway:c.runway, thresholdDays, stock:c.stock, velocity:c.velocity, targetQty:c.targetQty, committedQty:c.committedQty, producedSinceSync:c.producedSinceSync });
+    results.push({ p:c.p, runway:c.runway, thresholdDays, stock:c.stock, velocity:c.velocity, targetQty:c.targetQty, committedQty:c.committedQty, producedPending:c.producedPending });
   });
   return results.sort((a,b) => a.runway - b.runway);
 }
@@ -2633,11 +2719,11 @@ function renderJobs(){
       <tr data-id="${row.p.id}">
         <td>${escapeHtml(row.p.name)}</td>
         <td class="mono">${runwayStr}</td>
-        <td class="mono" title="${row.producedSinceSync>0 ? `Plus ${row.producedSinceSync} printed since Shopify was last synced -- not counted here yet, but already netted out of Qty` : 'From the last Shopify sync'}">${row.stock}${row.producedSinceSync>0 ? `<span class="ps-hint"> +${row.producedSinceSync}*</span>` : ''}</td>
+        <td class="mono" title="${row.producedPending>0 ? `Plus ${row.producedPending} printed but not yet shipped to Shopify inventory -- not counted here yet, but already netted out of Qty` : 'From the last Shopify sync'}">${row.stock}${row.producedPending>0 ? `<span class="ps-hint"> +${row.producedPending}*</span>` : ''}</td>
         <td class="mono">${row.velocity.toFixed(2)}/day</td>
         <td class="mono" title="Projected finish time on the real multi-printer schedule (queued/active jobs + everything else needing restocking), plus a 7-day ship buffer">${row.thresholdDays.toFixed(1)}d</td>
         <td class="mono ps-hint" title="Units of this product already sitting on a job that hasn't finished yet">${row.committedQty>0 ? row.committedQty : '—'}</td>
-        <td class="mono" title="Additional units needed beyond Stock + Already Queued${row.producedSinceSync>0 ? ` + ${row.producedSinceSync} printed since last sync (see Stock)` : ''} to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity">${row.targetQty}</td>
+        <td class="mono" title="Additional units needed beyond Stock + Already Queued${row.producedPending>0 ? ` + ${row.producedPending} printed but not yet shipped to Shopify (see Stock)` : ''} to reach ${settings.needsPrintTargetRunwayDays}d of runway at current velocity">${row.targetQty}</td>
       </tr>
     `;
   }).join('');
@@ -2657,7 +2743,7 @@ function renderJobs(){
         <tbody>${needsPrintRows}</tbody>
       </table>
       </div>
-      ${needsPrint.some(r=>r.producedSinceSync>0) ? `<div class="ps-hint" style="margin-top:8px;">* already printed since Shopify was last synced -- Qty already accounts for these, they just haven't shown up in Stock yet. Run "Sync Shopify now" on the Inventory tab to clear them.</div>` : ''}
+      ${needsPrint.some(r=>r.producedPending>0) ? `<div class="ps-hint" style="margin-top:8px;">* printed but not yet added to Shopify inventory -- Qty already accounts for these. They'll clear on their own once you ship them to fulfillment and Shopify's stock count actually goes up (syncing alone won't clear them, since that's not when they get added).</div>` : ''}
       <div class="ps-row" style="margin-top:14px;">
         <button class="ps-btn primary" id="ps-needsprint-create-job">+ Create job from these ${needsPrint.length} product${needsPrint.length!==1?'s':''}</button>
       </div>
