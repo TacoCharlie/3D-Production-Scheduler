@@ -634,6 +634,7 @@ let productionLogSyncSnapshot = [];
 let spoolsSyncSnapshot = [];
 let printersSyncSnapshot = [];
 let jobsSyncSnapshot = [];
+let catalogSyncSnapshot = [];
 function todayISO(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
 async function loadState(){
@@ -681,6 +682,7 @@ async function loadState(){
   // printer have its own time/weight instead of the product's default.
   // Purely additive, same spirit as batchConfigs.
   catalog.forEach(p => { if(!p.printerOverrides || typeof p.printerOverrides !== 'object') p.printerOverrides = {}; });
+  catalogSyncSnapshot = JSON.parse(JSON.stringify(catalog));
 
   try { const t = await window.storage.get('types'); types = t ? JSON.parse(t.value) : JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
   catch(e){ types = JSON.parse(JSON.stringify(DEFAULT_TYPES)); }
@@ -951,7 +953,43 @@ async function doSaveJobs(){
 async function saveEstimateItems(){ try { await window.storage.set('estimateItems', JSON.stringify(estimateItems)); flashSave(); } catch(e){ console.error(e); } }
 async function saveEstimateScenarios(){ try { await window.storage.set('estimateScenarios', JSON.stringify(estimateScenarios)); flashSave(); } catch(e){ console.error(e); } }
 
-async function saveCatalog(){ try { await window.storage.set('catalog', JSON.stringify(catalog)); flashSave(); } catch(e){ console.error(e); } }
+// Fixed 2026-09-30 (Chadd: a batch's project file "just disappeared" after
+// days of normal use, no delete action taken): catalog never got the
+// serialize-then-merge treatment jobs/printers/spools/productionLog were
+// already given (see the comment above savePrinters) -- it was still a
+// bare, unqueued overwrite. Editing a catalog product triggers saveCatalog()
+// from a lot of places (renaming, uploading/attaching a project file,
+// editing a batch config, toggling a printer override, ...), and two of
+// those firing close together -- e.g. attaching a batch file right after
+// an unrelated edit, or two browser tabs/devices open on the Catalog tab
+// at once -- could have their network requests land out of order. Whichever
+// one's write finished LAST simply overwrote the whole `catalog` array,
+// silently discarding whatever the other one had just added, including a
+// projectFiles entry that had already "attached" successfully on screen.
+// Same fix as printers/spools/jobs/productionLog: queue saves so the next
+// one never starts until the previous one has fully completed, and merge
+// by id against a known snapshot instead of blindly overwriting.
+let catalogSaveQueue = Promise.resolve();
+async function saveCatalog(){
+  catalogSaveQueue = catalogSaveQueue.then(doSaveCatalog).catch(e => console.error(e));
+  return catalogSaveQueue;
+}
+async function doSaveCatalog(){
+  try {
+    let latest;
+    try { const stored = await window.storage.get('catalog'); latest = stored ? JSON.parse(stored.value) : []; }
+    catch(e){ latest = []; }
+    const reconciledLatest = mergeById(latest, [], catalogSyncSnapshot);
+    const localAtMergeTime = JSON.parse(JSON.stringify(catalog));
+    const merged = mergeById(reconciledLatest, catalogSyncSnapshot, catalog);
+    await window.storage.set('catalog', JSON.stringify(merged));
+    const finalMerged = mergeById(merged, localAtMergeTime, catalog);
+    catalog = finalMerged;
+    catalogSyncSnapshot = JSON.parse(JSON.stringify(finalMerged));
+    flashSave();
+    if(document.getElementById('ps-tab-catalog')) renderCatalog();
+  } catch(e){ console.error(e); }
+}
 async function saveTypes(){ try { await window.storage.set('types', JSON.stringify(types)); flashSave(); } catch(e){ console.error(e); } }
 function typeById(id){ return types.find(t=>t.id===id) || {id:'', name:'Unknown', color:'#999999'}; }
 function renderTag(typeId){
