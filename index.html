@@ -1198,6 +1198,15 @@ async function doSaveLog(){
     if(document.getElementById('ps-tab-catalog')) renderCatalog();
   } catch(e){ console.error(e); }
 }
+// Sum of weight already locked into finalized per-spool segments for a log
+// entry (see pauseSwapSpool below). Absent/empty spoolSegments is the
+// overwhelmingly common case — a print with no mid-print spool swap —
+// which is why this is a derived helper rather than a stored total: every
+// existing entry predates the concept entirely and just reads as 0 here.
+function spoolSegmentsTotal(e){
+  return (e.spoolSegments||[]).reduce((s,seg) => s + (seg.weightG||0), 0);
+}
+
 // Every log entry claims exactly one unit of its product's queued quantity,
 // exactly once, tracked via entry.consumed. This runs after any log change
 // AND once on load, so entries that predate this mechanism (or were created
@@ -1252,12 +1261,18 @@ function markFailed(entryId, actualWeightG, note){
     if(e.spoolConsumed && e.spoolIdAtLogTime){
       const spool = spools.find(s=>s.id===e.spoolIdAtLogTime);
       if(spool){
-        const originalWeight = e.weightGAtLogTime||0;
-        spool.remainingG += originalWeight; // give back what was originally deducted
-        spool.remainingG = spool.remainingG - actualWeightG; // deduct the corrected amount
+        // If this entry was paused and swapped spools earlier, those
+        // segments are already finalized and settled against their own
+        // (possibly different) spools — only the still-"live" portion,
+        // currently sitting on THIS spool, gets corrected here.
+        const alreadySegmented = spoolSegmentsTotal(e);
+        const pendingWeight = Math.max(0, (e.weightGAtLogTime||0) - alreadySegmented); // what's currently deducted from this spool
+        const currentSpoolActual = Math.max(0, actualWeightG - alreadySegmented); // this spool's share of the corrected total
+        spool.remainingG += pendingWeight; // give back what was originally deducted
+        spool.remainingG = spool.remainingG - currentSpoolActual; // deduct the corrected amount
         const product = catalog.find(p=>p.id===e.productId);
-        const netDelta = originalWeight - actualWeightG;
-        logSpoolChange(spool, netDelta, `Print failed — corrected from ${originalWeight}g to ${actualWeightG}g (${e.isTest ? (e.testLabel||'test print') : (product?product.name:'(deleted product)')})`);
+        const netDelta = pendingWeight - currentSpoolActual;
+        logSpoolChange(spool, netDelta, `Print failed — corrected from ${pendingWeight}g to ${currentSpoolActual}g (${e.isTest ? (e.testLabel||'test print') : (product?product.name:'(deleted product)')})`);
       }
     }
     e.weightGAtLogTime = actualWeightG;
@@ -1268,6 +1283,68 @@ function markFailed(entryId, actualWeightG, note){
   if(!e.actualEnd) e.actualEnd = new Date().toISOString();
   e.consumed = true; // locked — this was never a real unit, don't let it get re-claimed
   saveLog(); saveOrder();
+}
+
+// A long print gets its full nominal weight deducted from whatever spool is
+// loaded at log time (see syncConsumption above), immediately — not at
+// finish. That's fine for a print that runs start to finish on one spool,
+// but a large/long print that runs out partway through and gets a fresh
+// spool loaded mid-print would otherwise have its ENTIRE weight stuck on
+// the first spool, with the second spool's real contribution never
+// recorded anywhere.
+//
+// This reconciles exactly that moment. Chadd's only available input when
+// he pauses the physical print to swap spools is what the printer itself
+// shows as time remaining — not grams, not percentage — so that's the one
+// number this takes. It estimates (time-proportionally, against the
+// product's planned print time) how much of the nominal weight the
+// just-finished portion represents, locks that in as a permanent segment
+// charged to the spool that was loaded for it, and re-attributes (and
+// immediately deducts, exactly like a fresh log entry would) the remaining
+// weight to whatever spool is loaded on the printer now. Expects the spool
+// swap to have already happened via the Printers tab's existing "Change
+// Spool" control — this only reconciles the weight, it doesn't move spools
+// around itself. A print can be paused more than once; each call only ever
+// touches the still-"live" remainder, never a previously finalized segment.
+function pauseSwapSpool(entryId, remainingMin, note){
+  const e = productionLog.find(x=>x.id===entryId);
+  if(!e || e.actualEnd || e.failed || e.isTest) return false;
+  if(!(e.plannedMin>0) || !(e.weightGAtLogTime>0)) return false; // nothing to time-proportion against
+  const printer = printers.find(p=>p.id===e.printerId);
+  const newSpoolId = printer ? (printer.spoolId||null) : null;
+  const oldSpoolId = e.spoolIdAtLogTime || null;
+  if(!newSpoolId || newSpoolId === oldSpoolId) return false; // swap the spool on the Printers tab first, then come back and confirm
+
+  const fullWeight = e.weightGAtLogTime || 0;
+  const plannedMin = e.plannedMin || 0;
+  const alreadySegmented = spoolSegmentsTotal(e);
+  const liveAmount = Math.max(0, fullWeight - alreadySegmented); // currently deducted from oldSpoolId
+  const clampedRemaining = Math.max(0, Math.min(plannedMin, remainingMin||0));
+  const elapsedMin = Math.max(0, plannedMin - clampedRemaining);
+  const totalWeightSoFar = Math.round(fullWeight * elapsedMin/plannedMin); // absolute estimate since print start, not since the last swap
+  const thisSegmentWeight = Math.max(0, Math.min(liveAmount, totalWeightSoFar - alreadySegmented));
+
+  const product = catalog.find(p=>p.id===e.productId);
+  const oldSpool = spools.find(s=>s.id===oldSpoolId);
+  if(oldSpool){
+    const netDelta = liveAmount - thisSegmentWeight; // give back the full live deduction, charge only this segment's share
+    oldSpool.remainingG += netDelta;
+    logSpoolChange(oldSpool, netDelta, `Spool swapped mid-print — ${thisSegmentWeight}g attributed here before the swap (${product?product.name:'(deleted product)'})${note?': '+note:''}`);
+  }
+
+  e.spoolSegments = e.spoolSegments || [];
+  e.spoolSegments.push({ spoolId: oldSpoolId, weightG: thisSegmentWeight, at: new Date().toISOString(), note: note||'' });
+
+  const remainder = Math.max(0, fullWeight - spoolSegmentsTotal(e));
+  const newSpool = spools.find(s=>s.id===newSpoolId);
+  if(newSpool && remainder>0){
+    newSpool.remainingG -= remainder;
+    logSpoolChange(newSpool, -remainder, `Spool swapped mid-print — remaining ${remainder}g of this print now attributed here (${product?product.name:'(deleted product)'})`);
+  }
+  e.spoolIdAtLogTime = newSpoolId;
+
+  saveSpools(); saveLog();
+  return true;
 }
 
 // Reverses markFailed — lets syncConsumption treat it as a normal completed
@@ -4129,6 +4206,7 @@ let editingJobNameId = null; // which job's name field is in edit mode
 let editingQueuedItemQty = null; // "jobId|itemId" of the queued-job line item whose qty is being edited
 let failingLogId = null; // which entry is showing the "confirm failed — how much filament?" prompt
 let splittingLogId = null; // which batch entry is showing the "how many of these failed?" prompt
+let pausingLogId = null; // which entry is showing the "spool swapped mid-print — time remaining?" prompt
 // Which past days/weeks a person has manually expanded, keyed by
 // "machineId|dateKey" or "machineId|weekStartDateKey". Session-only — not
 // persisted, and not relevant for Theoretical view (no "past" there since
@@ -4264,7 +4342,7 @@ function renderLog(){
 
   const allEntriesSorted = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
   const entries = allEntriesSorted.filter(e =>
-    logHistoryMatchesFilters(e) || e.id===editingLogId || e.id===failingLogId || e.id===splittingLogId
+    logHistoryMatchesFilters(e) || e.id===editingLogId || e.id===failingLogId || e.id===splittingLogId || e.id===pausingLogId
   );
   const rows = entries.map(e => {
     const printer = printers.find(p=>p.id===e.printerId);
@@ -4292,6 +4370,53 @@ function renderLog(){
               <button class="ps-btn primary small" data-action="confirm-fail">Confirm Failed</button>
               <button class="ps-btn ghost small" data-action="cancel-fail">Cancel</button>
             </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if(e.id === pausingLogId){
+      const fullWeight = e.weightGAtLogTime || 0;
+      const printerForEntry = printers.find(p=>p.id===e.printerId);
+      const oldSpool = e.spoolIdAtLogTime ? spools.find(s=>s.id===e.spoolIdAtLogTime) : null;
+      const newSpoolId = printerForEntry ? (printerForEntry.spoolId||null) : null;
+      const newSpool = newSpoolId ? spools.find(s=>s.id===newSpoolId) : null;
+      const spoolChanged = !!newSpoolId && newSpoolId !== e.spoolIdAtLogTime;
+      const oldSpoolLabel = oldSpool ? escapeHtml(oldSpool.label||'spool') : '(no spool recorded)';
+      const newSpoolLabel = newSpool ? escapeHtml(newSpool.label||'spool') : (newSpoolId ? '(unknown spool)' : '(none loaded)');
+      const noBasis = !(e.plannedMin>0) || !(fullWeight>0);
+      return `
+        <div class="ps-log-entry" data-id="${e.id}">
+          <div style="width:100%;">
+            <div class="ps-hint" style="margin-bottom:8px;">Spool swap for <b style="color:var(--text);">${escapeHtml(product?product.name:'(deleted product)')}</b> — ${
+              noBasis
+                ? `this product has no print time or weight set, so there's nothing to estimate the split from. Set those in the Catalog first.`
+                : spoolChanged
+                  ? `the portion printed so far will be charged to <b>${oldSpoolLabel}</b>, and the rest of this print to <b>${newSpoolLabel}</b>, now loaded on ${escapeHtml(printerForEntry?printerForEntry.name:'the printer')}.`
+                  : `<span style="color:var(--danger)">The printer still shows ${oldSpoolLabel} loaded. Go change the spool on the Printers tab first, then come back here and confirm.</span>`
+            }</div>
+            ${noBasis ? `
+            <button class="ps-btn ghost small" data-action="cancel-pause">Cancel</button>
+            ` : `
+            <div class="ps-row" style="align-items:flex-end;flex-wrap:wrap;">
+              <div class="ps-field" style="margin-bottom:0;">
+                <span class="ps-field-label">Time remaining — hours</span>
+                <input class="ps-input ps-narrow" style="width:70px;" type="number" min="0" id="ps-pause-remh-${e.id}" value="0" />
+              </div>
+              <div class="ps-field" style="margin-bottom:0;">
+                <span class="ps-field-label">minutes</span>
+                <input class="ps-input ps-narrow" style="width:70px;" type="number" min="0" max="59" id="ps-pause-remm-${e.id}" value="0" />
+              </div>
+              <div class="ps-field" style="margin-bottom:0;flex:1;min-width:180px;">
+                <span class="ps-field-label">Note (optional)</span>
+                <input class="ps-input" type="text" id="ps-pause-note-${e.id}" placeholder="e.g. ran out of filament partway through" />
+              </div>
+              <button class="ps-btn primary small" data-action="confirm-pause" ${spoolChanged?'':'disabled'}>Confirm Swap</button>
+              <button class="ps-btn ghost small" data-action="cancel-pause">Cancel</button>
+            </div>
+            <div class="ps-hint" style="margin-top:6px;">As shown on the printer right now — not grams or percentage, just time remaining.</div>
+            <div id="ps-pause-error-${e.id}" class="ps-hint" style="color:var(--danger);margin-top:6px;"></div>
+            `}
           </div>
         </div>
       `;
@@ -4418,6 +4543,10 @@ function renderLog(){
       return `${s.unitsCompleted||1}× → ${sJob?escapeHtml(sJob.name):'(no job)'}`;
     }).join(', ')}</div>` : '';
     const failureNoteLine = (e.failed && e.failureNote) ? `<div class="ps-hint" style="color:var(--danger);">Note: ${escapeHtml(e.failureNote)}</div>` : '';
+    const swapLine = (e.spoolSegments && e.spoolSegments.length>0) ? `<div class="ps-hint">Spool swapped mid-print: ${e.spoolSegments.map(seg => {
+      const segSpool = spools.find(s=>s.id===seg.spoolId);
+      return `${seg.weightG}g → ${segSpool?escapeHtml(segSpool.label||'spool'):'(deleted spool)'}`;
+    }).join(', ')}</div>` : '';
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
@@ -4426,10 +4555,12 @@ function renderLog(){
           <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
           ${jobLine}
           ${splitLine}
+          ${swapLine}
           ${failureNoteLine}
         </div>
         <div class="ps-row" style="gap:6px;">
           ${!e.actualEnd && !e.failed ? '<button class="ps-btn small" data-action="finish">Mark finished now</button>' : ''}
+          ${!e.actualEnd && !e.failed && !e.isTest ? '<button class="ps-btn ghost small" data-action="pause-spool">Pause — change spool</button>' : ''}
           ${!e.isTest && !e.failed && (e.unitsCompleted||1)>1 ? '<button class="ps-btn ghost small" data-action="split">Some failed…</button>' : ''}
           ${!e.failed
             ? `<button class="ps-btn ghost small" style="color:var(--danger)" data-action="${e.isTest?'fail-test':'fail'}">Mark failed</button>`
@@ -5308,13 +5439,28 @@ function renderLog(){
         if(e.consumed && !e.failed && !e.isTest && e.productId){
           getOrderEntry(e.productId).qty += (e.unitsCompleted||1);
         }
-        if(e.spoolConsumed && e.spoolIdAtLogTime){
-          const oldSpool = spools.find(s=>s.id===e.spoolIdAtLogTime);
-          if(oldSpool){
-            const weightBack = e.weightGAtLogTime||0;
-            oldSpool.remainingG += weightBack;
-            logSpoolChange(oldSpool, weightBack, `Print edited — previous ${weightBack}g deduction reversed, will be recalculated`);
+        if(e.spoolConsumed){
+          // Reverse the still-live portion (whatever's currently on
+          // e.spoolIdAtLogTime) AND any finalized pause/swap segments —
+          // editing core fields here recomputes everything from scratch,
+          // so a prior spool swap on this entry doesn't carry forward into
+          // whatever the edit turns it into.
+          const liveAmount = Math.max(0, (e.weightGAtLogTime||0) - spoolSegmentsTotal(e));
+          if(e.spoolIdAtLogTime){
+            const oldSpool = spools.find(s=>s.id===e.spoolIdAtLogTime);
+            if(oldSpool){
+              oldSpool.remainingG += liveAmount;
+              logSpoolChange(oldSpool, liveAmount, `Print edited — previous ${liveAmount}g deduction reversed, will be recalculated`);
+            }
           }
+          (e.spoolSegments||[]).forEach(seg => {
+            const segSpool = spools.find(s=>s.id===seg.spoolId);
+            if(segSpool){
+              segSpool.remainingG += (seg.weightG||0);
+              logSpoolChange(segSpool, seg.weightG||0, `Print edited — ${seg.weightG}g spool-swap segment reversed, will be recalculated`);
+            }
+          });
+          e.spoolSegments = [];
         }
         if(e.jobCounted){
           applyJobCredit(e, -(e.jobCreditGiven!=null ? e.jobCreditGiven : (e.unitsCompleted||1)));
@@ -5413,6 +5559,39 @@ function renderLog(){
         renderLog();
       });
     }
+    const pauseBtn = row.querySelector('[data-action="pause-spool"]');
+    if(pauseBtn){
+      pauseBtn.addEventListener('click', () => {
+        pausingLogId = id;
+        renderLog();
+      });
+    }
+    const confirmPauseBtn = row.querySelector('[data-action="confirm-pause"]');
+    if(confirmPauseBtn){
+      confirmPauseBtn.addEventListener('click', () => {
+        const hInput = document.getElementById('ps-pause-remh-'+id);
+        const mInput = document.getElementById('ps-pause-remm-'+id);
+        const noteInput = document.getElementById('ps-pause-note-'+id);
+        const remH = Math.max(0, parseInt(hInput.value,10)||0);
+        const remM = Math.max(0, parseInt(mInput.value,10)||0);
+        const note = noteInput ? noteInput.value.trim() : '';
+        const ok = pauseSwapSpool(id, remH*60+remM, note);
+        if(!ok){
+          const errEl = document.getElementById('ps-pause-error-'+id);
+          if(errEl) errEl.textContent = 'Could not record the swap — make sure the spool was actually changed on the Printers tab first.';
+          return;
+        }
+        pausingLogId = null;
+        regenerateIfActive();
+      });
+    }
+    const cancelPauseBtn = row.querySelector('[data-action="cancel-pause"]');
+    if(cancelPauseBtn){
+      cancelPauseBtn.addEventListener('click', () => {
+        pausingLogId = null;
+        renderLog();
+      });
+    }
     const splitBtn = row.querySelector('[data-action="split"]');
     if(splitBtn){
       splitBtn.addEventListener('click', () => {
@@ -5491,14 +5670,27 @@ function renderLog(){
           orderEntry.qty += (removed.unitsCompleted||1);
           saveOrder();
         }
-        if(removed && removed.spoolConsumed && removed.spoolIdAtLogTime){
-          const spool = spools.find(s=>s.id===removed.spoolIdAtLogTime);
-          if(spool){
-            const weightBack = removed.weightGAtLogTime||0;
-            spool.remainingG += weightBack;
-            logSpoolChange(spool, weightBack, `Print deleted — ${weightBack}g deduction reversed`);
-            saveSpools();
+        if(removed && removed.spoolConsumed){
+          // Reverse the live remainder plus every finalized pause/swap
+          // segment, each back to its own spool — a deleted print that was
+          // split across a spool swap must give every spool it touched
+          // its filament back, not just the one recorded "at log time".
+          const liveAmount = Math.max(0, (removed.weightGAtLogTime||0) - spoolSegmentsTotal(removed));
+          if(removed.spoolIdAtLogTime){
+            const spool = spools.find(s=>s.id===removed.spoolIdAtLogTime);
+            if(spool){
+              spool.remainingG += liveAmount;
+              logSpoolChange(spool, liveAmount, `Print deleted — ${liveAmount}g deduction reversed`);
+            }
           }
+          (removed.spoolSegments||[]).forEach(seg => {
+            const segSpool = spools.find(s=>s.id===seg.spoolId);
+            if(segSpool){
+              segSpool.remainingG += (seg.weightG||0);
+              logSpoolChange(segSpool, seg.weightG||0, `Print deleted — ${seg.weightG}g spool-swap segment reversed`);
+            }
+          });
+          saveSpools();
         }
         if(removed && removed.jobCounted){
           applyJobCredit(removed, -(removed.jobCreditGiven!=null ? removed.jobCreditGiven : (removed.unitsCompleted||1)));
