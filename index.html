@@ -6008,11 +6008,29 @@ function renderFilament(){
   // eyeballing a new hex because the exact one used last time is forgotten
   // — see the Reorder button below, which sidesteps this entirely by
   // copying a row outright).
-  const distinctLabels = [...new Set(stock.map(s=>s.label).filter(Boolean))];
-  const distinctManufacturers = [...new Set(stock.map(s=>s.manufacturer).filter(Boolean))];
-  const distinctMaterials = [...new Set(stock.map(s=>s.material).filter(Boolean))];
+  // A Stock row gets deleted outright once it's fully converted to a spool
+  // (or just cleaned up after reordering) — see remove-stock below — so a
+  // material you've ordered before can easily have zero Stock rows left to
+  // autocomplete from, even though it's still very much in use. Spools are
+  // never deleted (only retired) and filamentOrderHistory keeps every past
+  // order forever, so both get folded in here too — otherwise "New
+  // material" ends up being the only option the moment the last Stock row
+  // for something is gone, even for filament you order every month.
+  const distinctLabels = [...new Set([
+    ...stock.map(s=>s.label),
+    ...spools.map(s=>s.label),
+  ].filter(Boolean))];
+  const distinctManufacturers = [...new Set([
+    ...stock.map(s=>s.manufacturer),
+    ...filamentOrderHistory.map(o=>o.manufacturer),
+  ].filter(Boolean))];
+  const distinctMaterials = [...new Set([
+    ...stock.map(s=>s.material),
+    ...spools.map(s=>s.material),
+    ...filamentOrderHistory.map(o=>o.material),
+  ].filter(Boolean))];
   const distinctColors = [];
-  stock.forEach(s => {
+  [...stock, ...spools].forEach(s => {
     if(s.colorHex && !distinctColors.some(c=>c.hex===s.colorHex)) distinctColors.push({hex: s.colorHex, label: s.label});
   });
 
