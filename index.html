@@ -6171,12 +6171,12 @@ function renderFilament(){
           ? `<div class="ps-hint" style="margin-top:8px;">Retired with ${s.remainingG}g left unused out of ${s.totalG}g.</div>`
           : `<div class="ps-hint" style="margin-top:8px;">Used exactly its stated ${s.totalG}g.</div>`)
     ) : '';
-    const isEditing = !retired && editingSpoolId === s.id;
+    const isEditing = editingSpoolId === s.id;
     const fieldsBlock = isEditing ? `
         <div class="ps-row" style="margin-top:10px;">
           <div class="ps-field" style="flex:1;margin-bottom:0;">
-            <span class="ps-field-label">Remaining (g)</span>
-            <input class="ps-input" type="number" min="0" data-field="remainingG" value="${Math.max(0,s.remainingG)}" />
+            <span class="ps-field-label">Remaining (g)${retired ? ' — can be negative if it gave more than rated' : ''}</span>
+            <input class="ps-input" type="number" data-field="remainingG" value="${s.remainingG}" />
           </div>
           <div class="ps-field" style="flex:1;margin-bottom:0;">
             <span class="ps-field-label">Full spool weight (g)</span>
@@ -6201,7 +6201,8 @@ function renderFilament(){
           <b style="flex:1;">${escapeHtml(s.label)}</b>
           <span class="ps-hint">${escapeHtml(s.material)}</span>
           ${low ? '<span class="ps-badge-low">Low</span>' : ''}
-          ${retired ? '<span class="ps-hint">Retired</span>' : `<button class="ps-btn ghost small" data-action="edit-spool">Edit</button>`}
+          ${retired ? '<span class="ps-hint">Retired</span>' : ''}
+          <button class="ps-btn ghost small" data-action="edit-spool">Edit</button>
           ${(!retired && !printers.some(p=>p.spoolId===s.id)) ? `<button class="ps-btn ghost small" data-action="retire-spool" title="Not currently loaded on anything — mark this spool done">Retire</button>` : ''}
           <button class="ps-btn ghost small" data-action="remove" title="Delete this spool record">✕</button>
         </div>
@@ -6651,7 +6652,13 @@ function renderFilament(){
         const prevRemainingG = s.remainingG;
         card.querySelectorAll('[data-field]:not([data-field="assign-printer"])').forEach(input => {
           const field = input.getAttribute('data-field');
-          if(field==='remainingG' || field==='totalG'){
+          if(field==='remainingG'){
+            // Negative is a legitimate, meaningful value here -- it means
+            // the spool gave more usable filament than its rated weight
+            // (see the retirementSummary/overConsumed handling above), so
+            // a manual correction has to be able to enter one.
+            s[field] = parseFloat(input.value)||0;
+          } else if(field==='totalG'){
             s[field] = Math.max(0, parseFloat(input.value)||0);
           } else {
             s[field] = input.value;
