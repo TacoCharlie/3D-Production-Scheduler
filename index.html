@@ -8301,6 +8301,16 @@ function renderProductEditor(root){
   wireProductEditor(root, p, isNew);
 }
 
+// Uploaded project files are stored as `${productId}-${target}-${timestamp}-${originalFilename}`
+// (see the upload handler below) purely so two different uploads never
+// collide in storage — not anything a person should have to look at.
+// Strips that prefix back off so "Download" offers the file under its own
+// original name instead of that generated storage key.
+function projectFileDisplayName(path){
+  if(!path) return 'project-file';
+  return path.replace(/^.*-\d{13}-/, '');
+}
+
 function renderProductFilesSection(p){
   // A retired printer shouldn't be offered as a slot for a brand new file,
   // but if one already has a file assigned from before it retired, that
@@ -8317,7 +8327,7 @@ function renderProductFilesSection(p){
           <option value="">Move to…</option>
           ${emptyTargets.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}
         </select>` : '';
-      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}" title="Opens OrcaSlicer with this file">Open in Orca</a> ${moveControl} <button class="ps-btn ghost small" data-action="remove-product-file" data-target="${target.id}">✕</button>`;
+      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}" title="Opens OrcaSlicer with this file">Open in Orca</a> <a class="ps-btn ghost small" href="${escapeHtml(entry.url)}" download="${escapeHtml(projectFileDisplayName(entry.path))}" target="_blank" rel="noopener" title="Download this exact file — useful since the orcaslicer:// link above isn't reliable, and to confirm this is really the version you think it is">Download</a> ${moveControl} <button class="ps-btn ghost small" data-action="remove-product-file" data-target="${target.id}">✕</button>`;
     } else if(window.uploadProjectFile){
       action = `<input type="file" data-action="upload-product-file" data-target="${target.id}" style="display:none;" accept=".3mf,.stl,.step,.stp,.gcode" /><button class="ps-btn ghost small" data-action="trigger-product-file-upload" data-target="${target.id}">Upload…</button>`;
     } else {
@@ -8473,7 +8483,7 @@ function renderBatchEditor(p){
           <option value="">Move to…</option>
           ${emptyTargets.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}
         </select>` : '';
-      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}">Open in Orca</a> ${moveControl} <button class="ps-btn ghost small" data-action="remove-batchedit-file" data-target="${target.id}">✕</button>`;
+      action = `<a class="ps-btn ghost small" href="orcaslicer://open?file=${encodeURIComponent(entry.url)}">Open in Orca</a> <a class="ps-btn ghost small" href="${escapeHtml(entry.url)}" download="${escapeHtml(projectFileDisplayName(entry.path))}" target="_blank" rel="noopener" title="Download this exact file">Download</a> ${moveControl} <button class="ps-btn ghost small" data-action="remove-batchedit-file" data-target="${target.id}">✕</button>`;
     } else if(window.uploadProjectFile){
       action = `<input type="file" data-action="upload-batchedit-file" data-target="${target.id}" style="display:none;" accept=".3mf,.stl,.step,.stp,.gcode" /><button class="ps-btn ghost small" data-action="trigger-batchedit-file-upload" data-target="${target.id}">Upload…</button>`;
     } else {
