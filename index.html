@@ -5444,6 +5444,10 @@ function renderLog(){
         if(!printerId || !startVal) return;
 
         const printer = printers.find(p=>p.id===printerId);
+        // Captured before anything below overwrites them — see the
+        // spoolIdAtLogTime assignment further down for why these matter.
+        const prevPrinterId = e.printerId;
+        const prevSpoolIdAtLogTime = e.spoolIdAtLogTime;
 
         // Unwind everything this entry currently claims — qty, spool
         // weight, job credit — using its state as it was *before* this
@@ -5511,7 +5515,17 @@ function renderLog(){
         e.plannedMin = newPlannedMin;
         e.weightGAtLogTime = newWeight;
         e.unitsCompleted = newUnitsCompleted;
-        e.spoolIdAtLogTime = printer ? (printer.spoolId||null) : null;
+        // Re-deriving weight/time from the catalog (e.g. to pick up a
+        // corrected product weight) is a routine re-save on the SAME
+        // printer this entry already logged against — that must keep
+        // deducting from the spool that was actually loaded back then,
+        // not whatever happens to be loaded today. Only rebind to the
+        // printer's current spool when the printer assignment itself is
+        // genuinely changing (reassigning the print to a different
+        // machine) or there was no spool on record to begin with.
+        e.spoolIdAtLogTime = (printerId !== prevPrinterId || !prevSpoolIdAtLogTime)
+          ? (printer ? (printer.spoolId||null) : null)
+          : prevSpoolIdAtLogTime;
         e.actualStart = new Date(startVal).toISOString();
         e.notifiedFinishSoon = false;
         e.actualEnd = endVal ? new Date(endVal).toISOString() : null;
