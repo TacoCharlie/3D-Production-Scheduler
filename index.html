@@ -7607,7 +7607,10 @@ function renderShipping(){
       <div class="ps-panel-title"><span class="dot"></span>Shipping Weight Calculator</div>
       <div class="ps-hint" style="margin-bottom:16px;">Pick products and quantities to get a total shipping weight. Your current picks reset if you leave this tab or reload — save them below as a named shipment to reuse later.</div>
       <div id="ps-shipping-rows">${rows}</div>
-      <button class="ps-btn" style="margin-top:6px;" id="ps-shipping-add">+ Add product</button>
+      <div class="ps-row" style="margin-top:6px;gap:8px;">
+        <button class="ps-btn" id="ps-shipping-add">+ Add product</button>
+        <button class="ps-btn ghost" id="ps-shipping-clear">Clear</button>
+      </div>
 
       <div class="ps-summary-grid" style="margin-top:22px;grid-template-columns:1fr;">
         <div class="ps-summary-cell">
@@ -7623,6 +7626,12 @@ function renderShipping(){
 
   document.getElementById('ps-shipping-add').addEventListener('click', () => {
     shippingItems.push({id: uid('ship'), productId: '', qty: 1});
+    renderShipping();
+  });
+  document.getElementById('ps-shipping-clear').addEventListener('click', () => {
+    shippingItems = [{id: uid('ship'), productId: '', qty: 1}];
+    loadedShipmentId = null;
+    showSaveShipmentForm = false;
     renderShipping();
   });
   root.querySelectorAll('[data-action="shipping-product"]').forEach(sel => {
