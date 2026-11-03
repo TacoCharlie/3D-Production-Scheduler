@@ -8167,13 +8167,35 @@ function renderInventory(){
         <button class="ps-btn" id="ps-inventory-report-sync-btn">Sync Shopify now</button>
         <span class="ps-hint" id="ps-inventory-report-sync-status">${shopifySyncStatusHint()}</span>
       </div>
-      <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
-        <span class="ps-hint">"+ Job" buttons below add to:</span>
-        <select class="ps-select" id="ps-inventory-target-job" style="max-width:240px;">
-          <option value="">+ New job</option>
-          ${queuedJobs.map(j => `<option value="${j.id}" ${j.id===inventoryTargetJobId?'selected':''}>${escapeHtml(j.name)} (${j.items.length} item${j.items.length!==1?'s':''})</option>`).join('')}
-        </select>
-        ${targetJobForDisplay ? `<span class="ps-hint mono">${targetJobForDisplay.items.reduce((s,it)=>s+it.qty,0)} unit${targetJobForDisplay.items.reduce((s,it)=>s+it.qty,0)!==1?'s':''} queued</span>` : ''}
+      <div class="ps-panel" style="margin-bottom:14px;background:var(--panel-alt, var(--panel));">
+        <div class="ps-row" style="gap:10px;flex-wrap:wrap;align-items:center;">
+          <span class="ps-hint">"+ Job" buttons below add to:</span>
+          <select class="ps-select" id="ps-inventory-target-job" style="max-width:240px;">
+            <option value="">+ New job</option>
+            ${queuedJobs.map(j => `<option value="${j.id}" ${j.id===inventoryTargetJobId?'selected':''}>${escapeHtml(j.name)} (${j.items.length} item${j.items.length!==1?'s':''})</option>`).join('')}
+          </select>
+        </div>
+        ${targetJobForDisplay ? (targetJobForDisplay.items.length===0 ? `
+        <div class="ps-hint" style="margin-top:10px;">Nothing added to "${escapeHtml(targetJobForDisplay.name)}" yet — click "+ Job" on a row below.</div>
+        ` : `
+        <div style="margin-top:10px;">
+          ${targetJobForDisplay.items.map(it => {
+            const prod = catalog.find(p=>p.id===it.id);
+            return `
+            <div class="ps-row" style="justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--line);gap:8px;">
+              <span style="font-size:13px;">${prod ? escapeHtml(prod.name) : '(deleted product)'}</span>
+              <span class="ps-row" style="gap:8px;align-items:center;">
+                <span class="mono ps-hint">× ${it.qty}</span>
+                <button class="ps-btn ghost small" data-action="inventory-job-item-remove" data-id="${it.id}" title="Remove this line from the job">✕</button>
+              </span>
+            </div>`;
+          }).join('')}
+          <div class="ps-row" style="justify-content:space-between;margin-top:8px;">
+            <span class="ps-hint mono">${targetJobForDisplay.items.reduce((s,it)=>s+it.qty,0)} unit${targetJobForDisplay.items.reduce((s,it)=>s+it.qty,0)!==1?'s':''} total</span>
+            <button class="ps-btn ghost small" id="ps-inventory-go-to-jobs">View on Jobs tab →</button>
+          </div>
+        </div>
+        `) : ''}
       </div>
       <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
         <input class="ps-input" id="ps-inventory-report-search" placeholder="Search name or SKU…" value="${escapeHtml(inventoryReportFilter.search)}" style="max-width:220px;" />
@@ -8289,6 +8311,23 @@ function renderInventory(){
       renderInventory();
     });
   });
+  // Lets a misclick (or changed mind) on "+ Job" be undone right here,
+  // instead of having to go find the line on the Jobs tab.
+  root.querySelectorAll('[data-action="inventory-job-item-remove"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if(!targetJobForDisplay) return;
+      targetJobForDisplay.items = targetJobForDisplay.items.filter(it=>it.id!==btn.getAttribute('data-id'));
+      saveJobs();
+      renderInventory();
+    });
+  });
+  const goToJobsBtn = document.getElementById('ps-inventory-go-to-jobs');
+  if(goToJobsBtn){
+    goToJobsBtn.addEventListener('click', () => {
+      switchToTab('jobs');
+      renderJobs();
+    });
+  }
 }
 
 let pendingNewProduct = null; // carries g-code-derived defaults from the list view into a freshly-opened Add Product form, once
