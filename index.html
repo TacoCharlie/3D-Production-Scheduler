@@ -8036,6 +8036,7 @@ function renderCatalogList(root){
 // state (not persisted): sort column/direction and the current filters.
 let inventoryReportSort = { col: 'runway', dir: 'asc' };
 let inventoryReportFilter = { search: '', show: 'all', runwayMax: '' };
+let inventoryTargetJobId = null; // which queued job "+ Add to Job" sends to; null = "+ New job" until one's picked or created
 
 function inventoryReportRows(){
   return catalog.map(p => {
@@ -8056,6 +8057,21 @@ function inventoryReportRows(){
     const value = computeProductValueMetrics(p.id);
     return { p, sync, skuCount, unmatchedCount, stock, velocity, runway, profitPerHour: value.profitPerHour, priorityScore: value.priorityScore, valueReason: value.reason };
   });
+}
+
+// Resolves inventoryTargetJobId to an actual queued job for "+ Add to Job",
+// creating one on first use (or if the previously-targeted job was deleted
+// or moved out of Queued) so a row button always has somewhere to go
+// without forcing a trip to the Jobs tab first.
+function ensureInventoryTargetJob(){
+  let job = inventoryTargetJobId ? jobs.find(j=>j.id===inventoryTargetJobId && j.status==='queued') : null;
+  if(!job){
+    const newId = uid('job');
+    job = {id: newId, name: 'Needs printing – ' + new Date().toLocaleDateString(), items: [], status:'queued', createdAt: new Date().toISOString(), manualDone: 0};
+    jobs.push(job);
+    inventoryTargetJobId = newId;
+  }
+  return job;
 }
 
 function renderInventory(){
@@ -8103,8 +8119,15 @@ function renderInventory(){
   const arrow = (c) => col===c ? (dir===1 ? ' ▲' : ' ▼') : '';
   const th = (c, label, width) => `<th style="width:${width};cursor:pointer;user-select:none;" data-sort-col="${c}">${label}${arrow(c)}</th>`;
 
+  // Read-only lookup for display — doesn't create a job just from
+  // rendering the tab. ensureInventoryTargetJob() (used on the actual
+  // button click) is what creates one the first time it's needed.
+  const queuedJobs = jobs.filter(j=>j.status==='queued');
+  const targetJobForDisplay = inventoryTargetJobId ? queuedJobs.find(j=>j.id===inventoryTargetJobId) : null;
+
   const rowsHtml = rows.map(r => {
     const p = r.p;
+    const inTargetQty = targetJobForDisplay ? (targetJobForDisplay.items.find(it=>it.id===p.id)?.qty || 0) : 0;
     const skuCell = (r.skuCount>0 ? r.skuCount+' SKU'+(r.skuCount!==1?'s':'') : '—')
       + (r.unmatchedCount>0 ? ` <span class="ps-hint" style="color:var(--danger)" title="${escapeHtml((r.sync.unmatched_skus||[]).join(', '))} — mapped here but Shopify didn't recognize ${r.unmatchedCount>1?'them':'it'}">⚠ ${r.unmatchedCount} unmatched</span>` : '');
     const priceCell = p.salesPrice>0 ? '$'+Number(p.salesPrice).toFixed(2) : '—';
@@ -8128,7 +8151,10 @@ function renderInventory(){
         <td class="mono ps-hint">${runwayCell}</td>
         <td class="mono ps-hint">${profitCell}</td>
         <td class="mono ps-hint">${priorityCell}</td>
-        <td><button class="ps-btn small" data-action="inventory-report-edit" data-id="${p.id}">Edit</button></td>
+        <td style="white-space:nowrap;">
+          <button class="ps-btn small" data-action="inventory-add-to-job" data-id="${p.id}" title="${inTargetQty>0 ? `${inTargetQty} already in this job — click to add another` : 'Add 1 to the target job below'}">+ Job${inTargetQty>0?` (${inTargetQty})`:''}</button>
+          <button class="ps-btn ghost small" data-action="inventory-report-edit" data-id="${p.id}">Edit</button>
+        </td>
       </tr>
     `;
   }).join('');
@@ -8140,6 +8166,14 @@ function renderInventory(){
       <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
         <button class="ps-btn" id="ps-inventory-report-sync-btn">Sync Shopify now</button>
         <span class="ps-hint" id="ps-inventory-report-sync-status">${shopifySyncStatusHint()}</span>
+      </div>
+      <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+        <span class="ps-hint">"+ Job" buttons below add to:</span>
+        <select class="ps-select" id="ps-inventory-target-job" style="max-width:240px;">
+          <option value="">+ New job</option>
+          ${queuedJobs.map(j => `<option value="${j.id}" ${j.id===inventoryTargetJobId?'selected':''}>${escapeHtml(j.name)} (${j.items.length} item${j.items.length!==1?'s':''})</option>`).join('')}
+        </select>
+        ${targetJobForDisplay ? `<span class="ps-hint mono">${targetJobForDisplay.items.reduce((s,it)=>s+it.qty,0)} unit${targetJobForDisplay.items.reduce((s,it)=>s+it.qty,0)!==1?'s':''} queued</span>` : ''}
       </div>
       <div class="ps-row" style="gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
         <input class="ps-input" id="ps-inventory-report-search" placeholder="Search name or SKU…" value="${escapeHtml(inventoryReportFilter.search)}" style="max-width:220px;" />
@@ -8157,7 +8191,7 @@ function renderInventory(){
       ${rows.length===0 ? '<div class="ps-empty">No products match these filters.</div>' : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr>${th('name','Product','170px')}${th('sku','SKU','60px')}${th('price','Price','60px')}${th('startDate','Start date','105px')}${th('stock','Stock','52px')}${th('velocity','Velocity','72px')}${th('runway','Runway','62px')}${th('profitPerHour','Profit/hr','72px')}${th('priorityScore','Priority','62px')}<th style="width:55px"></th></tr></thead>
+        <thead><tr>${th('name','Product','170px')}${th('sku','SKU','60px')}${th('price','Price','60px')}${th('startDate','Start date','105px')}${th('stock','Stock','52px')}${th('velocity','Velocity','72px')}${th('runway','Runway','62px')}${th('profitPerHour','Profit/hr','72px')}${th('priorityScore','Priority','62px')}<th style="width:110px"></th></tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
       </div>
@@ -8231,6 +8265,27 @@ function renderInventory(){
       if(!product) return;
       product.startDate = input.value || '';
       saveCatalog();
+      renderInventory();
+    });
+  });
+  const targetJobSelect = document.getElementById('ps-inventory-target-job');
+  if(targetJobSelect){
+    targetJobSelect.addEventListener('change', () => {
+      inventoryTargetJobId = targetJobSelect.value || null;
+      renderInventory();
+    });
+  }
+  // "+ Job" on each row — builds up a queued job right from this screen
+  // instead of needing a trip to the Jobs tab per product. Repeated clicks
+  // on the same row just keep incrementing that product's qty in the job.
+  root.querySelectorAll('[data-action="inventory-add-to-job"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const productId = btn.getAttribute('data-id');
+      const job = ensureInventoryTargetJob();
+      const existing = job.items.find(it=>it.id===productId);
+      if(existing) existing.qty += 1;
+      else job.items.push({id: productId, qty: 1});
+      saveJobs();
       renderInventory();
     });
   });
