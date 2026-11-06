@@ -6887,6 +6887,13 @@ function renderAnalytics(){
       renderAnalytics();
     });
   }
+  root.querySelectorAll('[data-action="failure-rate-weeks"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const weeks = btn.getAttribute('data-weeks');
+      failureRateWeeksBack = weeks === 'all' ? 'all' : parseInt(weeks, 10);
+      renderAnalytics();
+    });
+  });
 }
 
 function renderQuantityByProductWidget(sinceDate){
@@ -7254,6 +7261,18 @@ function renderPrinterTimeCostWidget(sinceDate){
 // time lost to failures.
 let printerEfficiencyBestFirst = true; // higher % is better, so "best first" = descending
 let failureRateShowCounts = false; // false = show "%", true = show raw "fails/total" counts, in the Failure Rate Trend table
+let failureRateWeeksBack = 10; // how many of the most recent calendar weeks the Failure Rate Trend widget shows -- a number, or 'all'
+
+// "All" for the Failure Rate Trend widget means "back to the first real
+// print", not an arbitrary huge number -- walks the production log for the
+// earliest completed, non-test entry and converts that gap into weeks.
+function failureRateAllTimeWeeksBack(){
+  const dates = productionLog.filter(e => !e.isTest && e.actualEnd).map(e => new Date(e.actualEnd).getTime());
+  if(dates.length===0) return 10;
+  const earliest = new Date(Math.min(...dates));
+  const weeks = Math.ceil((Date.now() - earliest.getTime()) / (7*24*60*60*1000)) + 1;
+  return Math.max(10, weeks);
+}
 
 function computePrinterEfficiency(sinceDate){
   const byPrinter = {}; // printerId -> {expectedMinForGood, actualTimeMin, goodUnits, productIds:Set}
@@ -7455,19 +7474,27 @@ function renderFailureRateLineChart(buckets, models){
   `;
 }
 function renderFailureRateTrendWidget(){
-  let { buckets, models } = computeFailureRateTrend(10);
+  const weeksBack = failureRateWeeksBack === 'all' ? failureRateAllTimeWeeksBack() : failureRateWeeksBack;
+  let { buckets, models } = computeFailureRateTrend(weeksBack);
   // Weeks before your first logged print are just empty padding — trim
   // any leading weeks where every model shows nothing, so the table
   // starts where your real history actually starts.
   const firstRealIdx = buckets.findIndex(b => Object.values(b.byModel).some(d => d.total>0));
   if(firstRealIdx > 0) buckets = buckets.slice(firstRealIdx);
   const hasAnyData = buckets.some(b => Object.keys(b.byModel).length>0);
+  const weekRangeButtons = [
+    {key:10, label:'10 weeks'},
+    {key:26, label:'26 weeks'},
+    {key:52, label:'52 weeks'},
+    {key:'all', label:'All time'}
+  ].map(r => `<button class="ps-btn ${failureRateWeeksBack===r.key?'primary':'ghost'} small" data-action="failure-rate-weeks" data-weeks="${r.key}">${r.label}</button>`).join('');
   if(!hasAnyData || models.length===0){
     return `
       <div class="ps-panel">
         <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
         <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per calendar week (Monday–Sunday), shows whether it's actually improving/worsening or just settling around a stable number.</div>
-        <div class="ps-empty">Not enough history yet.</div>
+        <div class="ps-row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px;">${weekRangeButtons}</div>
+        <div class="ps-empty">No completed prints in this range yet.</div>
       </div>
     `;
   }
@@ -7486,6 +7513,7 @@ function renderFailureRateTrendWidget(){
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Failure Rate Trend</div>
       <div class="ps-hint" style="margin-bottom:12px;">Failure rate over time, one row per printer — printers sharing the same "Printer" value (set on the Printers tab) get combined into one row. One column per calendar week (Monday–Sunday, labeled by that week's ending Sunday), shows whether it's actually improving/worsening or just settling around a stable number. "—" means no completed prints that week.</div>
+      <div class="ps-row" style="gap:6px;flex-wrap:wrap;margin-bottom:12px;">${weekRangeButtons}</div>
       ${renderFailureRateLineChart(buckets, models)}
       <button class="ps-btn ghost small" id="ps-failure-rate-display-toggle" style="margin-bottom:10px;">${failureRateShowCounts ? 'Show as %' : 'Show as fails/total'}</button>
       <div style="overflow-x:auto;">
