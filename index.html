@@ -212,17 +212,48 @@
   <div id="ps-auth-screen" style="display:none;">
     <div class="ps-auth-card">
       <div class="ps-title" style="margin-bottom:2px;">PRINT<span>·</span>QUEUE</div>
-      <div class="ps-subtitle" style="margin-bottom:20px;">sign in to continue</div>
-      <div class="ps-field">
-        <span class="ps-field-label">Email</span>
-        <input class="ps-input" type="email" id="ps-auth-email" autocomplete="username" />
+      <div class="ps-subtitle" style="margin-bottom:20px;" id="ps-auth-subtitle">sign in to continue</div>
+
+      <div id="ps-auth-signin-form">
+        <div class="ps-field">
+          <span class="ps-field-label">Email</span>
+          <input class="ps-input" type="email" id="ps-auth-email" autocomplete="username" />
+        </div>
+        <div class="ps-field">
+          <span class="ps-field-label">Password</span>
+          <input class="ps-input" type="password" id="ps-auth-password" autocomplete="current-password" />
+        </div>
+        <button class="ps-btn primary" id="ps-auth-submit" style="width:100%;">Sign In</button>
+        <div style="text-align:right; margin-top:8px;">
+          <a href="#" id="ps-auth-forgot-link" class="ps-hint" style="text-decoration:underline;">Forgot password?</a>
+        </div>
       </div>
-      <div class="ps-field">
-        <span class="ps-field-label">Password</span>
-        <input class="ps-input" type="password" id="ps-auth-password" autocomplete="current-password" />
+
+      <div id="ps-auth-reset-form" style="display:none;">
+        <div class="ps-field">
+          <span class="ps-field-label">Email</span>
+          <input class="ps-input" type="email" id="ps-auth-reset-email" autocomplete="username" />
+        </div>
+        <button class="ps-btn primary" id="ps-auth-reset-submit" style="width:100%;">Send reset link</button>
+        <div style="text-align:right; margin-top:8px;">
+          <a href="#" id="ps-auth-back-link" class="ps-hint" style="text-decoration:underline;">Back to sign in</a>
+        </div>
       </div>
-      <button class="ps-btn primary" id="ps-auth-submit" style="width:100%;">Sign In</button>
+
+      <div id="ps-auth-newpw-form" style="display:none;">
+        <div class="ps-field">
+          <span class="ps-field-label">New password</span>
+          <input class="ps-input" type="password" id="ps-auth-newpw1" autocomplete="new-password" />
+        </div>
+        <div class="ps-field">
+          <span class="ps-field-label">Confirm new password</span>
+          <input class="ps-input" type="password" id="ps-auth-newpw2" autocomplete="new-password" />
+        </div>
+        <button class="ps-btn primary" id="ps-auth-newpw-submit" style="width:100%;">Set new password</button>
+      </div>
+
       <div id="ps-auth-error" class="ps-hint" style="color:var(--danger); margin-top:10px; min-height:14px;"></div>
+      <div id="ps-auth-success" class="ps-hint" style="color:var(--ok); margin-top:4px; min-height:14px;"></div>
     </div>
   </div>
   <div class="ps-shell">
@@ -430,7 +461,12 @@ if(typeof window.storage === 'undefined'){
 // ---- Auth gating ----
 // No public sign-up here on purpose: this app has one intended user, created
 // directly in the Supabase dashboard (Authentication -> Users -> Add user).
-// The sign-in form only ever calls signInWithPassword, never signUp.
+// The sign-in form calls signInWithPassword; "Forgot password?" below uses
+// Supabase's own resetPasswordForEmail + recovery-link landing flow, so a
+// lockout can be self-served instead of needing another manual SQL reset.
+// NOTE: for the emailed reset link to come back to this page instead of
+// erroring out, this page's exact URL needs to be added to Supabase's
+// Authentication -> URL Configuration -> Redirect URLs allow list.
 if(sb){
   window.__deferAppStart = true;
 }
@@ -451,17 +487,57 @@ function showApp(){
   if(signout) signout.style.display = '';
 }
 
+// The auth screen has three mutually-exclusive sub-forms: sign in, request
+// a reset link, and set a new password after following that link. These
+// stay in the DOM the whole time (just hidden) so showAuthScreen() doesn't
+// need to know which mode to render — setAuthMode() just toggles visibility
+// and resets the shared error/success messages.
+function setAuthMode(mode){
+  const forms = { signin: 'ps-auth-signin-form', reset: 'ps-auth-reset-form', newpw: 'ps-auth-newpw-form' };
+  Object.keys(forms).forEach(key => {
+    const el = document.getElementById(forms[key]);
+    if(el) el.style.display = (key === mode) ? '' : 'none';
+  });
+  const subtitle = document.getElementById('ps-auth-subtitle');
+  if(subtitle){
+    subtitle.textContent = mode === 'reset' ? 'reset your password'
+      : mode === 'newpw' ? 'choose a new password'
+      : 'sign in to continue';
+  }
+  const errEl = document.getElementById('ps-auth-error');
+  const okEl = document.getElementById('ps-auth-success');
+  if(errEl) errEl.textContent = '';
+  if(okEl) okEl.textContent = '';
+}
+
 async function bootWithAuth(){
+  // Supabase redirects a clicked recovery link back here with the recovery
+  // tokens in the URL hash, parses them automatically, establishes a
+  // session, AND fires a dedicated PASSWORD_RECOVERY event. That event (and
+  // this hash check, for the very first paint before the event fires) is
+  // the signal to show "set a new password" rather than dropping the user
+  // straight into the app just because a session now technically exists.
+  const isRecoveryLink = window.location.hash.includes('type=recovery');
   const { data: { session } } = await sb.auth.getSession();
-  if(session){
+
+  if(isRecoveryLink){
+    showAuthScreen();
+    setAuthMode('newpw');
+  } else if(session){
     showApp();
     startApp();
   } else {
     showAuthScreen();
+    setAuthMode('signin');
   }
 
   sb.auth.onAuthStateChange((event, newSession) => {
-    if(event === 'SIGNED_IN' && newSession){
+    if(event === 'PASSWORD_RECOVERY'){
+      showAuthScreen();
+      setAuthMode('newpw');
+      return;
+    }
+    if(event === 'SIGNED_IN' && newSession && !isRecoveryLink){
       showApp();
       startApp();
     }
@@ -472,17 +548,20 @@ async function bootWithAuth(){
 
   // showApp() (above) already REMOVES #ps-auth-screen entirely whenever a
   // session already exists at boot — the normal case for a returning,
-  // already-signed-in user. submitBtn is therefore null every single time
-  // that happens, and wiring it up unconditionally threw here on every
-  // normal page load ("Cannot read properties of null (reading
-  // 'addEventListener')"), which is one of two bugs behind prints not
-  // reliably staying marked finished. Only wire the sign-in form when it's
-  // actually still on the page (i.e. showAuthScreen() ran instead).
+  // already-signed-in user. The auth-screen elements below are therefore
+  // all null every single time that happens, and wiring them up
+  // unconditionally threw here on every normal page load ("Cannot read
+  // properties of null (reading 'addEventListener')"), which is one of two
+  // bugs behind prints not reliably staying marked finished. Only wire the
+  // auth screen when it's actually still on the page (i.e. showAuthScreen()
+  // ran instead).
   const submitBtn = document.getElementById('ps-auth-submit');
   if(submitBtn){
     const errEl = document.getElementById('ps-auth-error');
+    const okEl = document.getElementById('ps-auth-success');
+
     async function attemptSignIn(){
-      errEl.textContent = '';
+      errEl.textContent = ''; okEl.textContent = '';
       const email = document.getElementById('ps-auth-email').value.trim();
       const password = document.getElementById('ps-auth-password').value;
       if(!email || !password){ errEl.textContent = 'Enter both email and password.'; return; }
@@ -495,6 +574,78 @@ async function bootWithAuth(){
     document.getElementById('ps-auth-password').addEventListener('keydown', (e) => {
       if(e.key === 'Enter') attemptSignIn();
     });
+
+    const forgotLink = document.getElementById('ps-auth-forgot-link');
+    if(forgotLink){
+      forgotLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        const typedEmail = document.getElementById('ps-auth-email').value.trim();
+        setAuthMode('reset');
+        const resetEmailEl = document.getElementById('ps-auth-reset-email');
+        if(resetEmailEl) resetEmailEl.value = typedEmail;
+      });
+    }
+
+    const backLink = document.getElementById('ps-auth-back-link');
+    if(backLink){
+      backLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        setAuthMode('signin');
+      });
+    }
+
+    const resetSubmitBtn = document.getElementById('ps-auth-reset-submit');
+    if(resetSubmitBtn){
+      async function attemptResetRequest(){
+        errEl.textContent = ''; okEl.textContent = '';
+        const email = document.getElementById('ps-auth-reset-email').value.trim();
+        if(!email){ errEl.textContent = 'Enter your email.'; return; }
+        resetSubmitBtn.disabled = true;
+        const { error } = await sb.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin + window.location.pathname
+        });
+        resetSubmitBtn.disabled = false;
+        if(error){
+          errEl.textContent = error.message;
+        } else {
+          // Same message whether or not the address actually has an account
+          // — Supabase doesn't distinguish either, and this avoids leaking
+          // which emails are registered.
+          okEl.textContent = 'If that email has an account, a reset link is on its way — check your inbox (and spam folder).';
+        }
+      }
+      resetSubmitBtn.addEventListener('click', attemptResetRequest);
+      document.getElementById('ps-auth-reset-email').addEventListener('keydown', (e) => {
+        if(e.key === 'Enter') attemptResetRequest();
+      });
+    }
+
+    const newpwSubmitBtn = document.getElementById('ps-auth-newpw-submit');
+    if(newpwSubmitBtn){
+      async function attemptSetNewPassword(){
+        errEl.textContent = ''; okEl.textContent = '';
+        const pw1 = document.getElementById('ps-auth-newpw1').value;
+        const pw2 = document.getElementById('ps-auth-newpw2').value;
+        if(!pw1 || !pw2){ errEl.textContent = 'Enter the new password twice.'; return; }
+        if(pw1.length < 6){ errEl.textContent = 'Password must be at least 6 characters.'; return; }
+        if(pw1 !== pw2){ errEl.textContent = "Those two passwords don't match."; return; }
+        newpwSubmitBtn.disabled = true;
+        const { error } = await sb.auth.updateUser({ password: pw1 });
+        newpwSubmitBtn.disabled = false;
+        if(error){ errEl.textContent = error.message; return; }
+        // Strip the recovery token out of the URL so a later refresh of
+        // this same tab doesn't re-trigger the "set a new password" screen,
+        // then drop straight into the app -- updateUser() succeeding means
+        // this recovery session IS now a fully signed-in session.
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+        showApp();
+        startApp();
+      }
+      newpwSubmitBtn.addEventListener('click', attemptSetNewPassword);
+      document.getElementById('ps-auth-newpw2').addEventListener('keydown', (e) => {
+        if(e.key === 'Enter') attemptSetNewPassword();
+      });
+    }
   }
 
   const signoutBtn = document.getElementById('ps-auth-signout');
