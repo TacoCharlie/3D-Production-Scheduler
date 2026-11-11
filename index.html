@@ -2333,6 +2333,7 @@ function needsToBePrintedList(){
   const targetRunwayDays = settings.needsPrintTargetRunwayDays;
   const candidates = [];
   catalog.forEach(p => {
+    if(p.archived) return;
     const sync = shopifySync[p.id];
     if(!sync) return;
     const velocity = Number(sync.velocity_per_day);
@@ -2869,7 +2870,7 @@ function renderJobs(){
 
   const queuedCards = queued.map(job => {
     const t = jobTotals(job);
-    const availableProducts = catalog.filter(p => !job.items.some(it=>it.id===p.id));
+    const availableProducts = catalog.filter(p => !p.archived && !job.items.some(it=>it.id===p.id));
     const addOptions = availableProducts.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
     return `
       <div class="ps-printer-card" data-jobid="${job.id}">
@@ -2909,7 +2910,7 @@ function renderJobs(){
       .reduce((s,e) => s + (e.plannedMin||0), 0);
     const timePct = t.totalMin>0 ? (timeSpentMin/t.totalMin)*100 : 0;
     const isEditing = editingJobId === job.id;
-    const availableProductsActive = catalog.filter(p => !job.items.some(it=>it.id===p.id));
+    const availableProductsActive = catalog.filter(p => !p.archived && !job.items.some(it=>it.id===p.id));
     const addOptionsActive = availableProductsActive.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
     // Detect drift between manualDone and what the real logged entries
     // actually support — same computation Recalculate applies, just
@@ -4503,9 +4504,13 @@ function renderLog(){
     const firstAvailablePrinter = printers.find(p=>!p.retired);
     logFormSelection.printerId = firstAvailablePrinter ? firstAvailablePrinter.id : null;
   }
-  if(!catalog.some(p=>p.id===logFormSelection.productId)) logFormSelection.productId = catalog[0] ? catalog[0].id : null;
+  // A brand new "Log a print" entry should default to (and only offer) an
+  // active product — archived ones are done being printed, so they'd just
+  // be clutter in the one picker you reach for most often.
+  const logPickableCatalog = catalog.filter(p=>!p.archived);
+  if(!logPickableCatalog.some(p=>p.id===logFormSelection.productId)) logFormSelection.productId = logPickableCatalog[0] ? logPickableCatalog[0].id : null;
   const printerOptions = printers.filter(p=>!p.retired).map(p => `<option value="${p.id}" ${p.id===logFormSelection.printerId?'selected':''}>${escapeHtml(p.name)}${p.status==='down'?' (down)':''}</option>`).join('');
-  const productOptions = catalog.map(p => `<option value="${p.id}" ${p.id===logFormSelection.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+  const productOptions = logPickableCatalog.map(p => `<option value="${p.id}" ${p.id===logFormSelection.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
 
   const allEntriesSorted = productionLog.slice().sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart));
   const entries = allEntriesSorted.filter(e =>
@@ -4622,8 +4627,8 @@ function renderLog(){
 
     if(e.id === editingLogId){
       const pOpts = printers.map(p => `<option value="${p.id}" ${p.id===e.printerId?'selected':''}>${escapeHtml(p.name)}${p.retired?' (retired)':(p.status==='down'?' (down)':'')}</option>`).join('');
-      const dOpts = catalog.map(p => `<option value="${p.id}" ${p.id===e.productId?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
-      const testDOpts = `<option value="">— not a specific product —</option>` + catalog.map(p => `<option value="${p.id}" ${e.productId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('');
+      const dOpts = catalog.map(p => `<option value="${p.id}" ${p.id===e.productId?'selected':''}>${escapeHtml(p.name)}${p.archived?' (archived)':''}</option>`).join('');
+      const testDOpts = `<option value="">— not a specific product —</option>` + catalog.map(p => `<option value="${p.id}" ${e.productId===p.id?'selected':''}>${escapeHtml(p.name)}${p.archived?' (archived)':''}</option>`).join('');
       const isTestEdit = !!e.isTest;
       return `
         <div class="ps-log-entry" data-id="${e.id}" data-editing="1" style="flex-direction:column;align-items:stretch;">
@@ -4871,7 +4876,7 @@ function renderLog(){
           <span class="ps-field-label">Product</span>
           <select class="ps-select" id="ps-log-filter-product">
             <option value="">All products</option>
-            ${catalog.map(p => `<option value="${p.id}" ${logHistoryProductId===p.id?'selected':''}>${escapeHtml(p.name)}</option>`).join('')}
+            ${catalog.map(p => `<option value="${p.id}" ${logHistoryProductId===p.id?'selected':''}>${escapeHtml(p.name)}${p.archived?' (archived)':''}</option>`).join('')}
           </select>
         </div>
         <div class="ps-field" style="flex:1;min-width:150px;margin-bottom:0;">
@@ -5887,7 +5892,7 @@ function renderLog(){
 function renderEstimate(){
   const root = document.getElementById('ps-tab-estimate');
 
-  const availableProducts = catalog.filter(p => !estimateItems.some(it=>it.id===p.id));
+  const availableProducts = catalog.filter(p => !p.archived && !estimateItems.some(it=>it.id===p.id));
   const addOptions = availableProducts.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 
   const rows = estimateItems.map((item, idx) => {
@@ -6908,6 +6913,7 @@ let editingTypeId = null; // which product type row is in edit mode
 let editingProductId = null; // null = browsing list; '_new' = add-product form; a real id = editing that product
 let expandedBatchPreview = new Set(); // catalog list only: which products show their read-only batch sub-rows
 let expandedCostBreakdown = new Set(); // catalog list only: which products show their cost breakdown sub-row
+let showArchivedProducts = false; // Catalog tab: whether the Archived Products panel is expanded
 let expandedDoneJobs = new Set(); // Jobs tab: which Done cards show their item breakdown
 let collapsedActiveJobs = new Set(); // Jobs tab: which Active cards have been manually collapsed (defaults to expanded)
 let showLowSpools = false; // Filament tab: whether the low/near-empty spools group is expanded
@@ -7712,7 +7718,7 @@ function renderPrinterEfficiencyWidget(sinceDate){
 
 function renderShipping(){
   const root = document.getElementById('ps-tab-shipping');
-  const productOptions = catalog.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  const productOptions = catalog.filter(p=>!p.archived).map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 
   const rows = shippingItems.map(item => {
     const p = catalog.find(x=>x.id===item.productId);
@@ -7959,7 +7965,10 @@ function renderCatalogList(root){
   const fleetWattageWNow = computeFleetAverageWattageW();
   const costPrecomputed = { costPerGram: costPerGramNow, blendedRate: blendedElecRateNow, nowRate: currentElecRateNow, fleetWattageW: fleetWattageWNow };
 
-  const productRows = catalog.map((p, idx) => {
+  const activeCatalog = catalog.filter(p => !p.archived);
+  const archivedCatalog = catalog.filter(p => p.archived);
+
+  const productRows = activeCatalog.map((p, idx) => {
     const printMin = p.timeH*60 + p.timeM;
     const incomplete = printMin<=0;
     const fileCount = Object.keys(p.projectFiles||{}).length;
@@ -8003,12 +8012,22 @@ function renderCatalogList(root){
         <td class="mono ps-hint">${cogs?`<button class="ps-btn ghost small" data-action="toggle-cost-breakdown" style="padding:1px 6px;">$${cogs.totalNow.toFixed(2)} ${costExpanded?'▾':'▸'}</button>`:'—'}</td>
         <td class="ps-hint">${fileCount>0?fileCount+' file'+(fileCount!==1?'s':''):'—'}</td>
         <td class="ps-hint">${batchCount>0?batchCount+' batch'+(batchCount!==1?'es':''):'—'}</td>
-        <td><button class="ps-btn small" data-action="edit-product">Edit</button></td>
+        <td style="white-space:nowrap;"><button class="ps-btn small" data-action="edit-product">Edit</button> <button class="ps-btn ghost small" data-action="archive-product" title="Hide from the active list without deleting — past logs and jobs keep referencing it normally">Archive</button></td>
       </tr>
       ${subRows}
       ${costBreakdownRow}
     `;
   }).join('');
+
+  const archivedRows = archivedCatalog.map(p => `
+    <div class="ps-row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap;">
+      <span>${renderTag(p.type)} &nbsp;${escapeHtml(p.name)}${p.weightG>0?` <span class="ps-hint">— ${p.weightG}g</span>`:''}</span>
+      <span class="ps-row" style="gap:6px;">
+        <button class="ps-btn ghost small" data-action="edit-archived-product" data-id="${p.id}">Edit</button>
+        <button class="ps-btn ghost small" data-action="restore-product" data-id="${p.id}">Restore</button>
+      </span>
+    </div>
+  `).join('');
 
   root.innerHTML = `
     <div class="ps-panel">
@@ -8033,15 +8052,27 @@ function renderCatalogList(root){
         ${sb ? `<button class="ps-btn" id="ps-shopify-sync-btn">Sync Shopify now</button>` : ''}
         ${sb ? `<span class="ps-hint" id="ps-shopify-sync-status">${shopifySyncStatusHint()}</span>` : ''}
       </div>
-      ${catalog.length===0 ? '<div class="ps-empty">No products yet.</div>' : `
+      ${activeCatalog.length===0 ? `<div class="ps-empty">${catalog.length===0 ? 'No products yet.' : 'No active products — everything is archived below.'}</div>` : `
       <div style="overflow-x:auto;">
       <table class="ps-table">
-        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:70px"></th></tr></thead>
+        <thead><tr><th style="width:60px"></th><th>Product</th><th style="width:90px">Print time</th><th style="width:80px">Weight</th><th style="width:80px">Cost (avg)</th><th style="width:80px">Cost (now)</th><th style="width:80px">Files</th><th style="width:80px">Batches</th><th style="width:140px"></th></tr></thead>
         <tbody>${productRows}</tbody>
       </table>
       </div>
       `}
     </div>
+    ${archivedCatalog.length>0 ? `
+    <div class="ps-panel">
+      <div class="ps-panel-title" data-action="toggle-archived-products" style="cursor:pointer;">
+        <span class="dot"></span>Archived Products
+        <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${showArchivedProducts?'▾':'▸'} (${archivedCatalog.length})</span>
+      </div>
+      ${showArchivedProducts ? `
+      <div class="ps-hint" style="margin-bottom:12px;">Pulled out of the active catalog — kept here for history (past logs, jobs, and COGS still reference them normally). They're also hidden from the Log tab's "new print" picker, the Inventory Report, and every "add to job/scenario" list. Hit "Restore" to bring one back.</div>
+      <div id="ps-archived-products-list">${archivedRows}</div>
+      ` : ''}
+    </div>
+    ` : ''}
   `;
 
   document.getElementById('ps-add-product-btn').addEventListener('click', () => {
@@ -8092,6 +8123,34 @@ function renderCatalogList(root){
       renderCatalog();
     });
   });
+  root.querySelectorAll('[data-action="archive-product"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const productId = btn.closest('tr').getAttribute('data-id');
+      const p = catalog.find(x=>x.id===productId);
+      if(p){ p.archived = true; saveCatalog(); }
+      renderCatalog(); renderSchedule(); regenerateIfActive();
+    });
+  });
+  root.querySelectorAll('[data-action="restore-product"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const p = catalog.find(x=>x.id===btn.getAttribute('data-id'));
+      if(p){ delete p.archived; saveCatalog(); }
+      renderCatalog(); renderSchedule(); regenerateIfActive();
+    });
+  });
+  root.querySelectorAll('[data-action="edit-archived-product"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      editingProductId = btn.getAttribute('data-id');
+      renderCatalog();
+    });
+  });
+  const toggleArchivedProductsBtn = root.querySelector('[data-action="toggle-archived-products"]');
+  if(toggleArchivedProductsBtn){
+    toggleArchivedProductsBtn.addEventListener('click', () => {
+      showArchivedProducts = !showArchivedProducts;
+      renderCatalog();
+    });
+  }
   let draggedCatalogId = null;
   root.querySelectorAll('.ps-draggable-row').forEach(row => {
     row.addEventListener('dragstart', (ev) => {
@@ -8218,7 +8277,9 @@ let inventoryReportFilter = { search: '', show: 'all', runwayMax: '' };
 let inventoryTargetJobId = null; // which queued job "+ Add to Job" sends to; null = "+ New job" until one's picked or created
 
 function inventoryReportRows(){
-  return catalog.map(p => {
+  // Archived products (retired test/R&D prints etc.) are intentionally left
+  // out of this report — it's about what's actively stocked and sold.
+  return catalog.filter(p => !p.archived).map(p => {
     const sync = shopifySync[p.id];
     const skuCount = (p.shopifySkus||[]).length;
     const unmatchedCount = sync ? (sync.unmatched_skus||[]).length : 0;
@@ -8589,9 +8650,11 @@ function renderProductEditor(root){
           ? `<button class="ps-btn primary" id="ps-editor-create">Create Product</button>
              <button class="ps-btn ghost" id="ps-editor-cancel">Cancel</button>`
           : `<button class="ps-btn primary" id="ps-editor-done">Done</button>
+             <button class="ps-btn ghost" id="ps-editor-archive-toggle">${p.archived ? 'Restore Product' : 'Archive Product'}</button>
              <button class="ps-btn ghost" id="ps-editor-delete" style="color:var(--danger);margin-left:auto;">Delete Product</button>`
         }
       </div>
+      ${!isNew && p.archived ? '<div class="ps-hint" style="margin-top:8px;">Archived — hidden from the active catalog, Log tab print picker, Inventory Report, and "add to job/scenario" lists. Past logs, jobs, and cost history still reference it normally.</div>' : ''}
       ${!isNew ? '<div class="ps-hint" style="margin-top:8px;">Changes to name, type, time, and weight save automatically as you make them.</div>' : ''}
     </div>
 
@@ -8927,6 +8990,11 @@ function wireProductEditor(root, p, isNew){
   document.getElementById('ps-editor-done').addEventListener('click', () => {
     editingProductId = null; editingBatchId = null; editingOverrideId = null;
     renderCatalog();
+  });
+  document.getElementById('ps-editor-archive-toggle').addEventListener('click', () => {
+    if(p.archived) delete p.archived; else p.archived = true;
+    saveCatalog();
+    renderCatalog(); renderSchedule(); regenerateIfActive();
   });
   document.getElementById('ps-editor-delete').addEventListener('click', () => {
     catalog = catalog.filter(x=>x.id!==p.id);
@@ -9711,7 +9779,10 @@ function renderSchedule(){
 
   const rows = priorityOrder.map((id, idx) => {
     const p = catalog.find(x=>x.id===id);
-    if(!p) return '';
+    // Archived products stay in priorityOrder (so a later Restore puts them
+    // right back where they were), they just don't show up in the active
+    // fulfillment queue while archived.
+    if(!p || p.archived) return '';
     const entry = getOrderEntry(id);
     const printMin = p.timeH*60 + p.timeM;
     const incomplete = printMin<=0;
@@ -9850,7 +9921,7 @@ function onGenerate(){
     const entry = getOrderEntry(id);
     if(entry.qty<=0) return;
     const p = catalog.find(x=>x.id===id);
-    if(!p) return;
+    if(!p || p.archived) return;
     const resolved = getProductTimeWeight(p, entry.pin || null);
     const printTimeMin = resolved.timeH*60 + resolved.timeM;
     if(printTimeMin<=0){ missing.push(p.name); return; }
