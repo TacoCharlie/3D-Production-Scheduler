@@ -2880,6 +2880,7 @@ function renderJobs(){
             : `<b style="flex:1.4;">${escapeHtml(job.name)}</b> <button class="ps-btn ghost small" data-action="edit-job-name">✎</button>`}
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}</span>
           <button class="ps-btn primary small" data-action="job-activate">Move to Active Queue</button>
+          <button class="ps-btn ghost small" data-action="job-duplicate" title="Copy this product list into a brand new queued job, starting with zero progress">Duplicate</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
         ${job.items.length===0 ? '<div class="ps-empty">No items yet.</div>' : `
@@ -2929,6 +2930,7 @@ function renderJobs(){
             : `<b style="flex:1.4;">${escapeHtml(job.name)}</b> <button class="ps-btn ghost small" data-action="edit-job-name">✎</button>`}
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''} · ${fmtDuration(t.totalMin)}${t.totalWeight>0?' · '+t.totalWeight+'g':''}${isCollapsed?` · ${done} of ${totalUnits} done (${pct.toFixed(0)}%)`:''}</span>
           <button class="ps-btn small" data-action="job-done">Mark Done</button>
+          <button class="ps-btn ghost small" data-action="job-duplicate" title="Copy this product list into a brand new queued job, starting with zero progress">Duplicate</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
         ${isCollapsed ? '' : `
@@ -2973,6 +2975,7 @@ function renderJobs(){
           <span class="ps-hint" style="flex:1.4;">${escapeHtml(job.name)}</span>
           <span class="ps-hint mono">${t.totalUnits} unit${t.totalUnits!==1?'s':''}</span>
           <button class="ps-btn ghost small" data-action="job-reopen" title="Move back to Active so you can add to it or log more against it">Reopen</button>
+          <button class="ps-btn ghost small" data-action="job-duplicate" title="Copy this product list into a brand new queued job, starting with zero progress — for printing the same order again">Duplicate</button>
           <button class="ps-btn ghost small" data-action="job-delete">✕</button>
         </div>
         ${isExpanded ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">${renderJobItemRows(job, false)}</div>` : ''}
@@ -3224,6 +3227,26 @@ function renderJobs(){
       deleteBtn.addEventListener('click', () => {
         jobs = jobs.filter(j=>j.id!==jobId);
         saveJobs(); regenerateIfActive();
+      });
+    }
+    const duplicateBtn = card.querySelector('[data-action="job-duplicate"]');
+    if(duplicateBtn){
+      duplicateBtn.addEventListener('click', () => {
+        const newId = uid('job');
+        jobs.push({
+          id: newId,
+          // Same product list and quantities, but a fresh, independent job:
+          // Queued status, zero progress, no link back to the original's
+          // logged prints -- exactly like starting that same order over
+          // again for a different customer.
+          name: job.name + ' (copy)',
+          items: job.items.map(it => ({id: it.id, qty: it.qty})),
+          status: 'queued',
+          createdAt: new Date().toISOString(),
+          manualDone: 0
+        });
+        editingJobNameId = newId;
+        saveJobs(); renderJobs();
       });
     }
     const addSelect = card.querySelector('[data-action="job-add-select"]');
