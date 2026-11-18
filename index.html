@@ -7074,6 +7074,54 @@ function renderAnalytics(){
       renderAnalytics();
     });
   });
+
+  // ---- Failure Rate Trend chart: hover crosshair + combined tooltip ----
+  // Lives here (rather than inside renderFailureRateLineChart itself)
+  // because that function only returns a markup string -- the actual DOM
+  // nodes it describes don't exist to attach listeners to until after
+  // root.innerHTML is set above.
+  const frChartWrap = document.getElementById('ps-fr-chart-wrap');
+  if(frChartWrap){
+    const svgEl = document.getElementById('ps-fr-chart-svg');
+    const crosshair = document.getElementById('ps-fr-crosshair');
+    const tooltip = document.getElementById('ps-fr-tooltip');
+    let activeIdx = null;
+    function showForIdx(idx, clientX){
+      if(idx === activeIdx) { positionTooltip(clientX); return; }
+      activeIdx = idx;
+      const hitcol = svgEl.querySelector(`.ps-fr-hitcol[data-idx="${idx}"]`);
+      const tipSrc = document.getElementById(`ps-fr-tip-${idx}`);
+      if(!hitcol || !tipSrc) return;
+      const colX = parseFloat(hitcol.getAttribute('x')) + parseFloat(hitcol.getAttribute('width'))/2;
+      crosshair.setAttribute('x1', colX); crosshair.setAttribute('x2', colX);
+      crosshair.style.display = '';
+      tooltip.innerHTML = tipSrc.innerHTML;
+      tooltip.style.display = '';
+      positionTooltip(clientX);
+    }
+    function positionTooltip(clientX){
+      const wrapRect = frChartWrap.getBoundingClientRect();
+      const tipWidth = tooltip.offsetWidth;
+      // Follow the cursor horizontally (not the SVG viewBox coordinate,
+      // which doesn't account for the chart being scaled to fit its real
+      // on-screen width), clamped so the tooltip never runs off either edge.
+      let left = (clientX!=null ? clientX - wrapRect.left : wrapRect.width/2) + 12;
+      left = Math.max(4, Math.min(wrapRect.width - tipWidth - 4, left));
+      tooltip.style.left = left + 'px';
+      tooltip.style.top = '8px';
+    }
+    function hide(){
+      activeIdx = null;
+      crosshair.style.display = 'none';
+      tooltip.style.display = 'none';
+    }
+    svgEl.querySelectorAll('.ps-fr-hitcol').forEach(col => {
+      const idx = parseInt(col.getAttribute('data-idx'), 10);
+      col.addEventListener('mouseenter', (e) => showForIdx(idx, e.clientX));
+      col.addEventListener('mousemove', (e) => showForIdx(idx, e.clientX));
+    });
+    frChartWrap.addEventListener('mouseleave', hide);
+  }
 }
 
 function renderQuantityByProductWidget(sinceDate){
@@ -7634,21 +7682,61 @@ function renderFailureRateLineChart(buckets, models){
     if(current.length) segments.push(current);
     const paths = segments.map(seg => {
       const d = seg.map((pt,i) => `${i===0?'M':'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(' ');
-      return `<path d="${d}" fill="none" stroke="${m.color}" stroke-width="2" />`;
+      return `<path d="${d}" fill="none" stroke="${m.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />`;
     }).join('');
-    const dots = m.points.map((p,i) => p ? `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(p.rate).toFixed(1)}" r="3" fill="${m.color}"><title>${escapeHtml(m.model)}: ${p.rate.toFixed(0)}% (${p.failed} of ${p.total})</title></circle>` : '').join('');
+    // Every dot gets a 2px surface-colored ring behind it (drawn first,
+    // slightly larger) so it stays legible where its line crosses or lands
+    // on top of another series -- notably the common case of several
+    // printers all sitting at a flat 0% for a stretch of weeks, where their
+    // lines paint pixel-for-pixel on top of each other.
+    const dots = m.points.map((p,i) => p
+      ? `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(p.rate).toFixed(1)}" r="6" fill="var(--panel)" />` +
+        `<circle cx="${xAt(i).toFixed(1)}" cy="${yAt(p.rate).toFixed(1)}" r="4" fill="${m.color}"><title>${escapeHtml(m.model)}: ${p.rate.toFixed(0)}% (${p.failed} of ${p.total})</title></circle>`
+      : ''
+    ).join('');
     return paths + dots;
   }).join('');
 
   const legend = perModel.map(m => `<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${m.color};"></span><span class="ps-hint">${escapeHtml(m.model)}</span></span>`).join('');
 
+  // Hover crosshair + a combined tooltip listing EVERY series' value for
+  // that week, not just whichever dot happens to be drawn on top. This is
+  // the real fix for coincident lines: a shared-rate week is still exactly
+  // one pixel stack to look at, but hovering it now shows all the printers
+  // that share it, regardless of paint order.
+  const hitCols = buckets.map((b,i) => {
+    const x0 = i===0 ? padL : (xAt(i-1)+xAt(i))/2;
+    const x1 = i===buckets.length-1 ? W-padR : (xAt(i)+xAt(i+1))/2;
+    return `<rect data-idx="${i}" class="ps-fr-hitcol" x="${x0.toFixed(1)}" y="${padT}" width="${Math.max(0,x1-x0).toFixed(1)}" height="${plotH}" fill="transparent" style="cursor:crosshair;" />`;
+  }).join('');
+
+  const tooltipContents = buckets.map((b,i) => {
+    const rows = perModel.map(m => {
+      const p = m.points[i];
+      const valueText = p ? (failureRateShowCounts ? `${p.failed}/${p.total}` : `${p.rate.toFixed(0)}%`) : '—';
+      return `<div style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${m.color};flex:none;"></span>
+        <span style="flex:1;margin-right:10px;">${escapeHtml(m.model)}</span>
+        <span class="mono" style="font-weight:600;">${valueText}</span>
+      </div>`;
+    }).join('');
+    return `<div id="ps-fr-tip-${i}" style="display:none;">
+      <div style="font-weight:700;margin-bottom:4px;white-space:nowrap;">${b.weekEndLabel.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</div>
+      ${rows}
+    </div>`;
+  }).join('');
+
   return `
-    <div style="margin-bottom:14px;">
-      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;">
+    <div style="margin-bottom:14px;position:relative;" id="ps-fr-chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;" id="ps-fr-chart-svg">
         ${gridLines}
         ${lines}
         ${xLabels}
+        <line id="ps-fr-crosshair" x1="0" y1="${padT}" x2="0" y2="${padT+plotH}" stroke="var(--line)" stroke-width="1" stroke-dasharray="3,3" style="display:none;pointer-events:none;" />
+        ${hitCols}
       </svg>
+      <div id="ps-fr-tooltip" style="display:none;position:absolute;pointer-events:none;background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:11.5px;z-index:5;box-shadow:0 4px 12px rgba(0,0,0,0.35);"></div>
+      <div style="display:none;">${tooltipContents}</div>
       <div style="margin-top:6px;">${legend}</div>
     </div>
   `;
