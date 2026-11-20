@@ -4378,7 +4378,7 @@ let collapsedLogLiveStatus = new Set();
 // spool. Same math as the Status tab's cards, just compact enough to sit
 // inside a log row. Also called by the 20s refresh tick to update the
 // block in place (see startApp) without re-rendering the whole Log tab.
-function logEntryLiveStatusHtml(e){
+function logEntryLiveStatusHtml(e, collapsed){
   const now = new Date();
   const printer = printers.find(p=>p.id===e.printerId);
   const start = new Date(e.actualStart);
@@ -4387,6 +4387,15 @@ function logEntryLiveStatusHtml(e){
   const estFinish = new Date(start.getTime() + (e.plannedMin||0)*60000);
   const overdue = hasEstimate && now > estFinish;
   const progressPct = hasEstimate ? Math.min(100, (elapsedMin/e.plannedMin)*100) : 0;
+
+  // Collapsed: just the progress bar, so you can still see at a glance how
+  // far along it is without the full block taking up room.
+  if(collapsed){
+    return hasEstimate ? `
+      <div class="ps-hprogress-track" style="margin:6px 0 0;" title="${fmtDuration(elapsedMin)} elapsed · ${Math.round(progressPct)}% of estimated time${overdue?' · OVERDUE':' · done '+fmtClock(estFinish)}">
+        <div class="ps-hprogress-fill ${overdue?'overdue':''}" style="width:${progressPct}%;"></div>
+      </div>` : '';
+  }
 
   const cell = (label, value, sub, valueStyle) => `
     <div style="min-width:120px;">
@@ -4812,8 +4821,8 @@ function renderLog(){
     const liveToggle = isLive
       ? ` <span class="ps-hint" data-action="toggle-live-status" style="cursor:pointer;color:var(--cool);font-family:'Inter',sans-serif;white-space:nowrap;">${liveCollapsed?'▸ show status':'▾ hide status'}</span>`
       : '';
-    const liveBlock = (isLive && !liveCollapsed)
-      ? `<div id="ps-log-live-${e.id}" style="flex-basis:100%;">${logEntryLiveStatusHtml(e)}</div>`
+    const liveBlock = isLive
+      ? `<div id="ps-log-live-${e.id}" style="flex-basis:100%;">${logEntryLiveStatusHtml(e, liveCollapsed)}</div>`
       : '';
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
@@ -10606,7 +10615,7 @@ async function startApp(){
     // whatever's mid-typing in the Log a Print form or an open edit row.
     document.querySelectorAll('[id^="ps-log-live-"]').forEach(el => {
       const entry = productionLog.find(x => x.id === el.id.slice('ps-log-live-'.length));
-      if(entry && !entry.actualEnd && !entry.failed) el.innerHTML = logEntryLiveStatusHtml(entry);
+      if(entry && !entry.actualEnd && !entry.failed) el.innerHTML = logEntryLiveStatusHtml(entry, collapsedLogLiveStatus.has(entry.id));
     });
   }, 20000);
   // Pure UI refresh, no data touched, no render triggered — just keeps the
