@@ -4392,7 +4392,7 @@ function logEntryLiveStatusHtml(e, collapsed){
   // far along it is without the full block taking up room.
   if(collapsed){
     return hasEstimate ? `
-      <div class="ps-hprogress-track" style="margin:6px 0 0;" title="${fmtDuration(elapsedMin)} elapsed · ${Math.round(progressPct)}% of estimated time${overdue?' · OVERDUE':' · done '+fmtClock(estFinish)}">
+      <div class="ps-hprogress-track" style="margin:6px 0 0;height:4px;border:none;background:var(--line);" title="${fmtDuration(elapsedMin)} elapsed · ${Math.round(progressPct)}% of estimated time${overdue?' · OVERDUE':' · done '+fmtClock(estFinish)}">
         <div class="ps-hprogress-fill ${overdue?'overdue':''}" style="width:${progressPct}%;"></div>
       </div>` : '';
   }
@@ -4431,7 +4431,7 @@ function logEntryLiveStatusHtml(e, collapsed){
   return `
     <div style="margin-top:8px;padding:10px 12px;border:1px solid var(--line);border-radius:4px;background:var(--panel-2);">
       ${hasEstimate ? `
-      <div class="ps-hprogress-track" style="margin:0 0 4px;" title="${Math.round(progressPct)}% of estimated time elapsed">
+      <div class="ps-hprogress-track" style="margin:0 0 4px;height:4px;border:none;background:var(--line);" title="${Math.round(progressPct)}% of estimated time elapsed">
         <div class="ps-hprogress-fill ${overdue?'overdue':''}" style="width:${progressPct}%;"></div>
       </div>
       <div class="ps-hint mono" style="margin-bottom:8px;">${fmtDuration(elapsedMin)} elapsed · ${Math.round(progressPct)}% of estimated time</div>` : ''}
