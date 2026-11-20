@@ -3414,48 +3414,16 @@ function renderStatus(){
   const root = document.getElementById('ps-tab-status');
   if(!root) return;
   const activePrinters = printers.filter(p => p.status === 'active' && !p.retired);
+  const now = new Date();
 
   if(activePrinters.length === 0){
     root.innerHTML = `<div class="ps-panel"><div class="ps-empty">No active printers — check the Printers tab.</div></div>`;
     return;
   }
 
-  const cards = buildPrinterStatusCardsHtml(activePrinters);
-  const runwayStatus = computeRunwayStatus();
-  const alreadyPastOnStatus = runwayStatus.daysUntilReorderPoint !== null && runwayStatus.daysUntilReorderPoint < 0;
-  const statusCriticalMessage = runwayStatus.showAlert ? (alreadyPastOnStatus
-    ? `${runwayStatus.runwayDays.toFixed(1)} day${runwayStatus.runwayDays!==1?'s':''} of filament left — ${Math.abs(runwayStatus.daysUntilReorderPoint).toFixed(1)} day${Math.abs(runwayStatus.daysUntilReorderPoint)!==1?'s':''} past your reorder point already.`
-    : `${runwayStatus.runwayDays.toFixed(1)} day${runwayStatus.runwayDays!==1?'s':''} of filament left — you'll hit your reorder point in about ${runwayStatus.daysUntilReorderPoint.toFixed(1)} day${runwayStatus.daysUntilReorderPoint!==1?'s':''}. Ordering now keeps you ahead of it.`) : '';
-  const reorderBanner = runwayStatus.showAlert ? `
-    <div class="ps-warnbox" style="font-size:16px;font-weight:800;text-align:center;padding:14px;margin-bottom:16px;letter-spacing:0.02em;">
-      ⚠ REORDER NOW — ${statusCriticalMessage} Full detail on the Filament tab.
-    </div>
-  ` : (runwayStatus.runwayShort && runwayStatus.hasPendingOrder ? `
-    <div class="ps-warnbox" style="border-color:var(--ok,#6a6);background:color-mix(in srgb, var(--ok,#6a6) 12%, transparent);text-align:center;padding:12px;margin-bottom:16px;">
-      ✓ Order already placed — ${runwayStatus.totalOnOrderG}g on the way. No action needed.
-    </div>
-  ` : '');
-
-  const untestedBatch = filamentOrderHistory
-    .filter(o => o.pa === null)
-    .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt))[0];
-  const paReminderBanner = untestedBatch ? `
-    <div class="ps-warnbox" style="text-align:center;padding:12px;margin-bottom:16px;">
-      New filament batch received ${new Date(untestedBatch.receivedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})} (${escapeHtml(untestedBatch.material)}) — test PA on the Bambu and record it on the Filament tab, under Order history.
-    </div>
-  ` : '';
-
-  root.innerHTML = reorderBanner + paReminderBanner + cards;
-}
-
-// Builds the per-printer "currently printing" status cards -- shared by the
-// Status tab itself and the collapsible "Live Status" panel embedded at the
-// top of the Log tab (see renderLog()), so the two never drift apart.
-function buildPrinterStatusCardsHtml(activePrinters){
-  const now = new Date();
   const liveMachines = liveSchedule ? liveSchedule.machines : [];
 
-  return activePrinters.map(p => {
+  const cards = activePrinters.map(p => {
     const inProgress = productionLog
       .filter(e => e.printerId === p.id && !e.actualEnd && !e.failed)
       .sort((a,b) => new Date(b.actualStart) - new Date(a.actualStart))[0];
@@ -3588,6 +3556,32 @@ function buildPrinterStatusCardsHtml(activePrinters){
       </div>
     `};
   }).sort((a,b) => a.sortKey - b.sortKey).map(c => c.html).join('');
+
+  const runwayStatus = computeRunwayStatus();
+  const alreadyPastOnStatus = runwayStatus.daysUntilReorderPoint !== null && runwayStatus.daysUntilReorderPoint < 0;
+  const statusCriticalMessage = runwayStatus.showAlert ? (alreadyPastOnStatus
+    ? `${runwayStatus.runwayDays.toFixed(1)} day${runwayStatus.runwayDays!==1?'s':''} of filament left — ${Math.abs(runwayStatus.daysUntilReorderPoint).toFixed(1)} day${Math.abs(runwayStatus.daysUntilReorderPoint)!==1?'s':''} past your reorder point already.`
+    : `${runwayStatus.runwayDays.toFixed(1)} day${runwayStatus.runwayDays!==1?'s':''} of filament left — you'll hit your reorder point in about ${runwayStatus.daysUntilReorderPoint.toFixed(1)} day${runwayStatus.daysUntilReorderPoint!==1?'s':''}. Ordering now keeps you ahead of it.`) : '';
+  const reorderBanner = runwayStatus.showAlert ? `
+    <div class="ps-warnbox" style="font-size:16px;font-weight:800;text-align:center;padding:14px;margin-bottom:16px;letter-spacing:0.02em;">
+      ⚠ REORDER NOW — ${statusCriticalMessage} Full detail on the Filament tab.
+    </div>
+  ` : (runwayStatus.runwayShort && runwayStatus.hasPendingOrder ? `
+    <div class="ps-warnbox" style="border-color:var(--ok,#6a6);background:color-mix(in srgb, var(--ok,#6a6) 12%, transparent);text-align:center;padding:12px;margin-bottom:16px;">
+      ✓ Order already placed — ${runwayStatus.totalOnOrderG}g on the way. No action needed.
+    </div>
+  ` : '');
+
+  const untestedBatch = filamentOrderHistory
+    .filter(o => o.pa === null)
+    .sort((a,b) => new Date(b.receivedAt) - new Date(a.receivedAt))[0];
+  const paReminderBanner = untestedBatch ? `
+    <div class="ps-warnbox" style="text-align:center;padding:12px;margin-bottom:16px;">
+      New filament batch received ${new Date(untestedBatch.receivedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})} (${escapeHtml(untestedBatch.material)}) — test PA on the Bambu and record it on the Filament tab, under Order history.
+    </div>
+  ` : '';
+
+  root.innerHTML = reorderBanner + paReminderBanner + cards;
 }
 
 function renderPrinters(){
@@ -4375,11 +4369,71 @@ function renderPrinters(){
 
 // ---------- rendering: Log tab ----------
 let editingLogId = null;
-// Whether the "Live Status" panel embedded at the top of the Log tab is
-// collapsed. Defaults open — the whole point is to glance at it without
-// leaving the tab that's open all day — but collapsible for anyone who
-// wants the Log tab to just be the log again.
-let logStatusCollapsed = false;
+// Log history: which still-printing entries have their inline live-status
+// block collapsed. Open by default.
+let collapsedLogLiveStatus = new Set();
+
+// Inline "live status" for a still-printing log entry -- progress, time
+// remaining, filament left for this print, and the printer's loaded
+// spool. Same math as the Status tab's cards, just compact enough to sit
+// inside a log row. Also called by the 20s refresh tick to update the
+// block in place (see startApp) without re-rendering the whole Log tab.
+function logEntryLiveStatusHtml(e){
+  const now = new Date();
+  const printer = printers.find(p=>p.id===e.printerId);
+  const start = new Date(e.actualStart);
+  const elapsedMin = Math.max(0, (now - start)/60000);
+  const hasEstimate = e.plannedMin>0;
+  const estFinish = new Date(start.getTime() + (e.plannedMin||0)*60000);
+  const overdue = hasEstimate && now > estFinish;
+  const progressPct = hasEstimate ? Math.min(100, (elapsedMin/e.plannedMin)*100) : 0;
+
+  const cell = (label, value, sub, valueStyle) => `
+    <div style="min-width:120px;">
+      <div class="ps-hint" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;">${label}</div>
+      <div class="mono" style="font-size:15px;font-weight:700;color:var(--heat);${valueStyle||''}">${value}</div>
+      ${sub ? `<div class="ps-hint" style="font-size:11px;">${sub}</div>` : ''}
+    </div>`;
+
+  const timeCell = !hasEstimate
+    ? cell('Time elapsed', fmtDuration(elapsedMin), 'no estimate available')
+    : overdue
+      ? cell('Time remaining', 'OVERDUE', `was due ${fmtClock(estFinish)}`, 'color:var(--danger);')
+      : cell('Time remaining', fmtDuration(Math.max(0, e.plannedMin - elapsedMin)), `done ${fmtClock(estFinish)}`);
+
+  const nominal = e.weightGAtLogTime || 0;
+  const printFilCell = (nominal>0 && hasEstimate)
+    ? cell('Filament for this print', `${Math.max(0, nominal - Math.round(nominal*progressPct/100))}g`, `left of ${nominal}g needed`)
+    : cell('Filament for this print', '—', 'no weight estimate', 'color:var(--muted);');
+
+  const spool = (printer && printer.spoolId) ? spools.find(s=>s.id===printer.spoolId && !s.retired) : null;
+  const spoolLow = spool && spool.remainingG <= LOW_STOCK_G;
+  // Same fill convention as the Status tab's spool bar, so the two read alike.
+  const spoolPct = spool && spool.totalG>0 ? Math.max(0, Math.min(100, ((spool.totalG-spool.remainingG)/spool.totalG)*100)) : 0;
+  const spoolCell = spool
+    ? `<div style="min-width:140px;">
+        <div class="ps-hint" style="font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;">Filament left</div>
+        <div class="mono" style="font-size:15px;font-weight:700;color:${spoolLow?'var(--danger)':'var(--heat)'};">${Math.max(0,spool.remainingG)}g</div>
+        <div class="ps-spool-bar-track" style="margin:3px 0;width:120px;"><div class="ps-spool-bar-fill ${spoolLow?'low':''}" style="width:${spoolPct}%"></div></div>
+        <div class="ps-hint" style="font-size:11px;">${spoolLow?'low — ':''}${escapeHtml(spool.label||'')}</div>
+      </div>`
+    : cell('Filament left', '—', 'no spool set', 'color:var(--muted);');
+
+  return `
+    <div style="margin-top:8px;padding:10px 12px;border:1px solid var(--line);border-radius:4px;background:var(--panel-2);">
+      ${hasEstimate ? `
+      <div class="ps-hprogress-track" style="margin:0 0 4px;" title="${Math.round(progressPct)}% of estimated time elapsed">
+        <div class="ps-hprogress-fill ${overdue?'overdue':''}" style="width:${progressPct}%;"></div>
+      </div>
+      <div class="ps-hint mono" style="margin-bottom:8px;">${fmtDuration(elapsedMin)} elapsed · ${Math.round(progressPct)}% of estimated time</div>` : ''}
+      ${overdue ? `<div class="ps-hint" style="color:var(--danger);font-weight:700;margin-bottom:8px;">⚠ Should be done by now — go check it</div>` : ''}
+      <div class="ps-row" style="gap:24px;flex-wrap:wrap;align-items:flex-start;">
+        ${timeCell}
+        ${printFilCell}
+        ${spoolCell}
+      </div>
+    </div>`;
+}
 // The Actual Start field defaults to "now," but that value used to get
 // baked into the page once at render time and then just sit there —
 // leave the Log tab open for a few minutes without touching anything else
@@ -4753,12 +4807,20 @@ function renderLog(){
       const segSpool = spools.find(s=>s.id===seg.spoolId);
       return `${seg.weightG}g → ${segSpool?escapeHtml(segSpool.label||'spool'):'(deleted spool)'}`;
     }).join(', ')}</div>` : '';
+    const isLive = !e.actualEnd && !e.failed;
+    const liveCollapsed = isLive && collapsedLogLiveStatus.has(e.id);
+    const liveToggle = isLive
+      ? ` <span class="ps-hint" data-action="toggle-live-status" style="cursor:pointer;color:var(--cool);font-family:'Inter',sans-serif;white-space:nowrap;">${liveCollapsed?'▸ show status':'▾ hide status'}</span>`
+      : '';
+    const liveBlock = (isLive && !liveCollapsed)
+      ? `<div id="ps-log-live-${e.id}" style="flex-basis:100%;">${logEntryLiveStatusHtml(e)}</div>`
+      : '';
     return `
       <div class="ps-log-entry ${e.failed?'ps-log-failed':''}" data-id="${e.id}">
         <div>
           <b>${printerLine}</b>
           <div>${productLine}</div>
-          <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}</div>
+          <div class="mono">${fmtLogTime(e.actualStart)} ${statusLine}${liveToggle}</div>
           ${jobLine}
           ${splitLine}
           ${swapLine}
@@ -4774,6 +4836,7 @@ function renderLog(){
           <button class="ps-btn ghost small" data-action="edit">Edit</button>
           <button class="ps-btn ghost small" data-action="delete">✕</button>
         </div>
+        ${liveBlock}
       </div>
     `;
   }).join('');
@@ -4795,29 +4858,7 @@ function renderLog(){
   }
   const jobCandidatesForSplit = jobs.filter(j => j.status==='active' && j.items.some(it=>it.id===logFormSelection.productId));
 
-  // Live Status, right at the top of the Log tab: the same per-printer
-  // "currently printing" cards as the Status tab, since this is the tab
-  // that's realistically left open all day and the Status tab often isn't.
-  // Collapsible for anyone who'd rather this just be the log again.
-  const logStatusPrinters = printers.filter(p => p.status === 'active' && !p.retired);
-  const logStatusSummary = logStatusPrinters.length === 0 ? 'no active printers'
-    : (() => {
-        const printingCount = logStatusPrinters.filter(p => productionLog.some(e => e.printerId===p.id && !e.actualEnd && !e.failed)).length;
-        return `${printingCount} of ${logStatusPrinters.length} printing`;
-      })();
-  const logStatusBlock = `
-    <div class="ps-panel">
-      <div class="ps-panel-title" data-action="toggle-log-status" style="cursor:pointer;">
-        <span class="dot"></span>Live Status
-        <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted);">${logStatusCollapsed?'▸':'▾'} (${logStatusSummary})</span>
-      </div>
-      ${logStatusCollapsed ? '' : (logStatusPrinters.length === 0
-        ? '<div class="ps-empty">No active printers — check the Printers tab.</div>'
-        : `<div id="ps-log-status-cards">${buildPrinterStatusCardsHtml(logStatusPrinters)}</div>`)}
-    </div>
-  `;
-
-  root.innerHTML = logStatusBlock + `
+  root.innerHTML = `
     <div class="ps-panel">
       <div class="ps-panel-title"><span class="dot"></span>Log a Print</div>
       <label class="ps-row" style="gap:6px;margin-bottom:12px;cursor:pointer;">
@@ -5057,14 +5098,6 @@ function renderLog(){
     logFormSelection.isTest = testCheckbox.checked;
     applyTestFieldVisibility(testCheckbox.checked);
   });
-
-  const logStatusToggle = root.querySelector('[data-action="toggle-log-status"]');
-  if(logStatusToggle){
-    logStatusToggle.addEventListener('click', () => {
-      logStatusCollapsed = !logStatusCollapsed;
-      renderLog();
-    });
-  }
 
   function refreshBatchOptions(preserve){
     const product = catalog.find(x=>x.id===document.getElementById('ps-log-product').value);
@@ -5767,6 +5800,15 @@ function renderLog(){
         renderLog();
       });
       return;
+    }
+
+    const liveToggleEl = row.querySelector('[data-action="toggle-live-status"]');
+    if(liveToggleEl){
+      liveToggleEl.addEventListener('click', () => {
+        if(collapsedLogLiveStatus.has(id)) collapsedLogLiveStatus.delete(id);
+        else collapsedLogLiveStatus.add(id);
+        renderLog();
+      });
     }
 
     const finishBtn = row.querySelector('[data-action="finish"]');
@@ -10559,15 +10601,13 @@ async function startApp(){
   checkMaintenanceNotifications();
   setInterval(() => {
     checkFinishNotifications(); checkMaintenanceNotifications(); renderStatus();
-    // Keep the Log tab's embedded "Live Status" cards ticking too, without
-    // calling the full renderLog() -- that would blow away whatever's
-    // mid-typing in the Log a Print form (or an open edit row) every 20
-    // seconds. This only touches the cards sub-container, which has no
-    // inputs of its own to disturb.
-    const logStatusCards = document.getElementById('ps-log-status-cards');
-    if(logStatusCards){
-      logStatusCards.innerHTML = buildPrinterStatusCardsHtml(printers.filter(p => p.status === 'active' && !p.retired));
-    }
+    // Keep the Log history's inline live-status blocks ticking by updating
+    // just those blocks in place -- a full renderLog() here would wipe
+    // whatever's mid-typing in the Log a Print form or an open edit row.
+    document.querySelectorAll('[id^="ps-log-live-"]').forEach(el => {
+      const entry = productionLog.find(x => x.id === el.id.slice('ps-log-live-'.length));
+      if(entry && !entry.actualEnd && !entry.failed) el.innerHTML = logEntryLiveStatusHtml(entry);
+    });
   }, 20000);
   // Pure UI refresh, no data touched, no render triggered — just keeps the
   // Actual Start field honestly reflecting "now" for as long as the person
